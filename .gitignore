@@ -22,6 +22,9 @@ dist/
 build/
 *.spec
 
+# ARM64 打包时自动下载的 .NET 8 运行时（可重新生成，勿入库）
+dotnet_arm64/
+
 # 早期实验脚本（主程序为 tg_video_dl.py，避免发布混乱）
 tg_local_match.py
 tg_video_dl_noapi.py

@@ -18,6 +18,11 @@ import sys
 import threading
 import time
 
+# ARM64 Windows：在 import webview 前把 pythonnet 切到随包分发的
+# CoreCLR(.NET 8)；x64 上此调用为空操作。
+import arm64_runtime
+arm64_runtime.init()
+
 import webview
 
 import tg_video_dl as core

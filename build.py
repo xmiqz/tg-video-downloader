@@ -35,10 +35,76 @@ os.environ["PYTHONUTF8"] = "1"
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
 
+# 仅 WPF 使用、WinForms 宿主不需要的程序集/原生库，打包前裁掉以减小体积
+_WPF_ONLY = [
+    "PresentationFramework.dll", "PresentationCore.dll", "PresentationUI.dll",
+    "PresentationFramework.Luna.dll", "PresentationFramework.Aero.dll",
+    "PresentationFramework.Aero2.dll", "PresentationFramework.Royale.dll",
+    "PresentationFramework.Classic.dll", "PresentationFramework.AeroLite.dll",
+    "wpfgfx_cor3.dll", "PresentationNative_cor3.dll", "PenImc_cor3.dll",
+    "DirectWriteForwarder.dll", "ReachFramework.dll", "System.Printing.dll",
+    "System.Xaml.dll", "System.Windows.Controls.Ribbon.dll",
+    "WindowsFormsIntegration.dll", "PresentationFramework-SystemCore.dll",
+    "PresentationFramework-SystemData.dll", "PresentationFramework-SystemDrawing.dll",
+    "PresentationFramework-SystemXml.dll", "PresentationFramework-SystemXmlLinq.dll",
+    "System.Windows.Presentation.dll", "System.Windows.Input.Manipulations.dll",
+]
+
+
+def is_arm64_windows():
+    return (platform.system() == "Windows"
+            and platform.machine().lower() in ("arm64", "aarch64"))
+
+
+def prepare_arm64_assets():
+    """准备 ARM64 打包所需资产：
+
+    1. 给已安装的 pywebview 打 .NET 8 兼容补丁；
+    2. 确保 dotnet_arm64/ 存在（缺失时用 dotnet-install 拉取
+       WindowsDesktop 运行时，非 SDK）；
+    3. 裁剪仅 WPF 使用的文件。
+
+    返回 (dotnet_dir, webview2_dir)。
+    """
+    dotnet_dir = os.path.join(HERE, "dotnet_arm64")
+    webview2_dir = os.path.join(HERE, "webview2_arm64")
+
+    print(">> 修补 pywebview 以兼容 .NET 8")
+    subprocess.check_call([sys.executable, os.path.join(HERE, "patch_pywebview.py")])
+
+    if not os.path.isdir(os.path.join(dotnet_dir, "host", "fxr")):
+        print(">> 下载 .NET 8 WindowsDesktop (ARM64) 运行时到 dotnet_arm64")
+        ps = (
+            "$ErrorActionPreference='Stop';"
+            "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;"
+            "& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing "
+            "'https://dot.net/v1/dotnet-install.ps1').Content)) "
+            "-Runtime windowsdesktop -Channel 8.0 -Architecture arm64 "
+            f"-InstallDir '{dotnet_dir}'"
+        )
+        subprocess.check_call(["powershell", "-ExecutionPolicy", "Bypass",
+                               "-Command", ps])
+
+    desktop_root = os.path.join(dotnet_dir, "shared", "Microsoft.WindowsDesktop.App")
+    if os.path.isdir(desktop_root):
+        for ver in os.listdir(desktop_root):
+            vdir = os.path.join(desktop_root, ver)
+            for f in _WPF_ONLY:
+                p = os.path.join(vdir, f)
+                if os.path.isfile(p):
+                    os.remove(p)
+
+    if not os.path.isdir(dotnet_dir):
+        raise RuntimeError("ARM64 运行时准备失败：缺少 dotnet_arm64/")
+    if not os.path.isdir(webview2_dir):
+        raise RuntimeError("缺少 webview2_arm64/（.NET Core 版 WebView2 程序集）")
+
+    return dotnet_dir, webview2_dir
+
+
 def build_windows_gui(dist):
-    machine = platform.machine().lower()
-    name = ("TG视频下载器_ARM64" if machine in ("arm64", "aarch64")
-            else "TG视频下载器")
+    arm64 = is_arm64_windows()
+    name = "TG视频下载器_ARM64" if arm64 else "TG视频下载器"
     web_dir = os.path.join(HERE, "web")
     cmd = [
         sys.executable, "-m", "PyInstaller",
@@ -54,8 +120,19 @@ def build_windows_gui(dist):
         "--distpath", dist,
         "--workpath", WORK,
         "--specpath", WORK,
-        os.path.join(HERE, "gui.py"),
     ]
+
+    if arm64:
+        dotnet_dir, webview2_dir = prepare_arm64_assets()
+        # 随包分发 CoreCLR(.NET 8) 运行时与 .NET Core 版 WebView2 程序集
+        cmd += [
+            "--add-data",
+            os.path.join(dotnet_dir, "*") + os.pathsep + "dotnet",
+            "--add-data",
+            os.path.join(webview2_dir, "*") + os.pathsep + "webview2_arm64",
+        ]
+
+    cmd.append(os.path.join(HERE, "gui.py"))
     print(">>", " ".join(cmd))
     subprocess.check_call(cmd)
 
