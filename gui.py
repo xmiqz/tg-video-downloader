@@ -1,0 +1,918 @@
+# -*- coding: utf-8 -*-
+"""TG 视频下载器 —— 现代图形界面（pywebview）。
+
+架构说明：核心下载/扫描/任务引擎完全复用 tg_video_dl.py，本文件只做一层
+HTTP/JS 桥接，把引擎的异步能力暴露给 web/ 下的界面。引擎的 CLI 入口与
+本 GUI 互不影响。
+"""
+import asyncio
+import base64
+import ctypes
+import io
+import json
+import os
+import pathlib
+import queue
+import subprocess
+import sys
+import threading
+import time
+
+import webview
+
+import tg_video_dl as core
+from telethon import TelegramClient
+from telethon.errors import (
+    SessionPasswordNeededError,
+    PhoneCodeInvalidError,
+    PhoneCodeExpiredError,
+    PasswordHashInvalidError,
+)
+
+
+def resource_dir():
+    """web 资源目录：打包后从解包目录取，开发时取脚本所在 web/"""
+    if getattr(sys, "frozen", False):
+        base = pathlib.Path(getattr(sys, "_MEIPASS", ""))
+        p = base / "web"
+        if p.exists():
+            return str(p)
+    return str(pathlib.Path(__file__).resolve().parent / "web")
+
+
+class EngineLoop:
+    """在独立线程跑一个 asyncio 事件循环，供桥接方法提交协程。"""
+
+    def __init__(self):
+        self.loop = None
+        self.ready = threading.Event()
+
+    def start(self):
+        threading.Thread(target=self._run, daemon=True).start()
+        self.ready.wait()
+
+    def _run(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        self.ready.set()
+        self.loop.run_forever()
+
+    def submit(self, coro):
+        fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        return fut.result()
+
+
+class Api:
+    def __init__(self, engine):
+        self.engine = engine
+        self.client = None
+        self.cfg = {}
+        self._preview = {}      # mid -> record（含活动消息对象）
+        # 实时取光相关（仅 Windows 液态玻璃模式使用）
+        self.capture = None
+        self._form = None
+        self._drv = None
+        self._pump_timer = None
+        self._handler = None
+
+    # ---------- 外观模式 ----------
+    def get_appearance(self):
+        """外观：dark=静态暗（默认）/ light=静态亮 / liquid=实时透明液态玻璃。"""
+        return {"ok": True, "mode": self.cfg.get("appearance", "dark")}
+
+    def set_appearance(self, mode):
+        if mode not in ("dark", "light", "liquid"):
+            return {"ok": False, "error": "未知外观模式"}
+        self.cfg["appearance"] = mode
+        core.save_config(self.cfg)
+        if sys.platform == "win32":
+            try:
+                self._apply_mode(mode)
+            except Exception as e:
+                print("[GUI] 切换外观失败：", e)
+        return {"ok": True}
+
+    def _apply_mode(self, mode):
+        """把取光任务的启停 marshal 到 UI 线程。"""
+        form, drv = self._form, self._drv
+        if form is None or drv is None:
+            return
+
+        def _do():
+            drv.set_mode(mode)
+
+        from System import Action
+        form.Invoke(Action(_do))
+
+    # ---------- 登录 ----------
+    def login_state(self):
+        if self.client is not None:
+            return {"logged_in": True}
+        # 已存在会话则尝试静默连接
+        return {"logged_in": False,
+                "has_session": pathlib.Path(core.SESSION_PATH + ".session").exists()}
+
+    def connect(self):
+        if self.client is not None:
+            return {"ok": True}
+        core.ensure_dirs_and_migrate()
+        self.cfg = core.setup_credentials()
+        client = TelegramClient(
+            core.SESSION_PATH, self.cfg["api_id"], self.cfg["api_hash"],
+            flood_sleep_threshold=120,
+        )
+
+        async def _do():
+            await client.connect()
+            if await client.is_user_authorized():
+                return "ok"
+            phone = self.cfg.get("phone") or ""
+            if not phone:
+                return "need_phone"
+            await client.send_code_request(phone)
+            return "need_code"
+
+        try:
+            status = self.engine.submit(_do())
+        except Exception as e:
+            msg = f"{type(e).__name__}: {e}"
+            if "locked" in msg or "is locked" in msg:
+                return {"ok": False, "busy": True,
+                        "error": "会话正被其它程序占用（桌面版还在运行？），请先关闭后重试。"}
+            return {"ok": False, "error": msg}
+        self.client = client
+        if status == "ok":
+            return {"ok": True, "stage": "ready"}
+        return {"ok": True, "stage": status}
+
+    def send_code(self, phone):
+        async def _do():
+            await self.client.send_code_request(phone)
+        try:
+            self.engine.submit(_do())
+            self.cfg["phone"] = phone
+            core.save_config(self.cfg)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    def verify_code(self, code):
+        async def _do():
+            try:
+                await self.client.sign_in(self.cfg.get("phone"), code)
+                return "ready"
+            except SessionPasswordNeededError:
+                return "need_password"
+            except (PhoneCodeInvalidError, PhoneCodeExpiredError) as e:
+                return f"__err__{type(e).__name__}: {e}"
+        r = self.engine.submit(_do())
+        if r.startswith("__err__"):
+            return {"ok": False, "error": r[len("__err__"):]}
+        return {"ok": True, "stage": r}
+
+    def verify_password(self, password):
+        async def _do():
+            try:
+                await self.client.sign_in(password=password)
+                return "ready"
+            except PasswordHashInvalidError as e:
+                return f"__err__{e}"
+        r = self.engine.submit(_do())
+        if r.startswith("__err__"):
+            return {"ok": False, "error": r[len("__err__"):]}
+        return {"ok": True, "stage": r}
+
+    def me(self):
+        async def _do():
+            u = await self.client.get_me()
+            return {"name": (u.first_name or ""), "username": u.username or "",
+                    "phone": u.phone or ""}
+        try:
+            return {"ok": True, **self.engine.submit(_do())}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # ---------- 频道预览（高级搜索） ----------
+    def preview(self, params):
+        """params: 前端组装的高级搜索参数对象"""
+        try:
+            channel_in = params.get("channel", "")
+            channel_name = core.parse_channel(channel_in)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+        async def _do():
+            entity = await self.client.get_entity(channel_name)
+            title = getattr(entity, "title", None) or channel_name
+            p = dict(params)
+            p.pop("channel", None)
+            records, meta = await core.search_videos(self.client, entity, p)
+            # 用 (来源, mid) 做键，支持评论区
+            self._preview = {
+                (r.get("src", core.SRC_CHANNEL), r["msg"].id): r
+                for r in records
+            }
+            items = [{
+                "mid": r["msg"].id,
+                "src": r.get("src", core.SRC_CHANNEL),
+                "name": r["name"],
+                "size": r["size"],
+                "date": (f"{r['msg'].date:%Y-%m-%d}" if r["msg"].date else ""),
+                "text": r["text"],
+            } for r in records]
+            return {
+                "ok": True, "channel": channel_name, "title": title,
+                "meta": meta, "items": items,
+            }
+
+        try:
+            return self.engine.submit(_do())
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    # ---------- 建任务并下载 ----------
+    def start_download(self, channel, title, keys, parallel, folder=""):
+        todo = []
+        for k in keys:
+            src = k.get("src", core.SRC_CHANNEL)
+            rec = self._preview.get((src, int(k["mid"])))
+            if rec is not None:
+                todo.append(rec)
+        if not todo:
+            return {"ok": False, "error": "没有选择视频"}
+        if not folder:
+            root = core.get_download_root(self.cfg)
+        else:
+            root = pathlib.Path(folder)
+            root.mkdir(parents=True, exist_ok=True)
+        safe = "".join(c for c in (title or channel) if c not in '\\/:*?"<>|').strip()
+        folder_dest = root / (safe or "channel")
+        folder_dest.mkdir(parents=True, exist_ok=True)
+
+        task = {
+            "id": core.new_task_id(),
+            "created": __import__("time").strftime("%Y-%m-%d %H:%M:%S"),
+            "channel": channel, "channel_title": title,
+            "params": {"parallel": max(1, min(int(parallel), 8))},
+            "folder": str(folder_dest),
+            "items": [core.make_task_item(r) for r in todo],
+        }
+        core.save_task(task)
+
+        import asyncio as _a
+        gui = {"abort": _a.Event(), "skip": _a.Event()}
+
+        def _run_bg():
+            async def _do():
+                await core.execute_downloads(
+                    self.client, task, todo,
+                    task["params"]["parallel"], gui=gui,
+                )
+            fut = asyncio.run_coroutine_threadsafe(_do(), self.engine.loop)
+            try:
+                fut.result()
+            except Exception as ex:
+                print("[GUI] 下载异常：", ex)
+
+        threading.Thread(target=_run_bg, daemon=True).start()
+        return {"ok": True, "task_id": task["id"]}
+
+    # ---------- 实时状态 ----------
+    def active_state(self):
+        return core.ACTIVE_SESSION.state()
+
+    def is_active(self):
+        return core.ACTIVE_SESSION.is_running()
+
+    def abort(self):
+        if core.ACTIVE_SESSION.abort is not None:
+            core.ACTIVE_SESSION.abort.set()
+        return {"ok": True}
+
+    def skip_current(self):
+        if core.ACTIVE_SESSION.skip is not None:
+            core.ACTIVE_SESSION.skip.set()
+        return {"ok": True}
+
+    # ---------- 任务历史 ----------
+    def list_tasks(self):
+        out = []
+        for t in core.load_tasks():
+            c = core.task_counts(t)
+            out.append({
+                "id": t["id"], "channel_title": t.get("channel_title", ""),
+                "channel": t.get("channel", ""), "created": t.get("created", ""),
+                "finished": c["finished"], "total": c["total"],
+                "pending": c["pending"], "failed": c["failed"],
+                "skipped": c["skipped"],
+            })
+        return out
+
+    def get_task(self, task_id):
+        for t in core.load_tasks():
+            if t["id"] == task_id:
+                return {"ok": True, "task": t,
+                        "counts": core.task_counts(t)}
+        return {"ok": False, "error": "任务不存在"}
+
+    def delete_task(self, task_id):
+        for t in core.load_tasks():
+            if t["id"] == task_id:
+                core.delete_task(t)
+                return {"ok": True}
+        return {"ok": False, "error": "任务不存在"}
+
+    def resume_task(self, task_id, only_failed=False):
+        for t in core.load_tasks():
+            if t["id"] != task_id:
+                continue
+            statuses = ("failed",) if only_failed else ("pending", "failed")
+            n = sum(1 for ti in t["items"] if ti["status"] in statuses)
+            if not n:
+                return {"ok": False, "error": "没有需要下载的视频"}
+            parallel = int(t.get("params", {}).get("parallel") or 1)
+            import asyncio as _a
+            gui = {"abort": _a.Event(), "skip": _a.Event()}
+
+            def _run_bg():
+                async def _do():
+                    records = await core.fetch_records(self.client, t, statuses)
+                    if records:
+                        await core.execute_downloads(
+                            self.client, t, records, parallel, gui=gui
+                        )
+                fut = asyncio.run_coroutine_threadsafe(_do(), self.engine.loop)
+                try:
+                    fut.result()
+                except Exception as ex:
+                    print("[GUI] 续传异常：", ex)
+
+            threading.Thread(target=_run_bg, daemon=True).start()
+            return {"ok": True}
+        return {"ok": False, "error": "任务不存在"}
+
+    # ---------- 任务编辑 ----------
+    def _load_one(self, task_id):
+        for t in core.load_tasks():
+            if t["id"] == task_id:
+                return t
+        return None
+
+    def edit_task(self, task_id, fields):
+        """批量修改任务属性：title/parallel/folder（+move_files）"""
+        t = self._load_one(task_id)
+        if t is None:
+            return {"ok": False, "error": "任务不存在"}
+        if fields.get("title"):
+            core.rename_task(t, fields["title"])
+        if fields.get("parallel"):
+            core.set_parallel(t, int(fields["parallel"]))
+        moved_msgs = []
+        if fields.get("folder"):
+            _, moved_msgs = core.change_folder(
+                t, fields["folder"], bool(fields.get("move_files"))
+            )
+        return {"ok": True, "warnings": moved_msgs}
+
+    def set_item(self, task_id, src, mid, status):
+        t = self._load_one(task_id)
+        if t is None:
+            return {"ok": False, "error": "任务不存在"}
+        ok = core.set_item_status(t, (src, int(mid)), status)
+        return {"ok": ok}
+
+    def remove_items(self, task_id, keys):
+        t = self._load_one(task_id)
+        if t is None:
+            return {"ok": False, "error": "任务不存在"}
+        ks = [(k.get("src", core.SRC_CHANNEL), int(k["mid"])) for k in keys]
+        n = core.remove_items(t, ks)
+        return {"ok": True, "removed": n}
+
+    def scan_append(self, task_id, params):
+        """按高级搜索参数扫描并把新视频追加到已有任务"""
+        t = self._load_one(task_id)
+        if t is None:
+            return {"ok": False, "error": "任务不存在"}
+
+        async def _do():
+            entity = await self.client.get_entity(t["channel"])
+            records, meta = await core.search_videos(self.client, entity, params)
+            added = core.append_records(t, records)
+            return added, meta
+
+        try:
+            added, meta = self.engine.submit(_do())
+            return {"ok": True, "added": added, "meta": meta}
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    # ---------- 独立编辑窗口 ----------
+    def open_editor(self, task_id):
+        """弹出第二个专业编辑窗口（任务/条目管理）。"""
+        t = self._load_one(task_id)
+        if t is None:
+            return {"ok": False, "error": "任务不存在"}
+        url = (str(pathlib.Path(resource_dir()) / "editor.html")
+               + f"?id={task_id}")
+        s = _dpi_scale()
+        bg = "#e9ecf5" if self.cfg.get("appearance") == "light" else "#07080f"
+        webview.create_window(
+            "任务编辑 · " + t.get("channel_title", ""),
+            url=url, js_api=self,
+            width=int(1080 * s), height=int(740 * s),
+            min_size=(int(880 * s), int(580 * s)),
+            background_color=bg,
+        )
+        return {"ok": True}
+
+    def editor_data(self, task_id):
+        """任务与全部条目（含 TG 消息原文、时长、日期）。"""
+        t = self._load_one(task_id)
+        if t is None:
+            return {"ok": False, "error": "任务不存在"}
+        # 已登录则从 Telegram 补全旧条目缺失的消息文本/时长
+        if self.client is not None:
+            async def _en():
+                await core.enrich_task_items(self.client, t)
+            try:
+                self.engine.submit(_en())
+            except Exception as e:
+                print("[GUI] 条目详情补全失败：", e)
+        return {
+            "ok": True,
+            "task": {
+                "id": t["id"],
+                "channel_title": t.get("channel_title", ""),
+                "channel": t.get("channel", ""),
+                "folder": t.get("folder", ""),
+                "parallel": t.get("params", {}).get("parallel", 1),
+                "created": t.get("created", ""),
+            },
+            "items": t["items"],
+            "counts": core.task_counts(t),
+        }
+
+    def editor_save(self, task_id, fields):
+        return self.edit_task(task_id, fields)
+
+    def editor_set_status(self, task_id, keys, status):
+        t = self._load_one(task_id)
+        if t is None:
+            return {"ok": False, "error": "任务不存在"}
+        ks = [(k.get("src", core.SRC_CHANNEL), int(k["mid"])) for k in keys]
+        n = core.set_items_status(t, ks, status)
+        return {"ok": True, "n": n}
+
+    def editor_remove(self, task_id, keys):
+        return self.remove_items(task_id, keys)
+
+    def item_file_info(self, task_id, src, mid):
+        """条目对应本地文件信息：是否存在/路径/大小"""
+        t = self._load_one(task_id)
+        if t is None:
+            return {"ok": False}
+        ti = core.find_item(t, (src, int(mid)))
+        if ti is None:
+            return {"ok": False}
+        p = pathlib.Path(t["folder"]) / ti["name"]
+        partial = pathlib.Path(str(p) + ".dl")
+        return {"ok": True, "exists": p.exists(),
+                "path": str(p), "st_size": (p.stat().st_size if p.exists() else 0),
+                "partial": partial.exists()}
+
+    def items_file_info(self, task_id):
+        """批量返回任务下所有条目的文件存在状态：{"src|mid": {exists,partial}}"""
+        t = self._load_one(task_id)
+        if t is None:
+            return {"ok": False}
+        folder = pathlib.Path(t["folder"])
+        out = {}
+        for ti in t["items"]:
+            p = folder / ti["name"]
+            key = f"{ti.get('src', core.SRC_CHANNEL)}|{ti['msg']}"
+            out[key] = {"exists": p.exists(), "partial": (pathlib.Path(str(p)+'.dl').exists())}
+        return {"ok": True, "items": out}
+
+    def open_item_file(self, task_id, src, mid):
+        r = self.item_file_info(task_id, src, mid)
+        if r.get("exists"):
+            return self._open_path(r["path"])
+        return {"ok": False, "error": "文件不存在"}
+
+    def _open_path(self, p):
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(p)  # noqa
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", p])
+            else:
+                subprocess.Popen(["xdg-open", p])
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # ---------- 其它 ----------
+    def open_folder(self, path):
+        if not path:
+            path = str(core.get_download_root(self.cfg))
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(path)  # noqa
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def choose_folder(self):
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            p = filedialog.askdirectory()
+            root.destroy()
+            return {"ok": True, "path": p}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def get_settings(self):
+        return {
+            "download_root": str(
+                self.cfg.get("download_root") or core.DEFAULT_DOWNLOAD_ROOT
+            ),
+        }
+
+    def set_download_root(self, path):
+        self.cfg["download_root"] = path
+        core.save_config(self.cfg)
+        core.get_download_root(self.cfg)
+        return {"ok": True}
+
+    # ---------- 实时环境取光 ----------
+    def backdrop_frame(self):
+        cap = getattr(self, "capture", None)
+        if cap is None:
+            return {"ok": False}
+        try:
+            changed, url, ver = cap.render_jpeg()
+            return {"ok": True, "changed": changed, "url": url, "v": ver}
+        except Exception as e:
+            print("[GUI] backdrop_frame 失败：", e)
+            return {"ok": False}
+
+
+if sys.platform == "win32":
+    from ctypes import wintypes
+
+    class _MagImageHeader(ctypes.Structure):
+        _fields_ = [
+            ("width", wintypes.UINT),
+            ("height", wintypes.UINT),
+            ("format", ctypes.c_byte * 16),
+            ("stride", wintypes.UINT),
+            ("offset_x", wintypes.LONG),
+            ("offset_y", wintypes.LONG),
+        ]
+
+    _MAGCB = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HWND, ctypes.c_void_p, _MagImageHeader,
+        ctypes.c_void_p, _MagImageHeader, wintypes.RECT, wintypes.RECT,
+        wintypes.HRGN,
+    )
+
+    class _MagTransform(ctypes.Structure):
+        _fields_ = [("v", ctypes.c_float * 3 * 3)]
+
+
+class AmbientCapture:
+    """实时环境取光。
+
+    创建一个不可见、鼠标穿透的全屏放大镜窗口，借助 Magnification API
+    的缩放回调持续拿到真实屏幕像素；主窗口被排除在采样之外，于是
+    主窗口区域采到的正是它"背后"的内容（壁纸 / 其他窗口）。
+    """
+
+    def __init__(self):
+        self._cb = None
+        self.mag_hwnd = None
+        self.main_hwnd = None
+        self.sw = self.sh = 0
+        self._lock = threading.Lock()
+        self._frame = None           # (w, h, buffer BGRA)
+        self.version = 0
+        self._cache_key = None
+        self._prev_bytes = None       # 上一次 JPEG 字节，用于内容去重
+
+    def start(self, main_hwnd):
+        user32 = ctypes.windll.user32
+        mag = ctypes.windll.magnification
+        sw, sh = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+        self.sw, self.sh = sw, sh
+        self.main_hwnd = int(main_hwnd)
+
+        if not mag.MagInitialize():
+            raise OSError("MagInitialize 失败")
+
+        # 收集要排除的窗口：主窗 + 全部子窗
+        excluded = [self.main_hwnd]
+        enum_proc = ctypes.WINFUNCTYPE(
+            wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+        )(lambda h, _l: (excluded.append(int(h)), True)[1])
+        user32.EnumChildWindows(self.main_hwnd, enum_proc, 0)
+
+        # 同一 UI 线程的所有窗口（WebView2/Chromium 的隐藏窗口在该线程）
+        tid = user32.GetWindowThreadProcessId(self.main_hwnd, None)
+        user32.EnumThreadWindows(int(tid), enum_proc, 0)
+
+        # 放大镜自身：分层（alpha=0 不可见）+ 鼠标穿透 + 工具窗（不进任务栏）。
+        # 归主窗所有（owned），确保不在任务栏/Alt+Tab 出现，并随主窗销毁。
+        self.mag_hwnd = user32.CreateWindowExW(
+            0x00080000 |            # WS_EX_LAYERED
+            0x00000020 |            # WS_EX_TRANSPARENT（鼠标穿透）
+            0x00000080 |            # WS_EX_TOOLWINDOW（不显示任务栏按钮）
+            0x08000000,             # WS_EX_NOACTIVATE（不抢焦点）
+            "Magnifier", None,
+            0x80000000 | 0x10000000,      # WS_POPUP | WS_VISIBLE
+            0, 0, sw, sh,
+            wintypes.HWND(self.main_hwnd), None, None, None,
+        )
+        if not self.mag_hwnd:
+            raise OSError("放大镜窗口创建失败")
+        user32.SetLayeredWindowAttributes(self.mag_hwnd, 0, 0, 0x2)
+        excluded.append(int(self.mag_hwnd))
+
+        # 去重
+        seen, uniq = set(), []
+        for h in excluded:
+            if h not in seen:
+                seen.add(h)
+                uniq.append(h)
+
+        arr = (wintypes.HWND * len(uniq))(*[wintypes.HWND(h) for h in uniq])
+        # MW_FILTERMODE_EXCLUDE = 0
+        mag.MagSetWindowFilterList(self.mag_hwnd, 0, len(uniq), arr)
+
+        self._cb = _MAGCB(self._on_frame)
+        mag.MagSetImageScalingCallback(self.mag_hwnd, self._cb)
+        mag.MagSetWindowSource(self.mag_hwnd, wintypes.RECT(0, 0, sw, sh))
+        mt = _MagTransform()
+        for i in range(3):
+            mt.v[i][i] = 1.0
+        mag.MagSetWindowTransform(self.mag_hwnd, ctypes.byref(mt))
+
+    def _on_frame(self, hwnd, src, hdr, dst, dhdr, unc, clip, dirty):
+        try:
+            if src and hdr.stride and hdr.width and hdr.height:
+                w, h, st = int(hdr.width), int(hdr.height), int(hdr.stride)
+                buf = ctypes.create_string_buffer(w * 4 * h)
+                row = w * 4
+                addr = ctypes.addressof(buf)
+                for y in range(h):
+                    ctypes.memmove(addr + y * row, src + y * st, row)
+                with self._lock:
+                    self._frame = (w, h, buf)
+                    self.version += 1
+        except Exception:
+            pass
+        return True
+
+    def pump(self):
+        """在 UI 线程主动驱动放大镜重采样（UpdateWindow 同步触发回调）。"""
+        user32 = ctypes.windll.user32
+        mag = ctypes.windll.magnification
+        mag.MagSetWindowSource(self.mag_hwnd,
+                               wintypes.RECT(0, 0, self.sw, self.sh))
+        user32.InvalidateRect(self.mag_hwnd, None, False)
+        user32.UpdateWindow(self.mag_hwnd)
+
+    def render_jpeg(self, out_w=600, quality=52):
+        """按主窗当前屏幕位置裁剪最新一帧，降采样编码为 JPEG data URL。
+        返回 (是否有变化, url或None, 版本号)。可从任意线程调用。"""
+        user32 = ctypes.windll.user32
+        r = wintypes.RECT()
+        user32.GetWindowRect(self.main_hwnd, ctypes.byref(r))
+        rect = (r.left, r.top, r.right - r.left, r.bottom - r.top)
+
+        with self._lock:
+            if self._frame is None:
+                return False, None, 0
+            fw, fh, buf = self._frame
+            ver = self.version
+            key = (ver, rect)
+            if key == self._cache_key:
+                return False, None, ver
+            x, y, w, h = rect
+            x0, y0 = max(0, x), max(0, y)
+            x1, y1 = min(fw, x + w), min(fh, y + h)
+            if x1 <= x0 or y1 <= y0:
+                return False, None, ver
+            # crop 在锁内完成，得到独立图像，避免 buf 被 pump 替换
+            from PIL import Image
+            full = Image.frombuffer("RGBA", (fw, fh), buf, "raw", "BGRA", 0, 1)
+            crop = full.crop((x0, y0, x1, y1))
+
+        # 锁外缩放/编码
+        cw, ch = crop.size
+        th = max(2, int(out_w * ch / cw))
+        crop = crop.resize((out_w, th), Image.BILINEAR).convert("RGB")
+        bio = io.BytesIO()
+        crop.save(bio, format="JPEG", quality=quality)
+        data = bio.getvalue()
+        if data == self._prev_bytes:
+            # 裁剪内容真正未变，不重复推送（静止画面零 JS 通信）
+            self._cache_key = key
+            return False, None, ver
+        self._prev_bytes = data
+        url = ("data:image/jpeg;base64,"
+               + base64.b64encode(data).decode("ascii"))
+        self._cache_key = key
+        return True, url, ver
+
+
+def _dpi_scale():
+    """系统/主屏 DPI 缩放比例（不受调用线程 DPI context 影响的取法）。"""
+    u = ctypes.windll.user32
+    try:
+        d = u.GetDpiForSystem()
+        if d and d >= 96:
+            return d / 96.0
+    except Exception:
+        pass
+    try:
+        shcore = ctypes.windll.shcore
+        mon = u.MonitorFromWindow(wintypes.HWND(0), 1)  # MONITOR_DEFAULTTOPRIMARY
+        dpx = wintypes.UINT()
+        dpy = wintypes.UINT()
+        shcore.GetDpiForMonitor(mon, 0, ctypes.byref(dpx), ctypes.byref(dpy))
+        if dpx.value:
+            return dpx.value / 96.0
+    except Exception:
+        pass
+    return 1.0
+
+
+class _BackdropDriver:
+    """绑定方法形式的定时器回调（pythonnet netfx 对 bound method 转委托最稳）。"""
+
+    def __init__(self, api, window, hwnd, user32):
+        self.api = api
+        self.cap = None        # 放大镜懒创建：仅液态玻璃模式才存在
+        self.timer = None
+        self.window = window
+        self.hwnd = hwnd
+        self.user32 = user32
+        self.last_ver = 0
+        self.n = 0
+
+    def set_mode(self, mode):
+        """UI 线程调用：进入液态玻璃才创建放大镜并启动泵，其余模式停止。"""
+        if mode == "liquid":
+            if self.cap is None:
+                cap = AmbientCapture()
+                cap.start(self.hwnd)
+                self.cap = cap
+                self.api.capture = cap
+            if self.timer is not None:
+                self.timer.Start()
+        elif self.timer is not None:
+            self.timer.Stop()
+
+    def on_pump(self, sender, event):
+        # 必须在 UI 线程：同步驱动放大镜更新最新帧
+        try:
+            if self.cap is not None:
+                self.cap.pump()
+        except Exception as ex:
+            print("[GUI] pump 失败：", ex)
+
+    def push_loop(self):
+        # 后台线程：编码并通过 evaluate_js 推送（该同步调用禁止在 UI 线程执行）
+        last = 0
+        while True:
+            time.sleep(0.06)
+            try:
+                if self.cap is None or self.cap.version == last:
+                    continue
+                changed, url, ver = self.cap.render_jpeg()
+                if changed and url:
+                    self.window.evaluate_js(
+                        "window._setBackdrop && window._setBackdrop("
+                        + json.dumps(url) + ")"
+                    )
+                last = ver
+            except Exception as ex:
+                print("[GUI] 背景推送失败：", ex)
+                time.sleep(0.5)
+
+
+def main():
+    if sys.platform == "win32":
+        # PerMonitorV2 DPI 感知，保证物理坐标与放大镜裁剪准确
+        try:
+            if not ctypes.windll.user32.SetProcessDpiAwarenessContext(-4):
+                raise OSError
+        except Exception:
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            except Exception:
+                ctypes.windll.user32.SetProcessDPIAware()
+
+    engine = EngineLoop()
+    engine.start()
+    api = Api(engine)
+    api.cfg = core.load_config()          # 提前读取，外观在登录前即生效
+    _mode = api.cfg.get("appearance", "dark")
+    _bg = "#e9ecf5" if _mode == "light" else "#07080f"
+    scale = _dpi_scale() if sys.platform == "win32" else 1.0
+    window = webview.create_window(
+        "TG 视频下载器",
+        url=str(pathlib.Path(resource_dir()) / "index.html"),
+        js_api=api,
+        width=int(1180 * scale),
+        height=int(780 * scale),
+        min_size=(int(960 * scale), int(640 * scale)),
+        transparent=False,                      # 玻璃完全由网页内 backdrop 层渲染
+        background_color=_bg,
+        frameless=False,
+    )
+
+    def on_shown():
+        if sys.platform != "win32":
+            window.evaluate_js("document.body.classList.add('fake-light')")
+            return
+
+        form = window.native
+        user32 = ctypes.windll.user32
+
+        def setup_ui():
+            # 本函数在真正的 UI 线程执行（Timer 必须建在有消息循环的线程）
+            hwnd = form.Handle.ToInt64()
+
+            # 恢复 UI 线程 PerMonitorV2 context：CLR/WinForms 启动后可能把
+            # UI 线程切到 GDI 缩放的 unaware context，导致放大镜只有逻辑分辨率
+            user32.SetThreadDpiAwarenessContext.restype = wintypes.HANDLE
+            user32.SetThreadDpiAwarenessContext.argtypes = [wintypes.HANDLE]
+            _newctx = user32.SetThreadDpiAwarenessContext(wintypes.HANDLE(-4))
+            print("[GUI] thread ctx ->", _newctx,
+                  "DPI=", user32.GetDpiForSystem())
+
+            try:
+                import clr
+                clr.AddReference("System.Windows.Forms")
+                from System.Windows.Forms import Timer
+                from System import EventHandler
+                drv = _BackdropDriver(api, window, hwnd, user32)
+                handler = EventHandler(drv.on_pump)
+                timer = Timer()
+                timer.Interval = 50
+                timer.Tick += handler
+                drv.timer = timer
+                threading.Thread(target=drv.push_loop,
+                                 daemon=True).start()
+                api._pump_timer = timer       # 保活
+                api._drv = drv
+                api._handler = handler
+                api._form = form
+                # 按已保存外观决定是否创建放大镜并启动泵
+                drv.set_mode(api.cfg.get("appearance", "dark"))
+                # 窗口在 unaware 线程创建（物理尺寸被虚拟化缩小3倍），线程
+                # 恢复 V2 后需把物理尺寸补回，WebView2 才能得到 1180 CSS 视口
+                s = user32.GetDpiForSystem() / 96.0
+                if s > 1.0:
+                    SWP_NOMOVE = 0x0002
+                    SWP_NOZORDER = 0x0004
+                    user32.SetWindowPos(
+                        hwnd, 0, 0, 0,
+                        int(1180 * s), int(780 * s),
+                        SWP_NOMOVE | SWP_NOZORDER)
+                user32.SetWindowTextW(hwnd, "TG 视频下载器")   # 恢复标题
+            except Exception as e:
+                print("[GUI] 取光组件初始化失败：", e)
+                try:
+                    window.evaluate_js(
+                        "document.body.classList.add('fake-light')")
+                except Exception:
+                    pass
+
+        # on_shown 在非 UI 线程触发，需把初始化 marshal 到 UI 线程同步执行
+        from System import Action
+        try:
+            form.Invoke(Action(setup_ui))
+        except Exception as e:
+            print("[GUI] Invoke 到 UI 线程失败：", e)
+            try:
+                window.evaluate_js("document.body.classList.add('fake-light')")
+            except Exception:
+                pass
+
+    window.events.shown += on_shown
+    webview.start(debug=False)
+
+
+if __name__ == "__main__":
+    main()

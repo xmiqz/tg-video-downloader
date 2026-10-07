@@ -21,6 +21,7 @@ Telegram 频道视频下载器（交互选择版）
 """
 import asyncio
 import ctypes
+import difflib
 import glob
 import json
 import os
@@ -305,72 +306,209 @@ def kw_match(text, includes, excludes):
     return True
 
 
-MAX_LOCAL_SCAN = 5000     # 仅排除词（无包含词）时的本地扫描条数上限
+MAX_LOCAL_SCAN = 5000     # 本地兜底扫描条数上限
+
+SRC_CHANNEL = "频道"
+SRC_COMMENT = "评论"
+
+SEARCH_MODES = {
+    "phrase": "精确短语",
+    "all": "包含全部词",
+    "any": "包含任一词",
+    "fuzzy": "模糊匹配",
+    "regex": "正则表达式",
+}
 
 
-def make_record(msg):
+def fuzzy_term_hit(t, term):
+    """模糊判断 term 是否近似出现在文本 t（均已小写）。
+    短词直接子串；长词用滑窗相似度，避免全量两两比较。"""
+    if not term:
+        return True
+    if term in t:
+        return True
+    if len(term) <= 2 or len(t) < 2:
+        return False
+    sm = difflib.SequenceMatcher(None, term, autojunk=False)
+    if len(term) >= len(t):
+        sm.set_seq2(t)
+        return sm.ratio() >= 0.72
+    L = len(term)
+    step = max(1, L // 3)
+    best = 0.0
+    for i in range(0, len(t) - L + 1, step):
+        sm.set_seq2(t[i:i + L])
+        r = sm.ratio()
+        if r >= 0.72:
+            return True
+        if r > best:
+            best = r
+    return best >= 0.72
+
+
+def advanced_match(text, terms, mode, excludes, raw=""):
+    """高级文本匹配。terms 为包含词（小写），excludes 为排除词。"""
+    t = (text or "").lower()
+    if excludes and any(w in t for w in excludes):
+        return False
+    if not terms:
+        return True
+    if mode == "phrase":
+        return (raw or "").strip().lower() in t
+    if mode == "all":
+        return all(w in t for w in terms)
+    if mode == "any":
+        return any(w in t for w in terms)
+    if mode == "regex":
+        try:
+            return re.search(raw, text or "", re.IGNORECASE) is not None
+        except re.error:
+            return False
+    if mode == "fuzzy":
+        return any(fuzzy_term_hit(t, w) for w in terms)
+    return any(w in t for w in terms)
+
+
+def _parse_date(s):
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        import datetime as _dt
+        return _dt.datetime.combine(
+            _dt.date.fromisoformat(s), _dt.time(), tzinfo=_dt.timezone.utc
+        )
+    except Exception:
+        return None
+
+
+def _date_in_range(dt, dfrom, dto):
+    if dt is None:
+        return True   # 无日期的不因其被滤掉
+    if dfrom and dt < dfrom:
+        return False
+    if dto and dt > dto:
+        return False
+    return True
+
+
+async def get_discuss_entity(client, entity):
+    """取频道关联的讨论组（评论区），无则 None"""
+    try:
+        from telethon.tl.functions.channels import GetFullChannelRequest
+        full = await client(GetFullChannelRequest(channel=entity))
+        lid = getattr(full.full_chat, "linked_chat_id", None)
+        if not lid:
+            return None
+        return await client.get_entity(lid)
+    except Exception:
+        return None
+
+
+def make_record(msg, src=SRC_CHANNEL):
     """消息 → 统一视频记录"""
     doc = msg.document
     return {
         "msg": msg, "doc": doc, "size": doc.size or 0,
         "name": pick_filename(doc, msg.id),
-        "text": msg.message or "", "matched": True,
+        "text": msg.message or "", "matched": True, "src": src,
     }
 
 
-async def scan_videos(client, entity, limit, min_mb, includes, excludes):
-    """返回 (新→旧视频记录, 因最小大小被过滤的视频数)。
+async def search_videos(client, entity, p):
+    """高级视频搜索。p 支持的键：
 
-    有关键词（与 Telegram App 内搜索同一机制）：
-      - 有包含词：对每个词做服务端搜索(search=)，结果合并去重，
-        再本地过滤视频类型、最小大小、包含/排除词
-      - 仅排除词：本地有限扫描最近消息后过滤
-    无关键词：最近 limit 个视频。
+    query       原始查询串（逗号分词，词首 - 排除）
+    mode        phrase/all/any/fuzzy/regex
+    limit       结果上限
+    min_mb/max_mb 体积区间
+    date_from/date_to  日期区间 YYYY-MM-DD（含端点）
+    scope       channel/comments/both
+    sort        date/size
+    返回 (records, meta)。
     """
-    use_kw = bool(includes or excludes)
-    n_small = 0
+    query = p.get("query", "")
+    mode = p.get("mode", "all")
+    limit = max(1, int(p.get("limit", 30)))
+    min_mb = float(p.get("min_mb") or 0)
+    max_mb = float(p.get("max_mb") or 0)
+    dfrom = _parse_date(p.get("date_from"))
+    dto = _parse_date(p.get("date_to"))
+    if dto is not None:
+        import datetime as _dt
+        dto = dto + _dt.timedelta(days=1)   # 含当天
+    scope = p.get("scope", "channel")
+    sort = p.get("sort", "date")
 
-    if not use_kw:
-        records = []
-        async for msg in client.iter_messages(entity):
-            if not is_video_message(msg):
-                continue
-            size = msg.document.size or 0
-            if min_mb and size / 1048576 < min_mb:
-                n_small += 1
-                continue
-            records.append(make_record(msg))
-            if len(records) >= limit:
-                break
-        return records, n_small
+    terms, excludes = parse_keywords(query)
+    raw = query.split(",")[0] if mode == "phrase" else query
+    use_server = bool(terms) and mode in ("phrase", "all", "any")
+    server_terms = [raw.strip()] if mode == "phrase" else terms
 
-    if includes:
+    async def gather(ent):
         pool = {}
-        for term in includes:
-            async for msg in client.iter_messages(entity, search=term):
-                pool[msg.id] = msg
-        candidates = sorted(pool.values(), key=lambda m: m.id, reverse=True)
-    else:
-        candidates = []
-        async for msg in client.iter_messages(entity):
-            candidates.append(msg)
-            if len(candidates) >= MAX_LOCAL_SCAN:
-                break
+        if use_server:
+            for q in server_terms:
+                async for m in client.iter_messages(ent, search=q):
+                    pool[m.id] = m
+        else:
+            async for m in client.iter_messages(ent):
+                pool[m.id] = m
+                if len(pool) >= MAX_LOCAL_SCAN:
+                    break
+        return pool
+
+    # 候选：(消息, 来源)
+    cand = {}
+    if scope in ("channel", "both"):
+        for mid, m in (await gather(entity)).items():
+            cand[(SRC_CHANNEL, mid)] = (m, SRC_CHANNEL)
+    if scope in ("comments", "both"):
+        discuss = await get_discuss_entity(client, entity)
+        if discuss is not None:
+            for mid, m in (await gather(discuss)).items():
+                cand[(SRC_COMMENT, mid)] = (m, SRC_COMMENT)
 
     records = []
-    for msg in candidates:
-        if not is_video_message(msg):
+    n_small = n_large = 0
+    for m, src in cand.values():
+        if not is_video_message(m):
             continue
-        size = msg.document.size or 0
+        size = m.document.size or 0
         if min_mb and size / 1048576 < min_mb:
             n_small += 1
             continue
-        if not kw_match(msg.message or "", includes, excludes):
+        if max_mb and size / 1048576 > max_mb:
+            n_large += 1
             continue
-        records.append(make_record(msg))
-        if len(records) >= limit:
-            break
-    return records, n_small
+        if not _date_in_range(m.date, dfrom, dto):
+            continue
+        if not advanced_match(m.message or "", terms, mode, excludes, raw):
+            continue
+        records.append(make_record(m, src))
+
+    if sort == "size":
+        records.sort(key=lambda r: r["size"], reverse=True)
+    else:
+        records.sort(
+            key=lambda r: (r["msg"].date.timestamp() if r["msg"].date else 0),
+            reverse=True,
+        )
+    records = records[:limit]
+    meta = {"n_small": n_small, "n_large": n_large,
+            "candidates": len(cand), "mode": mode,
+            "has_comments": scope in ("comments", "both")}
+    return records, meta
+
+
+async def scan_videos(client, entity, limit, min_mb, includes, excludes):
+    """兼容旧调用（CLI）：等效于 mode=all、仅频道、按日期排序。"""
+    q = ",".join(list(includes) + ["-" + w for w in excludes])
+    records, meta = await search_videos(client, entity, {
+        "query": q, "mode": "all", "limit": limit,
+        "min_mb": min_mb, "scope": "channel", "sort": "date",
+    })
+    return records, meta["n_small"]
 
 
 def parse_excludes(text, count):
@@ -681,10 +819,11 @@ class Monitor:
     与按键线程（I 切换）互不干扰。
     """
 
-    def __init__(self, todo, parallel, title, vt):
+    def __init__(self, todo, parallel, title, vt, push_cb=None):
         self.vt = vt
         self.title = title
         self.parallel = parallel
+        self.push_cb = push_cb      # GUI 回调：每帧推送 JSON 状态
         self.detailed = False
         self.t0 = time.monotonic()
         self.lock = asyncio.Lock()
@@ -704,6 +843,34 @@ class Monitor:
             self.entries.append(e)
             self.order[mid] = e
         self.active_count = 0
+
+    def snapshot_json(self):
+        """当前状态的可序列化快照（GUI 轮询/推送用）"""
+        snap = self._snapshot()
+        return {
+            "title": self.title,
+            "parallel": self.parallel,
+            "elapsed": snap["now"] - self.t0,
+            "agg_speed": round(snap["agg_speed"], 1),
+            "total_bytes": snap["total_bytes"],
+            "total_tot": snap["total_tot"],
+            "remaining": snap["remaining"],
+            "eta": (None if snap["eta"] == float("inf") else round(snap["eta"], 1)),
+            "counts": {"done": snap["done"], "fail": snap["fail"],
+                       "skip": snap["skip"], "active": len(snap["active"])},
+            "items": [
+                {
+                    "n": e["n"], "mid": e["mid"], "name": e["name"],
+                    "date": e["date"], "size": e["total"],
+                    "done": e["done"],
+                    "pct": round(e["done"] * 100 / (e["total"] or 1), 1),
+                    "speed": round(e["speed"], 1),
+                    "status": e["status"], "error": e["error"],
+                    "text": e["text"],
+                }
+                for e in self.entries
+            ],
+        }
 
     async def seed(self, mid, bytes_already):
         """续传：把已存在分片的字节计入初始进度（不计速度）"""
@@ -1188,22 +1355,212 @@ def task_counts(task):
     return c
 
 
+def doc_duration(doc):
+    """从文档属性提取视频时长（秒），无则 0。"""
+    for a in getattr(doc, "attributes", None) or []:
+        if type(a).__name__ == "DocumentAttributeVideo":
+            return int(getattr(a, "duration", 0) or 0)
+    return 0
+
+
 def make_task_item(record):
     m = record["msg"]
     return {
         "msg": m.id, "size": record["size"], "name": record["name"],
         "date": f"{m.date:%Y-%m-%d}", "status": "pending",
+        "src": record.get("src", SRC_CHANNEL),
+        "text": record.get("text", "") or "",
+        "duration": doc_duration(record.get("doc")),
     }
+
+
+def item_key(ti):
+    return (ti.get("src", SRC_CHANNEL), ti["msg"])
+
+
+def find_item(task, key):
+    src, mid = key
+    for ti in task["items"]:
+        if ti["msg"] == mid and ti.get("src", SRC_CHANNEL) == src:
+            return ti
+    return None
+
+
+def rename_task(task, title):
+    title = (title or "").strip()
+    if title:
+        task["channel_title"] = title[:80]
+        save_task(task)
+
+
+def set_parallel(task, n):
+    n = max(1, min(int(n), 8))
+    task.setdefault("params", {})["parallel"] = n
+    save_task(task)
+
+
+def change_folder(task, new_path, move_files=False):
+    """修改任务保存目录；move_files=True 时把已下载文件一起搬过去。
+    返回 (成功, 消息列表)。"""
+    new_path = os.path.abspath(new_path)
+    os.makedirs(new_path, exist_ok=True)
+    old = task["folder"]
+    if new_path == old:
+        return True, []
+    msgs = []
+    if move_files:
+        for ti in task["items"]:
+            for fn in (ti["name"], ti["name"] + ".dl"):
+                srcp = os.path.join(old, fn)
+                if os.path.exists(srcp):
+                    try:
+                        shutil.move(srcp, os.path.join(new_path, fn))
+                    except Exception as e:
+                        msgs.append(f"{fn}: {e}")
+            # 分片标记
+            for part in glob.glob(os.path.join(old, ti["name"] + ".part*.done")):
+                try:
+                    shutil.move(
+                        part, os.path.join(new_path, os.path.basename(part))
+                    )
+                except Exception:
+                    pass
+    task["folder"] = new_path
+    save_task(task)
+    return True, msgs
+
+
+def set_item_status(task, key, status):
+    """重置条目状态：pending=重新下载，skipped=永久跳过。"""
+    ti = find_item(task, key)
+    if ti is None or status not in ("pending", "skipped"):
+        return False
+    ti["status"] = status
+    ti.pop("error", None)
+    save_task(task)
+    return True
+
+
+def set_items_status(task, keys, status):
+    """批量修改条目状态，只写盘一次，返回修改数。"""
+    if status not in ("pending", "skipped"):
+        return 0
+    ks = set(keys)
+    n = 0
+    for ti in task["items"]:
+        if item_key(ti) in ks:
+            ti["status"] = status
+            ti.pop("error", None)
+            n += 1
+    if n:
+        save_task(task)
+    return n
+
+
+async def enrich_task_items(client, task):
+    """从 Telegram 拉取全部条目消息，补全旧任务缺失的 text/duration。"""
+    entity = await client.get_entity(task["channel"])
+    groups = {SRC_CHANNEL: [], SRC_COMMENT: []}
+    for ti in task["items"]:
+        groups.setdefault(ti.get("src", SRC_CHANNEL), []).append(ti)
+    remote = {}
+
+    async def pull(ent, items, src):
+        ids = [ti["msg"] for ti in items]
+        for i in range(0, len(ids), 100):
+            msgs = await client.get_messages(ent, ids=ids[i:i + 100])
+            for m in msgs:
+                if m is not None:
+                    remote[(src, m.id)] = m
+
+    if groups.get(SRC_CHANNEL):
+        await pull(entity, groups[SRC_CHANNEL], SRC_CHANNEL)
+    if groups.get(SRC_COMMENT):
+        discuss = await get_discuss_entity(client, entity)
+        if discuss is not None:
+            await pull(discuss, groups[SRC_COMMENT], SRC_COMMENT)
+
+    changed = False
+    for ti in task["items"]:
+        m = remote.get((ti.get("src", SRC_CHANNEL), ti["msg"]))
+        if m is None:
+            continue
+        if not ti.get("text"):
+            txt = getattr(m, "message", "") or ""
+            if txt:
+                ti["text"] = txt
+                changed = True
+        if not ti.get("duration") and getattr(m, "document", None):
+            dur = doc_duration(m.document)
+            if dur:
+                ti["duration"] = dur
+                changed = True
+    if changed:
+        save_task(task)
+
+
+def remove_items(task, keys):
+    """从任务清单删除条目（不删本地文件），返回删除数"""
+    ks = set(keys)
+    before = len(task["items"])
+    task["items"] = [
+        ti for ti in task["items"] if item_key(ti) not in ks
+    ]
+    save_task(task)
+    return before - len(task["items"])
+
+
+def append_records(task, records, status="pending"):
+    """把扫描记录追加进任务（按来源+ID 去重），返回新增数"""
+    exist = {item_key(ti) for ti in task["items"]}
+    added = 0
+    for r in records:
+        key = (r.get("src", SRC_CHANNEL), r["msg"].id)
+        if key in exist:
+            continue
+        ti = make_task_item(r)
+        ti["status"] = status
+        task["items"].append(ti)
+        exist.add(key)
+        added += 1
+    if added:
+        save_task(task)
+    return added
 
 
 # ---------------- 下载执行（新建/续传共用） ----------------
 
-async def execute_downloads(client, task, todo, parallel):
+class _ActiveSession:
+    """当前活动下载会话（GUI 轮询/控制用）。同一时刻只跟踪一个会话。"""
+
+    def __init__(self):
+        self.clear()
+
+    def clear(self):
+        self.mon = None
+        self.task_id = None
+        self.abort = None
+        self.skip = None
+
+    def is_running(self):
+        return self.mon is not None
+
+    def state(self):
+        if self.mon is None:
+            return None
+        return self.mon.snapshot_json()
+
+
+ACTIVE_SESSION = _ActiveSession()
+
+
+async def execute_downloads(client, task, todo, parallel, gui=None):
     """下载 todo（含消息对象的记录），每完成一个就把状态写回任务清单。
 
     - 已完成/已存在的成品：download_one 内部按大小跳过，不重下
     - 下到一半的：.dl + .partN.done 分片级续传，只下没下完的分片
     - 关机/强杀：清单里仍为 pending 的，重启继续即可
+    gui={'mon_cb','abort','skip'}：GUI 模式，无控制台按键/无交互输入。
     """
     folder = pathlib.Path(task["folder"])
     by_id = {ti["msg"]: ti for ti in task["items"]}
@@ -1223,21 +1580,34 @@ async def execute_downloads(client, task, todo, parallel):
     need = sum(it["size"] for it in todo)
     free = shutil.disk_usage(str(folder)).free
     if need > free:
+        if gui is not None:
+            gui["abort"].set()
+            return
         print(f"!! 磁盘空间不足：需要约 {human(need)}，仅剩 {human(free)}")
         if input("仍要开始下载吗？（y=继续，其他=取消）：").strip().lower() != "y":
             print("已取消")
             return
 
-    vt = enable_vt()
+    vt = False if gui is not None else enable_vt()
     keys = KeyWatch()
-    keys.start()
-    mon = Monitor(todo, parallel,
-                  task.get("channel_title", task.get("channel", "")), vt)
+    if gui is None:
+        keys.start()
+    mon = Monitor(
+        todo, parallel,
+        task.get("channel_title", task.get("channel", "")), vt
+    )
 
     active = []          # [(seq, event)] 按开始顺序
     active_lock = asyncio.Lock()
     counters = {"ok": 0, "skipped": 0, "exists": 0, "fail": 0}
     aborted = False
+    abort_ev = gui["abort"] if gui is not None else None
+    skip_ev_g = gui["skip"] if gui is not None else None
+
+    ACTIVE_SESSION.mon = mon
+    ACTIVE_SESSION.task_id = task["id"]
+    ACTIVE_SESSION.abort = abort_ev
+    ACTIVE_SESSION.skip = skip_ev_g
 
     async def worker(n, it):
         dest = str(folder / it["name"])
@@ -1280,7 +1650,10 @@ async def execute_downloads(client, task, todo, parallel):
         nonlocal aborted
         while True:
             await asyncio.sleep(0.12)
-            if keys.abort.is_set():
+            do_abort = keys.abort.is_set() or (
+                abort_ev is not None and abort_ev.is_set()
+            )
+            if do_abort:
                 keys.abort.clear()
                 aborted = True
                 # 取消所有下载协程；未完成视频状态保留为 pending
@@ -1288,8 +1661,13 @@ async def execute_downloads(client, task, todo, parallel):
                     if not t.done():
                         t.cancel()
                 return
-            if keys.skip.is_set():
-                keys.clear()
+            do_skip = keys.skip.is_set() or (
+                skip_ev_g is not None and skip_ev_g.is_set()
+            )
+            if do_skip:
+                keys.skip.clear()
+                if skip_ev_g is not None:
+                    skip_ev_g.clear()
                 async with active_lock:
                     if active:
                         _, ev = active[0]
@@ -1305,15 +1683,28 @@ async def execute_downloads(client, task, todo, parallel):
         asyncio.create_task(bounded(n, it))
         for n, it in enumerate(todo, 1)
     ]
-    display = asyncio.create_task(mon.display_loop(keys))
+    display = (
+        None if gui is not None
+        else asyncio.create_task(mon.display_loop(keys))
+    )
     watcher = asyncio.create_task(skip_watcher())
     try:
         await asyncio.gather(*dl_tasks, return_exceptions=True)
     finally:
         watcher.cancel()
         keys.stop()
-        await asyncio.sleep(0.5)     # 让面板定格在最终状态
-        display.cancel()
+        if display is not None:
+            await asyncio.sleep(0.5)   # 让面板定格在最终状态
+            display.cancel()
+
+    ACTIVE_SESSION.clear()
+
+    if gui is not None:
+        # GUI 模式：仅打印技术日志，界面自行刷新任务状态
+        c = task_counts(task)
+        print(f"[GUI] 下载结束：{c['finished']}/{c['total']}，"
+              f"aborted={aborted}")
+        return
 
     # 收尾：清掉面板，打印纯文本汇总
     if vt:
@@ -1341,21 +1732,36 @@ async def execute_downloads(client, task, todo, parallel):
 
 async def fetch_records(client, task, statuses):
     """续传/重试时：按清单中的消息ID从服务器重新取消息，构造下载记录。
+    频道条目从频道取，评论条目（src=评论）从关联讨论组取。
     服务器上已删除/不可访问的条目标记 failed。按清单顺序返回。"""
     entity = await client.get_entity(task["channel"])
     wanted = [ti for ti in task["items"] if ti["status"] in statuses]
-    ids = [ti["msg"] for ti in wanted]
 
-    remote = {}
-    for i in range(0, len(ids), 100):
-        msgs = await client.get_messages(entity, ids=ids[i:i + 100])
-        for m in msgs:
-            if m is not None:
-                remote[m.id] = m
+    groups = {SRC_CHANNEL: [], SRC_COMMENT: []}
+    for ti in wanted:
+        groups[ti.get("src", SRC_CHANNEL)].append(ti)
+
+    remote = {}   # (src, id) -> msg
+
+    async def pull(ent, items, src):
+        ids = [ti["msg"] for ti in items]
+        for i in range(0, len(ids), 100):
+            msgs = await client.get_messages(ent, ids=ids[i:i + 100])
+            for m in msgs:
+                if m is not None:
+                    remote[(src, m.id)] = m
+
+    if groups[SRC_CHANNEL]:
+        await pull(entity, groups[SRC_CHANNEL], SRC_CHANNEL)
+    if groups[SRC_COMMENT]:
+        discuss = await get_discuss_entity(client, entity)
+        if discuss is not None:
+            await pull(discuss, groups[SRC_COMMENT], SRC_COMMENT)
 
     records, missing = [], []
     for ti in wanted:
-        m = remote.get(ti["msg"])
+        src = ti.get("src", SRC_CHANNEL)
+        m = remote.get((src, ti["msg"]))
         if m is None or not m.document:
             missing.append(ti)
             continue
@@ -1363,11 +1769,12 @@ async def fetch_records(client, task, statuses):
             "msg": m, "doc": m.document,
             "size": m.document.size or ti["size"],
             "name": ti["name"], "text": "", "matched": True,
+            "src": src,
         })
     for ti in missing:
         ti["status"] = "failed"
         ti["error"] = "消息已删除或无权访问"
-        print(f"  #{ti['msg']} 在频道中已不存在，标记为失败")
+        print(f"  #{ti['msg']} 已不存在，标记为失败")
     if missing:
         save_task(task)
     return records

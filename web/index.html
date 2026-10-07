@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TG 视频下载器</title>
+<link rel="stylesheet" href="style.css">
+<script>
+/* 页面绘制前应用已保存的外观，避免主题闪烁（后端配置为准，这里仅镜像） */
+(function () {
+  try {
+    var m = localStorage.getItem("appearance") || "dark";
+    if (m === "light")
+      document.documentElement.setAttribute("data-theme", "light");
+    if (m === "liquid")
+      document.addEventListener("DOMContentLoaded", function () {
+        document.body.classList.add("liquid");
+      });
+  } catch (e) {}
+})();
+</script>
+</head>
+<body>
+
+<!-- 真实环境取光：窗口正后方屏幕的实时采样，磨砂成液态玻璃底 -->
+<div id="backdrop" aria-hidden="true"></div>
+
+<!-- 环境光背景（液态玻璃的光源） -->
+<div class="ambient" aria-hidden="true">
+  <span class="blob b1"></span>
+  <span class="blob b2"></span>
+  <span class="blob b3"></span>
+  <span class="blob b4"></span>
+</div>
+
+<!-- 登录 -->
+<div id="login" class="login-mask hidden">
+  <div class="glass login-card">
+    <div class="logo-badge">TG</div>
+    <h1>TG 视频下载器</h1>
+    <p class="login-sub">登录后开始下载频道视频</p>
+    <div id="login-step-phone" class="login-step">
+      <label>手机号（含国家区号，不带 +）</label>
+      <input id="login-phone" type="text" placeholder="8613800000000">
+      <button class="btn primary block" onclick="doSendCode()">发送验证码</button>
+    </div>
+    <div id="login-step-code" class="login-step hidden">
+      <label>Telegram 发来的验证码</label>
+      <input id="login-code" type="text" placeholder="如 12345">
+      <button class="btn primary block" onclick="doVerifyCode()">登录</button>
+      <button class="btn glass-btn block" onclick="loginBack()">返回</button>
+    </div>
+    <div id="login-step-pwd" class="login-step hidden">
+      <label>两步验证密码</label>
+      <input id="login-pwd" type="password" placeholder="2FA 密码">
+      <button class="btn primary block" onclick="doVerifyPassword()">确认</button>
+    </div>
+    <p id="login-err" class="login-err"></p>
+  </div>
+</div>
+
+<div class="app">
+  <!-- 侧边栏（悬浮玻璃） -->
+  <aside class="sidebar glass">
+    <div class="brand">
+      <div class="logo-badge sm">TG</div>
+      <span>视频下载器</span>
+    </div>
+    <nav>
+      <a class="nav-item" data-view="active" onclick="switchView('active')">
+        <span class="ico">⬇</span><span>下载中</span><i id="nav-dot" class="nav-dot"></i>
+      </a>
+      <a class="nav-item" data-view="tasks" onclick="switchView('tasks')">
+        <span class="ico">◈</span><span>任务库</span>
+      </a>
+      <a class="nav-item active" data-view="new" onclick="switchView('new')">
+        <span class="ico">＋</span><span>新建下载</span>
+      </a>
+      <a class="nav-item" data-view="settings" onclick="switchView('settings')">
+        <span class="ico">⚙</span><span>设置</span>
+      </a>
+    </nav>
+    <div class="sidebar-foot">
+      <div id="me-box" class="me-box">
+        <div id="me-avatar" class="me-avatar">·</div>
+        <div class="me-meta">
+          <div id="me-name" class="me-name">未登录</div>
+          <div id="me-user" class="me-user"></div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- 下载中 -->
+    <section id="view-active" class="view hidden">
+      <header class="page-head">
+        <div>
+          <h2>下载中</h2>
+          <p id="active-sub" class="page-sub">实时监控所有下载进度，点击任意任务查看消息详情</p>
+        </div>
+        <div class="head-actions">
+          <button class="btn glass-btn" onclick="skipCurrent()">跳过当前</button>
+          <button class="btn danger" onclick="abortAll()">全部中止</button>
+        </div>
+      </header>
+
+      <div id="active-overview" class="overview hidden">
+        <div class="glass ov-card span2">
+          <div class="ov-label">总体进度</div>
+          <div class="ov-progress">
+            <div class="ov-bar"><div id="ov-fill" class="ov-fill"></div></div>
+            <span id="ov-pct" class="ov-pct">0%</span>
+          </div>
+          <div id="ov-detail" class="ov-detail"></div>
+        </div>
+        <div class="glass ov-card">
+          <div class="ov-label">总速度</div>
+          <div id="ov-speed" class="ov-big">0 B/s</div>
+        </div>
+        <div class="glass ov-card">
+          <div class="ov-label">剩余时间</div>
+          <div id="ov-eta" class="ov-big">--</div>
+        </div>
+      </div>
+
+      <div id="active-list" class="dl-list"></div>
+      <div id="active-empty" class="empty-state">
+        <div class="empty-ico">🫧</div>
+        <h3>当前没有进行中的下载</h3>
+        <p>到「新建下载」选择频道与视频开始</p>
+        <button class="btn primary" onclick="switchView('new')">去新建</button>
+      </div>
+    </section>
+
+    <!-- 任务库 -->
+    <section id="view-tasks" class="view hidden">
+      <header class="page-head">
+        <div><h2>任务库</h2><p class="page-sub">查看历史任务与已下载视频，继续或编辑任务</p></div>
+      </header>
+      <div class="toolbar">
+        <div class="search-box">
+          <span class="search-ico">⌕</span>
+          <input id="task-search" type="text" placeholder="搜索频道名…" oninput="renderTasks()">
+        </div>
+        <div id="task-filters" class="segmented">
+          <button class="seg active" data-f="all" onclick="setTaskFilter('all')">全部</button>
+          <button class="seg" data-f="unfinished" onclick="setTaskFilter('unfinished')">未完成</button>
+          <button class="seg" data-f="done" onclick="setTaskFilter('done')">已完成</button>
+          <button class="seg" data-f="failed" onclick="setTaskFilter('failed')">有失败</button>
+        </div>
+      </div>
+      <div id="task-list" class="task-grid"></div>
+      <div id="task-empty" class="empty-state hidden">
+        <div class="empty-ico">🗂</div><h3>没有符合条件的任务</h3>
+      </div>
+    </section>
+
+    <!-- 新建下载 -->
+    <section id="view-new" class="view">
+      <header class="page-head">
+        <div><h2>新建下载</h2><p class="page-sub">基础设置 + 搜索引擎级高级筛选</p></div>
+      </header>
+
+      <div class="steps">
+        <div class="step active" data-s="1"><i>1</i><span>搜索</span></div>
+        <div class="step-line"></div>
+        <div class="step" data-s="2"><i>2</i><span>选择视频</span></div>
+      </div>
+
+      <div id="wizard-1" class="wizard-panel">
+        <div class="glass form-card">
+          <label>频道用户名或链接</label>
+          <input id="w-channel" type="text" placeholder="@durov 或 https://t.me/durov">
+
+          <button class="adv-toggle" onclick="toggleAdv()">
+            <span class="adv-caret">⌄</span> 高级筛选
+            <span class="adv-hint">匹配模式 · 评论区 · 日期体积区间 · 排序</span>
+          </button>
+
+          <div id="adv-panel" class="adv-panel hidden">
+            <div class="adv-row">
+              <div class="adv-field">
+                <label>匹配模式</label>
+                <div class="segmented grow" id="mode-seg">
+                  <button class="seg active" data-m="all" onclick="setMode('all')" title="同时包含所有词">全部词</button>
+                  <button class="seg" data-m="phrase" onclick="setMode('phrase')" title="完整短语连续出现">精确短语</button>
+                  <button class="seg" data-m="any" onclick="setMode('any')" title="包含任一词">任一词</button>
+                  <button class="seg" data-m="fuzzy" onclick="setMode('fuzzy')" title="容错/近似匹配">模糊</button>
+                  <button class="seg" data-m="regex" onclick="setMode('regex')" title="正则表达式">正则</button>
+                </div>
+              </div>
+              <div class="adv-field">
+                <label>搜索范围</label>
+                <div class="segmented grow" id="scope-seg">
+                  <button class="seg active" data-s="channel" onclick="setScope('channel')">频道消息</button>
+                  <button class="seg" data-s="comments" onclick="setScope('comments')">评论区</button>
+                  <button class="seg" data-s="both" onclick="setScope('both')">频道+评论</button>
+                </div>
+              </div>
+            </div>
+
+            <label>关键词（逗号分隔，词首 - 排除；模糊/正则模式下直接写完整表达式）</label>
+            <input id="w-keywords" type="text" placeholder="如 4K,预告片,-广告">
+
+            <div class="adv-row">
+              <div class="adv-field">
+                <label>体积区间 (MB，可只填一个)</label>
+                <div class="dual-input">
+                  <input id="w-minmb" type="number" min="0" placeholder="最小">
+                  <span>—</span>
+                  <input id="w-maxmb" type="number" min="0" placeholder="最大">
+                </div>
+              </div>
+              <div class="adv-field">
+                <label>发布日期区间</label>
+                <div class="dual-input">
+                  <input id="w-datefrom" type="date">
+                  <span>—</span>
+                  <input id="w-dateto" type="date">
+                </div>
+              </div>
+              <div class="adv-field small">
+                <label>排序方式</label>
+                <div class="segmented grow" id="sort-seg">
+                  <button class="seg active" data-o="date" onclick="setSort('date')">最新优先</button>
+                  <button class="seg" data-o="size" onclick="setSort('size')">最大优先</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-grid top-gap">
+            <div>
+              <label>结果数量上限</label>
+              <input id="w-limit" type="number" value="30" min="1">
+            </div>
+            <div>
+              <label>同时下载几路（1-8）</label>
+              <input id="w-parallel" type="number" value="2" min="1" max="8">
+            </div>
+          </div>
+
+          <div class="wizard-actions">
+            <button class="btn primary" id="preview-btn" onclick="doPreview()">开始搜索</button>
+          </div>
+          <p id="wizard-err" class="login-err"></p>
+          <p id="wizard-note" class="wiz-note"></p>
+        </div>
+      </div>
+
+      <div id="wizard-3" class="wizard-panel hidden">
+        <div class="sel-toolbar">
+          <div class="search-box">
+            <span class="search-ico">⌕</span>
+            <input id="video-search" type="text" placeholder="在结果中筛选名称/消息原文…" oninput="renderPreview()">
+          </div>
+          <div class="sel-actions">
+            <button class="btn glass-btn sm" onclick="selectAll(true)">全选</button>
+            <button class="btn glass-btn sm" onclick="selectAll(false)">清空</button>
+          </div>
+        </div>
+        <div id="preview-list" class="video-list"></div>
+        <div class="wizard-actions between">
+          <button class="btn glass-btn" onclick="gotoStep(1)">上一步</button>
+          <div class="start-box">
+            <button class="btn primary" onclick="doStart()">开始下载 (<span id="sel-count">0</span>)</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section id="view-settings" class="view hidden">
+      <header class="page-head"><div><h2>设置</h2><p class="page-sub">外观、下载目录与数据</p></div></header>
+      <div class="glass form-card narrow">
+        <label>界面外观</label>
+        <div class="segmented" id="set-appearance-seg">
+          <button class="seg" data-mode="dark" onclick="setAppearance('dark')">静态暗</button>
+          <button class="seg" data-mode="light" onclick="setAppearance('light')">静态亮</button>
+          <button class="seg" data-mode="liquid" onclick="setAppearance('liquid')">液态玻璃</button>
+        </div>
+        <p class="hint">静态暗（默认）：经典深色玻璃；静态亮：浅色玻璃。二者不做屏幕采样。液态玻璃：实时采样窗口正后方的真实画面（仅 Windows），更耗性能。</p>
+      </div>
+      <div class="glass form-card narrow">
+        <label>下载根目录</label>
+        <div class="path-row">
+          <input id="set-root" type="text" readonly>
+          <button class="btn glass-btn" onclick="chooseFolder()">浏览</button>
+          <button class="btn glass-btn" onclick="openRoot()">打开</button>
+        </div>
+        <button class="btn primary" onclick="saveRoot()">保存</button>
+        <p class="hint">账号会话、任务清单与下载内容都保存在程序平级的「TG视频下载器数据」目录，不会上传。</p>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- 任务详情滑层 -->
+<div id="sheet-mask" class="sheet-mask hidden" onclick="closeSheet()"></div>
+<aside id="sheet" class="sheet glass hidden">
+  <div class="sheet-head">
+    <div class="sheet-titles">
+      <h3 id="sheet-title"></h3>
+      <div id="sheet-sub" class="sheet-sub"></div>
+    </div>
+    <button class="icon-btn" onclick="closeSheet()">✕</button>
+  </div>
+
+  <!-- 浏览态 -->
+  <div id="sheet-view">
+    <div class="sheet-progress">
+      <div class="ov-bar big"><div id="sheet-fill" class="ov-fill"></div></div>
+      <div id="sheet-counters" class="sheet-counters"></div>
+    </div>
+    <div class="segmented sheet-tabs" id="sheet-status-seg">
+      <button class="seg active" data-st="all" onclick="setDetailFilter('all')">全部</button>
+      <button class="seg" data-st="done" onclick="setDetailFilter('done')">已完成</button>
+      <button class="seg" data-st="pending" onclick="setDetailFilter('pending')">未下载</button>
+      <button class="seg" data-st="failed" onclick="setDetailFilter('failed')">失败</button>
+      <button class="seg" data-st="skipped" onclick="setDetailFilter('skipped')">跳过</button>
+    </div>
+    <div class="search-box sheet-search">
+      <span class="search-ico">⌕</span>
+      <input id="detail-q" type="text" placeholder="筛选本任务视频名/消息…" oninput="renderDetailItems()">
+    </div>
+    <div id="detail-items" class="detail-list"></div>
+  </div>
+
+  <!-- 编辑态 -->
+  <div id="sheet-edit" class="hidden">
+    <div class="edit-block">
+      <label>任务名称</label>
+      <input id="ed-title" type="text">
+      <label>保存目录</label>
+      <div class="path-row">
+        <input id="ed-folder" type="text" readonly>
+        <button class="btn glass-btn" onclick="editChooseFolder()">浏览</button>
+      </div>
+      <label class="check-line"><input id="ed-move" type="checkbox"> 同时移动已下载的视频文件到新目录</label>
+      <label>同时下载几路（1-8）</label>
+      <input id="ed-parallel" type="number" min="1" max="8" class="narrow-input">
+      <button class="btn primary block" onclick="saveEditTask()">保存任务设置</button>
+    </div>
+    <div class="edit-divider">条目管理（勾选后批量操作，不删除本地视频文件）</div>
+    <div id="edit-items" class="detail-list edit"></div>
+    <div id="edit-bulk" class="bulk-bar hidden">
+      <span id="bulk-count" class="bulk-count">已选 0</span>
+      <button class="btn glass-btn sm" onclick="bulkStatus('pending')">标记重新下载</button>
+      <button class="btn glass-btn sm" onclick="bulkStatus('skipped')">标记跳过</button>
+      <button class="btn danger sm" onclick="bulkRemove()">移除条目</button>
+    </div>
+    <button class="btn primary block" onclick="openAppend()">＋ 搜索并追加视频到本任务</button>
+  </div>
+
+  <div class="sheet-foot">
+    <button class="btn glass-btn" id="sheet-edit-btn" onclick="openSheetEditor()">编辑任务</button>
+    <button class="btn glass-btn hidden" id="sheet-done-btn" onclick="toggleEdit(false)">完成编辑</button>
+    <button class="btn glass-btn" onclick="sheetOpenFolder()">目录</button>
+    <button class="btn primary" id="sheet-resume" onclick="sheetResume()">继续下载</button>
+    <button class="btn danger" onclick="sheetDelete()">删除任务</button>
+  </div>
+</aside>
+
+<!-- 追加视频弹层 -->
+<div id="append-modal" class="modal-mask hidden">
+  <div class="glass modal">
+    <div class="modal-head">
+      <h3>追加视频到任务</h3>
+      <button class="icon-btn" onclick="closeAppend()">✕</button>
+    </div>
+    <p class="modal-sub">沿用该频道，使用高级条件搜索新视频（已存在的自动跳过）</p>
+    <div class="adv-row">
+      <div class="adv-field">
+        <label>匹配模式</label>
+        <div class="segmented grow" id="ap-mode-seg"></div>
+      </div>
+      <div class="adv-field">
+        <label>搜索范围</label>
+        <div class="segmented grow" id="ap-scope-seg"></div>
+      </div>
+    </div>
+    <label>关键词</label>
+    <input id="ap-keywords" type="text" placeholder="关键词，逗号分隔，词首 - 排除">
+    <div class="adv-row">
+      <div class="adv-field">
+        <label>体积区间 (MB)</label>
+        <div class="dual-input">
+          <input id="ap-minmb" type="number" min="0" placeholder="最小">
+          <span>—</span>
+          <input id="ap-maxmb" type="number" min="0" placeholder="最大">
+        </div>
+      </div>
+      <div class="adv-field">
+        <label>日期区间</label>
+        <div class="dual-input">
+          <input id="ap-datefrom" type="date"><span>—</span><input id="ap-dateto" type="date">
+        </div>
+      </div>
+    </div>
+    <div class="adv-row">
+      <div class="adv-field small">
+        <label>排序</label>
+        <div class="segmented grow" id="ap-sort-seg"></div>
+      </div>
+      <div class="adv-field small">
+        <label>数量上限</label>
+        <input id="ap-limit" type="number" value="30" min="1">
+      </div>
+    </div>
+    <button class="btn primary block" id="ap-run-btn" onclick="runAppend()">搜索并追加</button>
+    <p id="ap-err" class="login-err"></p>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
