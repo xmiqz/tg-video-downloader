@@ -1,0 +1,31 @@
+# 登录会话与配置（含账号信息，绝不入库）
+TG视频下载器数据/
+tg_config.json
+tg_session.session
+tg_session.session-journal
+
+# 下载内容与任务
+downloads/
+tasks/
+
+# 本地匹配/诊断输出（可能含频道文字）
+*.txt
+
+# 本地启动器（含本机绝对路径）
+*.bat
+
+# 构建产物
+*.exe
+build_tmp/
+build_pyi/
+dist/
+build/
+*.spec
+
+# 早期实验脚本（主程序为 tg_video_dl.py，避免发布混乱）
+tg_local_match.py
+tg_video_dl_noapi.py
+
+# Python
+__pycache__/
+*.pyc
