@@ -25,13 +25,15 @@
 <!-- 真实环境取光：窗口正后方屏幕的实时采样，磨砂成液态玻璃底 -->
 <div id="backdrop" aria-hidden="true"></div>
 
-<!-- 环境光背景（液态玻璃的光源） -->
+<!-- 环境光背景（静态暗/亮模式的光源） -->
 <div class="ambient" aria-hidden="true">
   <span class="blob b1"></span>
   <span class="blob b2"></span>
-  <span class="blob b3"></span>
-  <span class="blob b4"></span>
 </div>
+
+<!-- 统一霜层：静态模式下全场只有这一个 backdrop-filter 面，
+     卡片本身不再挂滤镜，光斑动画移动时只重光栅这一层 -->
+<div id="frost" aria-hidden="true"></div>
 
 <!-- 登录 -->
 <div id="login" class="login-mask hidden">
@@ -103,10 +105,18 @@
           <p id="active-sub" class="page-sub">实时监控所有下载进度，点击任意任务查看消息详情</p>
         </div>
         <div class="head-actions">
-          <button class="btn glass-btn" onclick="skipCurrent()">跳过当前</button>
-          <button class="btn danger" onclick="abortAll()">全部中止</button>
+          <span class="page-sub" id="active-hint">勾选卡片可批量操作</span>
         </div>
       </header>
+
+      <div id="active-bulk" class="bulk-bar hidden">
+        <span id="active-bulk-count">已选 0</span>
+        <button class="btn primary sm" onclick="activeBulk('resume')">开始</button>
+        <button class="btn glass-btn sm" onclick="activeBulk('pause')">暂停</button>
+        <button class="btn glass-btn sm" onclick="activeBulk('skip')">跳过</button>
+        <button class="btn danger sm" onclick="activeBulk('remove')">移除</button>
+        <button class="btn glass-btn sm" onclick="activeSelClear()">取消选择</button>
+      </div>
 
       <div id="active-overview" class="overview hidden">
         <div class="glass ov-card span2">

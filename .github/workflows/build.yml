@@ -82,8 +82,8 @@ jobs:
           Telegram 频道视频批量下载工具（Telethon）。
 
           ### 下载文件（按系统选择）
-          - Windows x64：`TG视频下载器.exe`（图形界面）
-          - Windows ARM64（WOA）：`TG视频下载器_ARM64.exe`（图形界面）
+          - Windows x64：`TG视频下载器.exe`（图形界面）；`TG视频下载器_TUI.exe`（控制台版）
+          - Windows ARM64（WOA）：`TG视频下载器_ARM64.exe`（图形界面）；`TG视频下载器_TUI_ARM64.exe`（控制台版）
           - Linux x64：`TG视频下载器_linux_x64`（命令行）
           - Linux ARM64：`TG视频下载器_linux_arm64`（命令行）
           - macOS Intel：`TG视频下载器_mac_x64`（命令行，另附 `.command` 双击启动）

@@ -55,7 +55,11 @@ async function bootLogin() {
   if (r.ok && r.stage === "ready") return afterLogin();
   document.getElementById("login").classList.remove("hidden");
   const st = await api().login_state();
-  showLoginStep(st.has_session && !r.busy ? "code" : "phone");
+  // 后端已确认验证码发出（软成功）时直接进输码步骤，否则按会话状态判断
+  showLoginStep(
+    (r.ok && r.stage === "need_code") || (st.has_session && !r.busy)
+      ? "code" : "phone");
+  if (r.warning) loginErr(r.warning);
   if (!r.ok) loginErr(r.error);
 }
 function showLoginStep(s) {
@@ -70,7 +74,10 @@ async function doSendCode() {
   const phone = document.getElementById("login-phone").value.trim();
   if (!phone) return loginErr("请输入手机号");
   const r = await api().send_code(phone);
-  r.ok ? showLoginStep("code") : loginErr(r.error);
+  if (r.ok) {
+    showLoginStep("code");
+    if (r.warning) loginErr(r.warning);
+  } else loginErr(r.error);
 }
 async function doVerifyCode() {
   loginErr("");
@@ -244,16 +251,25 @@ async function doStart() {
 }
 
 // ============================================================
-// 下载中
+// 下载中（支持多任务分组、单项控制、多选批量）
 // ============================================================
 const expandedActive = new Set();
+const activeSel = new Set();          // 选中卡片：taskId|||src|mid
+const cardKey = (tid, src, mid) => `${tid}|||${src}|${mid}`;
+
+const ACTIVE_BADGE_CLS = {
+  "完成": "done", "已存在": "done", "失败": "fail",
+  "已暂停": "paused", "等待中": "wait", "下载中": "run",
+};
 
 async function refreshActive() {
-  const s = await api().active_state();
-  const running = await api().is_active();
+  const states = await api().active_states();
+  const running = states.length > 0;
   document.getElementById("nav-dot").classList.toggle("on", running);
-  if (!s) {
+  if (!running) {
+    activeSel.clear();
     document.getElementById("active-overview").classList.add("hidden");
+    document.getElementById("active-bulk").classList.add("hidden");
     document.getElementById("active-list").innerHTML = "";
     document.getElementById("active-empty").classList.remove("hidden");
     return;
@@ -261,48 +277,141 @@ async function refreshActive() {
   document.getElementById("active-empty").classList.add("hidden");
   document.getElementById("active-overview").classList.remove("hidden");
 
-  const pct = s.total_tot ? Math.round(s.total_bytes * 100 / s.total_tot) : 0;
+  // ---- 跨任务聚合总览 ----
+  let totBytes = 0, totSize = 0, speed = 0;
+  const cc = { done: 0, skip: 0, fail: 0, active: 0, paused: 0 };
+  for (const s of states) {
+    totBytes += s.total_bytes || 0;
+    totSize += s.total_tot || 0;
+    speed += s.agg_speed || 0;
+    cc.done += s.counts.done || 0;
+    cc.skip += s.counts.skip || 0;
+    cc.fail += s.counts.fail || 0;
+    cc.active += s.counts.active || 0;
+    cc.paused += s.counts.paused || 0;
+  }
+  const pct = totSize ? Math.round(totBytes * 100 / totSize) : 0;
   document.getElementById("ov-fill").style.width = pct + "%";
   document.getElementById("ov-pct").textContent = pct + "%";
-  document.getElementById("ov-speed").textContent = humanSpeed(s.agg_speed);
-  document.getElementById("ov-eta").textContent = humanSec(s.eta);
-  const c = s.counts;
+  document.getElementById("ov-speed").textContent = humanSpeed(speed);
+  const remaining = Math.max(0, totSize - totBytes);
+  document.getElementById("ov-eta").textContent =
+    speed > 0 ? humanSec(remaining / speed) : "--";
   document.getElementById("ov-detail").textContent =
-    `完成 ${c.done} · 跳过 ${c.skip} · 失败 ${c.fail} · 进行 ${c.active} · 已用 ${humanSec(s.elapsed)}`;
-  document.getElementById("active-sub").textContent = s.title;
+    `完成 ${cc.done} · 跳过 ${cc.skip} · 失败 ${cc.fail} · 进行 ${cc.active} · 暂停 ${cc.paused}`;
+  document.getElementById("active-sub").textContent =
+    `${states.length} 个任务下载中，按任务分组显示`;
 
-  document.getElementById("active-list").innerHTML = s.items.map(it => {
-    const done = it.status === "完成", fail = it.status === "失败";
-    const bc = done ? "done" : fail ? "fail" : it.pct > 0 ? "run" : "wait";
-    const fc = done ? "done" : fail ? "fail" : "";
-    const k = keyOf("频道", it.mid);
-    const ex = expandedActive.has(k);
-    const etaSingle = it.speed ? (it.size - it.done) / it.speed : null;
+  // ---- 批量条 ----
+  document.getElementById("active-bulk")
+    .classList.toggle("hidden", activeSel.size === 0);
+  document.getElementById("active-bulk-count").textContent =
+    `已选 ${activeSel.size}`;
+
+  // ---- 按任务分组渲染 ----
+  document.getElementById("active-list").innerHTML = states.map(s => {
+    const cards = s.items.map(it => activeCard(s.task_id, it)).join("");
     return `
-      <div class="dl-card ${ex ? "expanded" : ""}">
-        <div class="dl-top" onclick="toggleActiveExpand('${esc(k)}')">
-          <div class="dl-name">${esc(it.name)}</div>
-          <div class="dl-meta">
-            <span class="sp">${humanSpeed(it.speed)}</span>
-            <span>${human(it.done)} / ${human(it.size)}</span>
-            <span class="badge ${bc}">${esc(it.status)}</span>
+      <div class="dl-group">
+        <div class="dl-group-head">
+          <div class="dl-group-title">
+            <span class="dl-group-name">${esc(s.title || "任务")}</span>
+            <span class="dl-group-stat">${s.task_finished}/${s.task_total} 完成</span>
           </div>
+          <button class="btn danger sm" onclick="abortGroup('${esc(s.task_id)}')">中止任务</button>
         </div>
-        <div class="dl-bar"><div class="dl-fill ${fc}" style="width:${it.pct}%"></div></div>
-        <div class="dl-foot">
-          <span>${esc(it.date)} · 剩余 ${humanSec(etaSingle)}</span>
-          ${it.error ? `<span class="err">${esc(it.error)}</span>` : ""}
-        </div>
-        <div class="dl-detail-text">${esc(it.text) || "（该消息无文字内容）"}</div>
+        <div class="dl-group-body">${cards}</div>
       </div>`;
   }).join("");
 }
+
+function activeItemButtons(tid, it) {
+  const b = (action, glyph, title, cls = "") =>
+    `<button class="mini-action ${cls}" title="${title}" ` +
+    `onclick="event.stopPropagation();activeItem('${esc(tid)}',` +
+    `'${esc(it.src)}',${it.mid},'${action}')">${glyph}</button>`;
+  const st = it.status;
+  if (st === "已暂停" || st === "失败")
+    return b("resume", "▶", "继续") + b("remove", "✕", "移除", "danger");
+  if (st === "完成" || st === "已存在" || st === "已跳过")
+    return b("remove", "✕", "移除", "danger");
+  // 下载中 / 等待中
+  return b("pause", "⏸", "暂停") + b("skip", "⤼", "跳过") +
+         b("remove", "✕", "移除", "danger");
+}
+
+function activeCard(tid, it) {
+  const ck = cardKey(tid, it.src, it.mid);
+  const bc = ACTIVE_BADGE_CLS[it.status] || "wait";
+  const fc = bc === "done" ? "done" : bc === "fail" ? "fail"
+    : bc === "paused" ? "paused" : "";
+  const ex = expandedActive.has(ck);
+  const on = activeSel.has(ck);
+  const etaSingle = it.speed ? (it.size - it.done) / it.speed : null;
+  return `
+    <div class="dl-card ${ex ? "expanded" : ""} ${on ? "checked" : ""}">
+      <div class="dl-top" onclick="toggleActiveExpand('${esc(ck)}')">
+        <span class="mini-cbox" onclick="event.stopPropagation();toggleActiveSel('${esc(ck)}')">${on ? "✓" : ""}</span>
+        <div class="dl-name">${esc(it.name)}</div>
+        <div class="dl-meta">
+          <span class="sp">${humanSpeed(it.speed)}</span>
+          <span>${human(it.done)} / ${human(it.size)}</span>
+          <span class="src-tag">${esc(it.src)}</span>
+          <span class="badge ${bc}">${esc(it.status)}</span>
+        </div>
+        <div class="dl-item-actions">${activeItemButtons(tid, it)}</div>
+      </div>
+      <div class="dl-bar"><div class="dl-fill ${fc}" style="width:${it.pct}%"></div></div>
+      <div class="dl-foot">
+        <span>${esc(it.date)} · 剩余 ${humanSec(etaSingle)}</span>
+        ${it.error ? `<span class="err">${esc(it.error)}</span>` : ""}
+      </div>
+      <div class="dl-detail-text">${esc(it.text) || "（该消息无文字内容）"}</div>
+    </div>`;
+}
+
 function toggleActiveExpand(k) {
   expandedActive.has(k) ? expandedActive.delete(k) : expandedActive.add(k);
   refreshActive();
 }
-async function abortAll() { await api().abort(); setTimeout(refreshActive, 450); }
-async function skipCurrent() { await api().skip_current(); setTimeout(refreshActive, 300); }
+function toggleActiveSel(k) {
+  activeSel.has(k) ? activeSel.delete(k) : activeSel.add(k);
+  refreshActive();
+}
+function activeSelClear() {
+  activeSel.clear();
+  refreshActive();
+}
+
+async function activeItem(tid, src, mid, action) {
+  await api().item_action(tid, action, [{ src, mid }]);
+  setTimeout(refreshActive, 250);
+}
+
+async function activeBulk(action) {
+  if (!activeSel.size) return;
+  if (action === "remove" &&
+      !confirm(`从任务中移除选中的 ${activeSel.size} 个条目？本地文件不会删除。`))
+    return;
+  const byTask = {};
+  for (const ck of activeSel) {
+    const ix = ck.indexOf("|||");
+    const tid = ck.slice(0, ix);
+    const [src, mid] = ck.slice(ix + 3).split("|");
+    (byTask[tid] ||= []).push({ src, mid: Number(mid) });
+  }
+  for (const [tid, ks] of Object.entries(byTask))
+    await api().item_action(tid, action, ks);
+  activeSel.clear();
+  setTimeout(refreshActive, 250);
+}
+
+async function abortGroup(tid) {
+  if (!confirm("中止该任务的全部下载？\n未完成视频状态保留，可随时继续。"))
+    return;
+  await api().abort_task(tid);
+  setTimeout(refreshActive, 400);
+}
 
 // 常驻轮询
 setInterval(async () => {
@@ -355,7 +464,8 @@ function setTaskFilter(f) {
 }
 async function quickResume(id, failed) {
   const r = await api().resume_task(id, failed);
-  if (!r.ok) alert(r.error); else switchView("active");
+  if (r.ok || (r.error || "").includes("已在下载")) switchView("active");
+  else alert(r.error);
 }
 async function quickDelete(id) {
   if (!confirm("删除任务记录？已下载视频不会被删除。")) return;
@@ -390,12 +500,40 @@ async function openSheet(taskId) {
   const fr = await api().items_file_info(taskId);
   if (fr.ok) sheet.files = fr.items;
   renderDetailItems();
+  startSheetPoll();
 }
 function closeSheet() {
+  stopSheetPoll();
   document.getElementById("sheet").classList.remove("show");
   document.getElementById("sheet-mask").classList.add("hidden");
   setTimeout(() => document.getElementById("sheet").classList.add("hidden"), 450);
   renderTasks();
+}
+
+// 滑层打开期间持续刷新：下载中的条目状态即时一致
+let sheetPollId = null;
+function startSheetPoll() {
+  stopSheetPoll();
+  sheetPollId = setInterval(async () => {
+    if (sheet.taskId == null) return stopSheetPoll();
+    try {
+      const r = await api().get_task(sheet.taskId);
+      if (!r.ok) return;
+      sheet.task = r.task;
+      sheet.counts = r.counts;
+      // 正在输入搜索词时不重绘，避免打断输入
+      if (document.activeElement ===
+          document.getElementById("detail-q")) return;
+      renderSheet();
+      renderDetailItems();
+    } catch (e) {}
+  }, 2000);
+}
+function stopSheetPoll() {
+  if (sheetPollId != null) {
+    clearInterval(sheetPollId);
+    sheetPollId = null;
+  }
 }
 
 // 在独立专业窗口中编辑本任务（TG 消息 / 时长 / 日期 / 批量管理）
@@ -603,11 +741,13 @@ function sheetOpenFolder() { api().open_folder(sheet.task.folder); }
 async function sheetResume() {
   const failedOnly = sheet.counts.pending === 0 && sheet.counts.failed > 0;
   const r = await api().resume_task(sheet.taskId, failedOnly);
-  if (!r.ok) return alert(r.error);
-  closeSheetNoRefresh();
-  switchView("active");
+  if (r.ok || (r.error || "").includes("已在下载")) {
+    closeSheetNoRefresh();
+    switchView("active");
+  } else alert(r.error);
 }
 function closeSheetNoRefresh() {
+  stopSheetPoll();
   document.getElementById("sheet").classList.remove("show");
   document.getElementById("sheet-mask").classList.add("hidden");
   setTimeout(() => document.getElementById("sheet").classList.add("hidden"), 450);

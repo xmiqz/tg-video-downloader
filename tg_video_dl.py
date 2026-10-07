@@ -29,6 +29,7 @@ import pathlib
 import re
 import shutil
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -208,7 +209,35 @@ def pick_filename(doc, msg_id):
 
 
 class SkipFile(Exception):
-    """用户按 S 请求跳过当前视频"""
+    """用户请求跳过当前视频（清理临时文件）"""
+
+
+class PauseFile(Exception):
+    """用户请求暂停当前视频（保留 .dl/分片标记，释放槽位）"""
+
+
+class RemoveFile(Exception):
+    """用户请求从任务移除当前视频（取消下载，条目从清单删除）"""
+
+
+class ItemCtl:
+    """单个视频的运行期控制信号；下载循环在每个断点检查。"""
+
+    def __init__(self, key):
+        self.key = key
+        self.skip = asyncio.Event()
+        self.pause = asyncio.Event()
+        self.cancel = asyncio.Event()
+
+    def tripped(self):
+        """返回应抛出的异常类型，无则 None（优先级 取消>跳过>暂停）。"""
+        if self.cancel.is_set():
+            return RemoveFile
+        if self.skip.is_set():
+            return SkipFile
+        if self.pause.is_set():
+            return PauseFile
+        return None
 
 
 class KeyWatch:
@@ -831,8 +860,11 @@ class Monitor:
         self.order = {}
         for n, it in enumerate(todo, 1):
             mid = it["msg"].id
+            src = it.get("src", SRC_CHANNEL)
             e = {
-                "n": n, "mid": mid, "total": it["size"],
+                "n": n, "mid": mid, "src": src,
+                "key": (src, mid),
+                "total": it["size"],
                 "name": it["name"],
                 "date": f"{it['msg'].date:%Y-%m-%d %H:%M}" if it["msg"].date else "",
                 "text": getattr(it["msg"], "message", "") or "",
@@ -841,7 +873,7 @@ class Monitor:
                 "error": "", "final": "",
             }
             self.entries.append(e)
-            self.order[mid] = e
+            self.order[(src, mid)] = e
         self.active_count = 0
 
     def snapshot_json(self):
@@ -857,10 +889,12 @@ class Monitor:
             "remaining": snap["remaining"],
             "eta": (None if snap["eta"] == float("inf") else round(snap["eta"], 1)),
             "counts": {"done": snap["done"], "fail": snap["fail"],
-                       "skip": snap["skip"], "active": len(snap["active"])},
+                       "skip": snap["skip"], "paused": snap["paused"],
+                       "active": len(snap["active"])},
             "items": [
                 {
-                    "n": e["n"], "mid": e["mid"], "name": e["name"],
+                    "n": e["n"], "mid": e["mid"], "src": e["src"],
+                    "name": e["name"],
                     "date": e["date"], "size": e["total"],
                     "done": e["done"],
                     "pct": round(e["done"] * 100 / (e["total"] or 1), 1),
@@ -872,37 +906,39 @@ class Monitor:
             ],
         }
 
-    async def seed(self, mid, bytes_already):
+    async def seed(self, key, bytes_already):
         """续传：把已存在分片的字节计入初始进度（不计速度）"""
         if bytes_already <= 0:
             return
         async with self.lock:
-            e = self.order[mid]
+            e = self.order[key]
             e["done"] = min(e["total"], e["done"] + bytes_already)
 
-    async def start(self, mid):
+    async def start(self, key):
         async with self.lock:
-            e = self.order[mid]
+            e = self.order[key]
             if e["started"] is None:
                 e["started"] = time.monotonic()
                 e["status"] = "下载中"
                 self.active_count += 1
 
-    async def add(self, mid, nb):
+    async def add(self, key, nb):
         if nb <= 0:
             return
         now = time.monotonic()
         async with self.lock:
-            e = self.order[mid]
+            e = self.order[key]
             e["done"] = min(e["total"], e["done"] + nb)
             e["samples"].append((now, e["done"]))
             # 只保留最近约 2.5 秒的样本用于测速
             while len(e["samples"]) > 2 and now - e["samples"][0][0] > 2.5:
                 e["samples"].pop(0)
 
-    async def finish(self, mid, final):
+    async def finish(self, key, final):
         async with self.lock:
-            e = self.order[mid]
+            e = self.order.get(key)
+            if e is None or e["final"]:
+                return                    # 幂等，避免重复计数
             e["final"] = final
             e["status"] = final
             e["speed"] = 0.0
@@ -913,16 +949,43 @@ class Monitor:
                 e["ended"] = time.monotonic()
                 self.active_count = max(0, self.active_count - 1)
 
-    async def error(self, mid, msg):
+    async def restart(self, key, keep_done=True):
+        """暂停/失败项重新排队：重置运行态为等待中。
+        keep_done=True 保留已下字节（parallel 分片续传）；
+        False 清零（simple 路径重来）。"""
         async with self.lock:
-            e = self.order[mid]
+            e = self.order.get(key)
+            if e is None:
+                return
+            e["final"] = ""
+            e["status"] = "等待中"
+            e["speed"] = 0.0
+            e["started"] = e["ended"] = None
+            e["samples"] = []
+            e["error"] = ""
+            if not keep_done:
+                e["done"] = 0
+
+    async def remove(self, key):
+        """条目被移除：从面板删除；进行中的先扣活动计数。"""
+        async with self.lock:
+            e = self.order.pop(key, None)
+            if e is None:
+                return
+            self.entries = [x for x in self.entries if x is not e]
+            if e["started"] is not None and e["ended"] is None:
+                self.active_count = max(0, self.active_count - 1)
+
+    async def error(self, key, msg):
+        async with self.lock:
+            e = self.order[key]
             e["error"] = msg
 
     def _snapshot(self):
         now = time.monotonic()
         active, agg_speed = [], 0.0
         total_bytes = sum_e = total_tot = 0
-        done_cnt = fail_cnt = skip_cnt = 0
+        done_cnt = fail_cnt = skip_cnt = paused_cnt = 0
         for e in self.entries:
             st = e["status"]
             if st == "下载中":
@@ -943,6 +1006,8 @@ class Monitor:
                 fail_cnt += 1
             elif e["final"] == "已跳过":
                 skip_cnt += 1
+            elif e["final"] == "已暂停":
+                paused_cnt += 1
         remaining = max(0, total_tot - total_bytes)
         eta = remaining / agg_speed if agg_speed > 0 else float("inf")
         return {
@@ -950,6 +1015,7 @@ class Monitor:
             "total_bytes": total_bytes, "total_tot": total_tot,
             "remaining": remaining, "eta": eta,
             "done": done_cnt, "fail": fail_cnt, "skip": skip_cnt,
+            "paused": paused_cnt,
         }
 
     def _entry_lines(self, e, now, w):
@@ -1111,13 +1177,14 @@ class Monitor:
                 sys.stdout.flush()
 
 
-async def parallel_download(client, item, target, skip_ev, state=None):
+async def parallel_download(client, item, target, ctl, state=None):
     """断点续传：完成的分片写一个零字节 .partN.done 标记；重试时只下
     未完成分片（未完成分片从头覆盖重下）。
+    ctl：ItemCtl（skip/pause/cancel），在每个断点检查。
     state：{'monitor': Monitor}，进度/速度全部上报到统一面板。
     """
     msg, size = item["msg"], item["size"]
-    mid = msg.id
+    key = (item.get("src", SRC_CHANNEL), msg.id)
     mon = state["monitor"] if state else None
     ranges = [(off, min(PART, size - off)) for off in range(0, size, PART)]
     sem = asyncio.Semaphore(CONCURRENT)
@@ -1134,8 +1201,8 @@ async def parallel_download(client, item, target, skip_ev, state=None):
         if os.path.exists(f"{work}.part{i}.done"):
             already += ln
     if mon:
-        await mon.seed(mid, already)
-        await mon.start(mid)
+        await mon.seed(key, already)
+        await mon.start(key)
 
     async def grab(off, ln, idx):
         mark = f"{work}.part{idx}.done"
@@ -1143,8 +1210,9 @@ async def parallel_download(client, item, target, skip_ev, state=None):
             return
         got = 0
         async with sem:
-            if skip_ev.is_set():
-                raise SkipFile
+            tripped = ctl.tripped()
+            if tripped:
+                raise tripped
             it = client.iter_download(
                 msg.media, offset=off,
                 request_size=512 * 1024, file_size=size
@@ -1153,8 +1221,9 @@ async def parallel_download(client, item, target, skip_ev, state=None):
             with open(work, "r+b") as f:
                 f.seek(off)
                 while True:
-                    if skip_ev.is_set():
-                        raise SkipFile
+                    tripped = ctl.tripped()
+                    if tripped:
+                        raise tripped
                     try:
                         chunk = await asyncio.wait_for(
                             it.__anext__(), timeout=STALL_SECS
@@ -1166,7 +1235,7 @@ async def parallel_download(client, item, target, skip_ev, state=None):
                         f.write(chunk[:take])
                         got += take
                         if mon:
-                            await mon.add(mid, take)
+                            await mon.add(key, take)
                     if got >= ln:
                         break
         if got < ln:
@@ -1187,47 +1256,48 @@ async def parallel_download(client, item, target, skip_ev, state=None):
     os.replace(work, target)   # 原子改名，成品落位
 
 
-async def simple_download(client, item, target, skip_ev, state=None):
-    """小文件/未知大小：普通下载 + 停滞/跳过轮询，进度上报统一面板"""
+async def simple_download(client, item, target, ctl, state=None):
+    """小文件/未知大小：普通下载 + 停滞/控制轮询，进度上报统一面板"""
     msg = item["msg"]
-    mid = msg.id
+    key = (item.get("src", SRC_CHANNEL), msg.id)
     mon = state["monitor"] if state else None
     loop = asyncio.get_running_loop()
     prev = [0]
 
     if mon:
-        await mon.start(mid)
+        await mon.start(key)
 
     def prog(cur, total):
         delta = cur - prev[0]
         prev[0] = cur
         if mon and delta > 0:
             # 回调可能来自线程，用线程安全方式投递到事件循环
-            asyncio.run_coroutine_threadsafe(mon.add(mid, delta), loop)
+            asyncio.run_coroutine_threadsafe(mon.add(key, delta), loop)
 
     async def pump():
         task = asyncio.create_task(
             client.download_media(msg, file=target, progress_callback=prog)
         )
         while not task.done():
-            if skip_ev.is_set():
+            tripped = ctl.tripped()
+            if tripped:
                 task.cancel()
                 try:
                     await task
                 except asyncio.CancelledError:
                     pass
-                raise SkipFile
+                raise tripped
             await asyncio.sleep(0.2)
         task.result()
 
     await asyncio.wait_for(pump(), timeout=1800)
 
 
-async def download_one(client, item, target, skip_ev, state=None):
-    """返回 ok / skipped / skip-exists / ('fail', reason)"""
+async def download_one(client, item, target, ctl, state=None):
+    """返回 ok / skipped / skip-exists / paused / removed / ('fail', reason)"""
     size = item["size"]
     mon = state["monitor"] if state else None
-    mid = item["msg"].id
+    key = (item.get("src", SRC_CHANNEL), item["msg"].id)
 
     if os.path.exists(target):
         if size and os.path.getsize(target) == size:
@@ -1240,15 +1310,33 @@ async def download_one(client, item, target, skip_ev, state=None):
     for attempt in range(RETRIES):
         try:
             if size > 4 * 1024 * 1024:
-                await parallel_download(client, item, target, skip_ev, state)
+                await parallel_download(client, item, target, ctl, state)
             else:
-                await simple_download(client, item, target, skip_ev, state)
+                await simple_download(client, item, target, ctl, state)
             # 无损把 moov 移到文件开头，兼容所有播放器（不重编码）
             try:
                 faststart_mp4(target)
             except Exception:
                 pass
             return "ok"
+        except PauseFile:
+            # simple_download 直写目标路径：清掉不完整成品，避免被误判完成，
+            # parallel 路径只写 .dl，此处 target 不会存在
+            if os.path.exists(target) and (
+                    not size or os.path.getsize(target) != size):
+                try:
+                    os.remove(target)
+                except OSError:
+                    pass
+            return "paused"
+        except RemoveFile:
+            # 移除：清理 .dl 临时文件与标记，条目随后从清单删除（成品保留）
+            for p in glob.glob(target + ".dl*"):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            return "removed"
         except SkipFile:
             # 用户主动跳过：清理 .dl 临时文件与完成标记，不保留
             for p in glob.glob(target + ".dl*"):
@@ -1259,18 +1347,18 @@ async def download_one(client, item, target, skip_ev, state=None):
             return "skipped"
         except FloodWaitError as e:
             if mon:
-                await mon.error(mid, f"限速等待 {e.seconds}s")
+                await mon.error(key, f"限速等待 {e.seconds}s")
             await asyncio.sleep(e.seconds + 1)
         except Exception as e:
             if attempt == RETRIES - 1:
                 reason = f"{type(e).__name__}: {str(e)[:100]}"
                 if mon:
-                    await mon.error(mid, reason)
+                    await mon.error(key, reason)
                 return "fail", reason
             wait = [3, 6, 12][attempt]
             if mon:
                 await mon.error(
-                    mid, f"{type(e).__name__} → {wait}s 后重试（{attempt+1}/{RETRIES}）"
+                    key, f"{type(e).__name__} → {wait}s 后重试（{attempt+1}/{RETRIES}）"
                 )
             await asyncio.sleep(wait)
     return "fail", "重试次数用完"
@@ -1510,18 +1598,44 @@ def remove_items(task, keys):
     return before - len(task["items"])
 
 
+def _rec_rank(r):
+    """消息新旧排序键：日期优先，同日期取更大的消息 ID。"""
+    m = r["msg"]
+    return (m.date or None, m.id)
+
+
+def dedup_records(records):
+    """内容去重：文件名与视频大小都相同的两条消息，只保留最新的。
+    保留首次出现的排列顺序，仅替换为更新的那条。"""
+    best = {}
+    order = []
+    for r in records:
+        k = (r["name"], r["size"])
+        if k not in best:
+            best[k] = r
+            order.append(k)
+        elif _rec_rank(r) > _rec_rank(best[k]):
+            best[k] = r
+    return [best[k] for k in order]
+
+
 def append_records(task, records, status="pending"):
-    """把扫描记录追加进任务（按来源+ID 去重），返回新增数"""
+    """把扫描记录追加进任务。两层去重：
+    1) 来源+消息ID 相同（重复扫描）
+    2) 文件名+大小 与清单中某条相同（同视频两条消息）
+    返回新增数。"""
     exist = {item_key(ti) for ti in task["items"]}
+    content = {(ti["name"], ti["size"]) for ti in task["items"]}
     added = 0
     for r in records:
         key = (r.get("src", SRC_CHANNEL), r["msg"].id)
-        if key in exist:
+        if key in exist or (r["name"], r["size"]) in content:
             continue
         ti = make_task_item(r)
         ti["status"] = status
         task["items"].append(ti)
         exist.add(key)
+        content.add((r["name"], r["size"]))
         added += 1
     if added:
         save_task(task)
@@ -1530,28 +1644,119 @@ def append_records(task, records, status="pending"):
 
 # ---------------- 下载执行（新建/续传共用） ----------------
 
-class _ActiveSession:
-    """当前活动下载会话（GUI 轮询/控制用）。同一时刻只跟踪一个会话。"""
+class DownloadSession:
+    """单个任务的下载会话：独立监控/调度/控制。不同任务各一个，互不干扰。"""
 
-    def __init__(self):
-        self.clear()
+    def __init__(self, task, mon, loop):
+        self.task = task
+        self.task_id = task["id"]
+        self.mon = mon
+        self.loop = loop
+        self.abort = asyncio.Event()
+        self.ctls = {}            # key -> ItemCtl（正在下载）
+        self.paused = {}          # key -> record（暂停中）
+        self.records = {}         # key -> record（本会话全部，供失败重试）
+        self.queue = None         # collections.deque（待调度）
+        self.resume_q = None      # 优先队列（暂停/失败恢复）
+        self.wake = None          # asyncio.Event（唤醒调度器）
+        self.tasks = {}           # key -> asyncio.Task
+        self._want = {}           # key -> action（排队中预置命令）
 
-    def clear(self):
-        self.mon = None
-        self.task_id = None
-        self.abort = None
-        self.skip = None
+    # ----- 控制入口（可从其他线程调用） -----
+    def request(self, action, keys):
+        if not self.loop.is_closed():
+            self.loop.call_soon_threadsafe(self._apply, action, list(keys))
 
-    def is_running(self):
-        return self.mon is not None
+    def request_abort(self):
+        if not self.loop.is_closed():
+            self.loop.call_soon_threadsafe(self.abort.set)
+
+    def _apply(self, action, keys):
+        # 仅在下载事件循环线程内执行
+        for key in keys:
+            ctl = self.ctls.get(key)
+            if ctl is not None:
+                if action == "skip":
+                    ctl.skip.set()
+                elif action == "pause":
+                    ctl.pause.set()
+                elif action == "remove":
+                    ctl.cancel.set()
+            elif key in self.paused:
+                if action == "resume":
+                    self._begin_resume(key)
+                elif action == "remove":
+                    self.paused.pop(key, None)
+                    self._begin_remove(key)
+            else:
+                # 排队中或已落定（完成/失败）
+                if action in ("skip", "pause", "remove"):
+                    self._want[key] = action
+                if action == "remove":
+                    self._begin_remove(key)
+                elif action == "resume":
+                    self._begin_resume(key)
+
+    def _begin_resume(self, key):
+        rec = self.paused.pop(key, None) or self.records.get(key)
+        if rec is None:
+            return
+        self._want.pop(key, None)
+
+        async def _do():
+            ti = find_item(self.task, key)
+            if ti is not None and ti["status"] != "pending":
+                ti["status"] = "pending"
+                ti.pop("error", None)
+                save_task(self.task)
+            mode = rec.get("_mode") or (
+                "parallel" if rec["size"] > 4 * 1024 * 1024
+                else "simple")
+            await self.mon.restart(key, keep_done=mode != "simple")
+            self.resume_q.append(rec)
+            self.wake.set()
+
+        asyncio.ensure_future(_do())
+
+    def _begin_remove(self, key):
+        async def _do():
+            await self._do_remove(key)
+
+        asyncio.ensure_future(_do())
+
+    async def _do_remove(self, key):
+        ti = find_item(self.task, key)
+        if ti is not None:
+            self.task["items"] = [
+                x for x in self.task["items"] if item_key(x) != key
+            ]
+            save_task(self.task)
+        await self.mon.remove(key)
+        self.wake.set()
 
     def state(self):
-        if self.mon is None:
-            return None
-        return self.mon.snapshot_json()
+        snap = self.mon.snapshot_json()
+        c = task_counts(self.task)
+        snap["task_id"] = self.task_id
+        snap["task_total"] = c["total"]
+        snap["task_finished"] = c["finished"]
+        return snap
 
 
-ACTIVE_SESSION = _ActiveSession()
+# 全部活动会话：task_id -> DownloadSession（不同任务独立，可并行）
+ACTIVE_SESSIONS = {}
+
+
+def active_states():
+    return [s.state() for s in ACTIVE_SESSIONS.values()]
+
+
+def any_active():
+    return bool(ACTIVE_SESSIONS)
+
+
+def _rec_key(it):
+    return (it.get("src", SRC_CHANNEL), it["msg"].id)
 
 
 async def execute_downloads(client, task, todo, parallel, gui=None):
@@ -1559,14 +1764,20 @@ async def execute_downloads(client, task, todo, parallel, gui=None):
 
     - 已完成/已存在的成品：download_one 内部按大小跳过，不重下
     - 下到一半的：.dl + .partN.done 分片级续传，只下没下完的分片
+    - 暂停：立即停在断点并释放槽位，队列里下一个视频马上开始，可随时恢复
     - 关机/强杀：清单里仍为 pending 的，重启继续即可
-    gui={'mon_cb','abort','skip'}：GUI 模式，无控制台按键/无交互输入。
+    gui 非空：GUI 模式（无控制台按键/无交互输入），控制走 DownloadSession。
     """
-    folder = pathlib.Path(task["folder"])
-    by_id = {ti["msg"]: ti for ti in task["items"]}
+    if task["id"] in ACTIVE_SESSIONS:
+        print("[!] 该任务已有下载会话，忽略重复启动")
+        return
 
-    def persist_status(msg_id, status, error=None):
-        ti = by_id[msg_id]
+    folder = pathlib.Path(task["folder"])
+
+    def persist(key, status, error=None):
+        ti = find_item(task, key)
+        if ti is None:
+            return
         ti["status"] = status
         if error:
             ti["error"] = error
@@ -1581,7 +1792,7 @@ async def execute_downloads(client, task, todo, parallel, gui=None):
     free = shutil.disk_usage(str(folder)).free
     if need > free:
         if gui is not None:
-            gui["abort"].set()
+            print("[GUI] 磁盘空间不足，未开始下载")
             return
         print(f"!! 磁盘空间不足：需要约 {human(need)}，仅剩 {human(free)}")
         if input("仍要开始下载吗？（y=继续，其他=取消）：").strip().lower() != "y":
@@ -1597,113 +1808,141 @@ async def execute_downloads(client, task, todo, parallel, gui=None):
         task.get("channel_title", task.get("channel", "")), vt
     )
 
-    active = []          # [(seq, event)] 按开始顺序
-    active_lock = asyncio.Lock()
+    import collections
     counters = {"ok": 0, "skipped": 0, "exists": 0, "fail": 0}
-    aborted = False
-    abort_ev = gui["abort"] if gui is not None else None
-    skip_ev_g = gui["skip"] if gui is not None else None
 
-    ACTIVE_SESSION.mon = mon
-    ACTIVE_SESSION.task_id = task["id"]
-    ACTIVE_SESSION.abort = abort_ev
-    ACTIVE_SESSION.skip = skip_ev_g
+    loop = asyncio.get_running_loop()
+    sess = DownloadSession(task, mon, loop)
+    sess.records = {_rec_key(it): it for it in todo}
+    sess.queue = collections.deque(todo)
+    sess.resume_q = collections.deque()
+    sess.wake = asyncio.Event()
+    ACTIVE_SESSIONS[task["id"]] = sess
 
-    async def worker(n, it):
-        dest = str(folder / it["name"])
-        ev = asyncio.Event()
-        seq = n
-        mid = it["msg"].id
-        async with active_lock:
-            active.append((seq, ev))
+    FINAL_LABEL = {"ok": "完成", "skipped": "已跳过",
+                   "skip-exists": "已存在"}
+    COUNT_KEY = {"ok": "ok", "skipped": "skipped",
+                 "skip-exists": "exists"}
+    # 下载结果 → 持久状态（注意 "ok" 的持久态是 "done"）
+    PERSIST_STATUS = {"ok": "done", "skipped": "skipped",
+                      "skip-exists": "exists"}
+
+    async def worker(it):
+        key = _rec_key(it)
         try:
-            r = await download_one(
-                client, it, dest, ev, state={"monitor": mon}
-            )
-        finally:
-            async with active_lock:
-                if (seq, ev) in active:
-                    active.remove((seq, ev))
-        err = None
-        if isinstance(r, tuple):
-            r, err = r
-        if r == "ok":
-            counters["ok"] += 1
-            persist_status(mid, "done")
-            await mon.finish(mid, "完成")
-        elif r == "skipped":
-            counters["skipped"] += 1
-            persist_status(mid, "skipped")
-            await mon.finish(mid, "已跳过")
-        elif r == "skip-exists":
-            counters["exists"] += 1
-            persist_status(mid, "exists")
-            await mon.finish(mid, "已存在")
-        else:
-            counters["fail"] += 1
-            persist_status(mid, "failed", err or "下载失败")
-            await mon.finish(mid, "失败")
-
-    dl_tasks = []
-
-    async def skip_watcher():
-        nonlocal aborted
-        while True:
-            await asyncio.sleep(0.12)
-            do_abort = keys.abort.is_set() or (
-                abort_ev is not None and abort_ev.is_set()
-            )
-            if do_abort:
-                keys.abort.clear()
-                aborted = True
-                # 取消所有下载协程；未完成视频状态保留为 pending
-                for t in dl_tasks:
-                    if not t.done():
-                        t.cancel()
+            ti = find_item(task, key)
+            want = sess._want.pop(key, None)
+            if ti is None or want == "remove":
+                if ti is not None:
+                    await sess._do_remove(key)
                 return
-            do_skip = keys.skip.is_set() or (
-                skip_ev_g is not None and skip_ev_g.is_set()
+            if want == "skip":
+                counters["skipped"] += 1
+                persist(key, "skipped")
+                await mon.finish(key, "已跳过")
+                return
+            if want == "pause":
+                # 还没开始就被暂停：进暂停区，不占槽位
+                sess.paused[key] = it
+                await mon.finish(key, "已暂停")
+                return
+
+            ctl = ItemCtl(key)
+            sess.ctls[key] = ctl
+            # 记录实际走的下载路径，暂停后恢复才能决定是否保留字节
+            it["_mode"] = "parallel" if it["size"] > 4 * 1024 * 1024 \
+                else "simple"
+            r = await download_one(
+                client, it, str(folder / it["name"]), ctl,
+                state={"monitor": mon},
             )
-            if do_skip:
-                keys.skip.clear()
-                if skip_ev_g is not None:
-                    skip_ev_g.clear()
-                async with active_lock:
-                    if active:
-                        _, ev = active[0]
-                        ev.set()
+
+            err = None
+            if isinstance(r, tuple):
+                r, err = r
+            if r == "paused":
+                sess.paused[key] = it
+                await mon.finish(key, "已暂停")
+                return
+            if r == "removed":
+                await sess._do_remove(key)
+                return
+            if r in FINAL_LABEL:
+                counters[COUNT_KEY[r]] += 1
+                persist(key, PERSIST_STATUS[r])
+                await mon.finish(key, FINAL_LABEL[r])
+            else:
+                counters["fail"] += 1
+                persist(key, "failed", err or "下载失败")
+                await mon.finish(key, "失败")
+        except asyncio.CancelledError:
+            raise
+        except Exception as ex:
+            print(f"[!] worker 异常：{type(ex).__name__}: {ex}")
+        finally:
+            sess.ctls.pop(key, None)
+            sem.release()
+            sess.wake.set()
 
     sem = asyncio.Semaphore(parallel)
 
-    async def bounded(n, it):
-        async with sem:
-            await worker(n, it)
+    async def schedule():
+        while True:
+            # 控制台按键翻译（GUI 模式 KeyWatch 未启动）
+            if gui is None:
+                if keys.abort.is_set():
+                    keys.abort.clear()
+                    sess.abort.set()
+                if keys.skip.is_set():
+                    keys.skip.clear()
+                    if sess.ctls:
+                        next(iter(sess.ctls.values())).skip.set()
 
-    dl_tasks = [
-        asyncio.create_task(bounded(n, it))
-        for n, it in enumerate(todo, 1)
-    ]
+            if sess.abort.is_set():
+                for tsk in list(sess.tasks.values()):
+                    tsk.cancel()
+                if sess.tasks:
+                    await asyncio.gather(
+                        *sess.tasks.values(), return_exceptions=True
+                    )
+                return
+            if sess.resume_q or sess.queue:
+                await sem.acquire()
+                if sess.abort.is_set():
+                    sem.release()
+                    continue
+                rec = (sess.resume_q.popleft() if sess.resume_q
+                       else sess.queue.popleft())
+                sess.tasks[_rec_key(rec)] = asyncio.create_task(
+                    worker(rec)
+                )
+            else:
+                sess.tasks = {
+                    k: t for k, t in sess.tasks.items() if not t.done()
+                }
+                if not sess.tasks:
+                    return            # 全部落定
+                sess.wake.clear()
+                await sess.wake.wait()
     display = (
         None if gui is not None
         else asyncio.create_task(mon.display_loop(keys))
     )
-    watcher = asyncio.create_task(skip_watcher())
     try:
-        await asyncio.gather(*dl_tasks, return_exceptions=True)
+        await schedule()
     finally:
-        watcher.cancel()
         keys.stop()
         if display is not None:
             await asyncio.sleep(0.5)   # 让面板定格在最终状态
             display.cancel()
 
-    ACTIVE_SESSION.clear()
+    ACTIVE_SESSIONS.pop(task["id"], None)
 
     if gui is not None:
         # GUI 模式：仅打印技术日志，界面自行刷新任务状态
         c = task_counts(task)
         print(f"[GUI] 下载结束：{c['finished']}/{c['total']}，"
-              f"aborted={aborted}")
+              f"aborted={sess.abort.is_set()}")
         return
 
     # 收尾：清掉面板，打印纯文本汇总
@@ -1722,7 +1961,7 @@ async def execute_downloads(client, task, todo, parallel, gui=None):
     bits = []
     if c["failed"]:
         bits.append(f"失败 {c['failed']}")
-    if aborted:
+    if sess.abort.is_set():
         bits.append("已中止（未完成视频可随时继续）")
     tail = "，" + "，".join(bits) if bits else ""
     print(f"任务总进度：{c['finished']}/{c['total']} 完成{tail}")
@@ -1759,15 +1998,25 @@ async def fetch_records(client, task, statuses):
             await pull(discuss, groups[SRC_COMMENT], SRC_COMMENT)
 
     records, missing = [], []
+    reset = 0
     for ti in wanted:
         src = ti.get("src", SRC_CHANNEL)
         m = remote.get((src, ti["msg"]))
         if m is None or not m.document:
             missing.append(ti)
             continue
+        actual_size = m.document.size or ti["size"]
+        # 关键修复：消息确认可取，立即把状态重置为 pending 并清错，
+        # 否则下载全程任务库仍把它算作失败
+        if ti["status"] != "pending" or ti.get("error"):
+            ti["status"] = "pending"
+            ti.pop("error", None)
+            reset += 1
+        if actual_size and actual_size != ti.get("size"):
+            ti["size"] = actual_size
         records.append({
             "msg": m, "doc": m.document,
-            "size": m.document.size or ti["size"],
+            "size": actual_size,
             "name": ti["name"], "text": "", "matched": True,
             "src": src,
         })
@@ -1775,130 +2024,463 @@ async def fetch_records(client, task, statuses):
         ti["status"] = "failed"
         ti["error"] = "消息已删除或无权访问"
         print(f"  #{ti['msg']} 已不存在，标记为失败")
-    if missing:
+    if missing or reset:
         save_task(task)
     return records
 
 
+# ---------------- 终端 UI 基础设施（无第三方依赖） ----------------
+
+def _supports_color():
+    try:
+        if os.environ.get("NO_COLOR"):
+            return False
+        return bool(sys.stdout.isatty())
+    except Exception:
+        return False
+
+
+USE_COLOR = _supports_color()
+
+
+def _esc(code):
+    return f"\033[{code}m" if USE_COLOR else ""
+
+
+RESET = _esc(0)
+BOLD = _esc(1)
+DIM = _esc(2)
+RED = _esc(31)
+GREEN = _esc(32)
+YELLOW = _esc(33)
+BLUE = _esc(34)
+MAGENTA = _esc(35)
+CYAN = _esc(36)
+GRAY = _esc(90)
+BR_CYAN = _esc(96)
+
+
+def paint(text, *styles):
+    if not styles or not USE_COLOR:
+        return str(text)
+    return "".join(styles) + str(text) + RESET
+
+
+def clear_screen():
+    if USE_COLOR:
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.flush()
+
+
+def term_size():
+    try:
+        w, h = os.get_terminal_size()
+        return max(20, w), max(8, h)
+    except Exception:
+        return 80, 24
+
+
+def hr(ch="─", color=None):
+    w = term_size()[0]
+    line = (ch * w)[:w]
+    print(paint(line, color) if color else line)
+
+
+def title_bar(title, sub=""):
+    w = term_size()[0]
+    head = paint(" " + title + " ", BOLD, BR_CYAN)
+    if sub:
+        # 标题里 ANSI 不占显示宽度，显示宽度按去 ANSI 估算
+        plain_len = len(title) + 2
+        pad = max(1, w - plain_len - len(sub) - 1)
+        print(head + " " * pad + paint(sub, DIM))
+    else:
+        print(head)
+
+
+def ask(prompt, default=""):
+    suffix = f"（回车={default}）" if default else ""
+    try:
+        raw = input(f"{prompt}{suffix}：").strip()
+    except EOFError:
+        return default
+    return raw if raw else default
+
+
+def ask_int(prompt, default=0, lo=None, hi=None):
+    dflt = str(default) if default else ""
+    for _ in range(3):
+        raw = ask(prompt, dflt)
+        try:
+            v = int(raw)
+            if (lo is not None and v < lo) or (hi is not None and v > hi):
+                raise ValueError
+            return v
+        except ValueError:
+            print(paint(" 请输入有效数字", YELLOW))
+    return default
+
+
+def ask_yesno(prompt, default_no=True):
+    return ask(prompt, "n" if default_no else "y").lower().startswith("y")
+
+
+def pause(msg="按回车键继续 …"):
+    try:
+        input(msg)
+    except EOFError:
+        pass
+
+
+def choose_menu(title, options, prompt="请选择"):
+    """options: [(key, 标签, 是否可用)]；返回所选 key，无效返回 None。"""
+    print()
+    if title:
+        print(paint(title, BOLD))
+    for key, label, enabled in options:
+        line = f"  [{key}] {label}"
+        print(line if enabled else paint(line, DIM))
+    try:
+        raw = input(f"{prompt}：").strip()
+    except EOFError:
+        return None
+    for key, _label, enabled in options:
+        if enabled and raw == str(key):
+            return key
+    print(paint(" 选择无效", YELLOW))
+    return None
+
+
+def paged_view(title, rows, page_mark=""):
+    """rows: [(行文本)]，自动按终端高度分页；n/p 翻页，q/回车 返回。"""
+    if not rows:
+        print(paint("\n 没有条目", DIM))
+        return
+    per = max(3, term_size()[1] - 7)
+    pages = (len(rows) + per - 1) // per
+    page = 0
+    while True:
+        clear_screen()
+        sub = f"{page_mark} 第{page + 1}/{pages}页".strip()
+        title_bar(title, sub)
+        start = page * per
+        for i, line in enumerate(rows[start:start + per], start + 1):
+            print(f"{i:>4} {line}")
+        nav = []
+        if page > 0:
+            nav.append("n=上一页")
+        if page < pages - 1:
+            nav.append("p=下一页")
+        nav.append("q=返回")
+        print(paint("  " + "  ".join(nav), DIM))
+        try:
+            raw = input("选择：").strip().lower()
+        except EOFError:
+            return
+        if raw in ("q", ""):
+            return
+        if raw == "n" and page > 0:
+            page -= 1
+        elif raw == "p" and page < pages - 1:
+            page += 1
+
+
 # ---------------- 菜单 ----------------
 
+STATUS_COLOR = {"done": GREEN, "exists": GREEN, "pending": YELLOW,
+                "failed": RED, "skipped": GRAY}
+FILTER_GROUPS = [
+    ("1", "全部", None), ("2", "已完成", DONE_STATUSES),
+    ("3", "未下载", ("pending",)), ("4", "失败", ("failed",)),
+    ("5", "跳过", ("skipped",)),
+]
+
+
+def _detail_row(ti, width):
+    color = STATUS_COLOR.get(ti["status"], None)
+    mark = paint(STATUS_MARK.get(ti["status"], "?"), color)
+    src = paint(ti["src"], MAGENTA) if ti.get("src") == SRC_COMMENT else "  "
+    dur = ti.get("duration") or 0
+    dur_s = f"{dur // 60}:{dur % 60:02d}" if dur else "  -- "
+    left = (f"{mark} {src} #{ti['msg']}  {ti.get('date', '')}  "
+            f"{dur_s}  {human(ti['size']):>9}  ")
+    name = trunc_width(ti["name"], max(10, width - disp_width(left) - 2))
+    line = left + name
+    if ti["status"] == "failed" and ti.get("error"):
+        line += paint("  ✗" + trunc_width(ti["error"], 40), RED)
+    return line
+
+
+def filtered_items(task, statuses):
+    if statuses is None:
+        return list(task["items"])
+    return [ti for ti in task["items"] if ti["status"] in statuses]
+
+
 def show_task_detail(task):
-    for i, ti in enumerate(task["items"], 1):
-        mark = STATUS_MARK.get(ti["status"], "?")
-        print(
-            f" [{i:>3}] {mark} #{ti['msg']:<10} {ti.get('date', '')}  "
-            f"{human(ti['size']):>9}"
-        )
-        if ti["status"] == "failed" and ti.get("error"):
-            print(f"         原因：{ti['error'][:100]}")
+    """带状态筛选 + 分页的视频明细，交互与 GUI 筛选标签对应。"""
+    while True:
+        c = task_counts(task)
+        counts = {"全部": c["total"], "已完成": c["finished"],
+                  "未下载": c["pending"], "失败": c["failed"],
+                  "跳过": c["skipped"]}
+        opts = [(k, f"{label}（{counts[label]}）", True)
+                for k, label, _st in FILTER_GROUPS]
+        opts.append(("0", "返回上级", True))
+        key = choose_menu("视频明细 — 选择筛选", opts)
+        if key in (None, "0"):
+            return
+        statuses = next(st for k, _lb, st in FILTER_GROUPS if k == key)
+        label = next(lb for k, lb, _st in FILTER_GROUPS if k == key)
+        items = filtered_items(task, statuses)
+        rows = [_detail_row(ti, term_size()[0]) for ti in items]
+        paged_view(f"{task['channel_title']} · {label}", rows)
 
 
 async def resume_flow(client, task, statuses):
     """statuses=('pending','failed') 继续全部；=('failed',) 只重试失败。"""
     n_sel = sum(1 for ti in task["items"] if ti["status"] in statuses)
     if not n_sel:
-        print("没有需要下载的视频")
+        print(paint(" 没有需要下载的视频", DIM))
         return
     stored_par = int(task.get("params", {}).get("parallel") or 1)
-    raw = input(f"同时下载几路（回车={stored_par}，1-8）：").strip()
-    parallel = stored_par if not raw else max(1, min(int(raw), 8))
+    parallel = ask_int("同时下载几路（1-8）", stored_par, 1, 8)
 
     print(f"\n正在从服务器读取 {n_sel} 个视频的最新信息 …")
     records = await fetch_records(client, task, statuses)
     if not records:
-        print("没有可下载的视频")
+        print(paint(" 没有可下载的视频", DIM))
         return
     await execute_downloads(client, task, records, parallel)
-    input("\n按回车键返回菜单 …")
+    pause()
+
+
+def _open_path(p):
+    """跨平台“用系统默认方式打开”文件/目录；成功返回 True。"""
+    try:
+        if sys.platform == "win32":
+            os.startfile(p)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", p])
+        else:
+            subprocess.Popen(["xdg-open", p])
+        return True
+    except Exception:
+        return False
+
+
+def _pick_items(task):
+    """条目管理：先选范围 → 浏览分页明细 → 输入编号；返回选中的 key 列表。"""
+    groups = {"1": (None, "全部条目"), "2": (("pending", "failed"), "未下载/失败"),
+              "3": (("pending",), "未下载"), "4": (("failed",), "失败"),
+              "5": (("skipped",), "跳过")}
+    opts = [(k, label, True) for k, (_st, label) in groups.items()]
+    opts.append(("0", "取消", True))
+    key = choose_menu("条目管理 — 先选范围", opts)
+    if key in (None, "0"):
+        return []
+    statuses, label = groups[key]
+    items = filtered_items(task, statuses)
+    if not items:
+        print(paint(" 该范围没有条目", DIM))
+        return []
+    rows = [_detail_row(ti, term_size()[0]) for ti in items]
+    paged_view(f"{task['channel_title']} · {label}", rows)
+    raw = ask("输入要操作的编号（如 1,3,5-8）")
+    if not raw:
+        return []
+    try:
+        idxs = parse_excludes(raw, len(items))
+    except ValueError as e:
+        print(paint(f" {e}", RED))
+        return []
+    return [item_key(items[i - 1]) for i in idxs]
+
+
+async def item_manage_flow(client, task):
+    keys = _pick_items(task)
+    if not keys:
+        return
+    opts = [
+        ("1", "标记为待下载（重新下载）", True),
+        ("2", "标记为跳过", True),
+        ("3", "从任务清单移除（保留文件）", True),
+        ("4", "从清单移除并删除本地文件", True),
+        ("5", "打开所选文件", True),
+        ("0", "取消", True),
+    ]
+    act = choose_menu(f"对 {len(keys)} 个条目执行", opts)
+    if act in (None, "0"):
+        return
+    if act == "1":
+        print(f"已修改 {set_items_status(task, keys, 'pending')} 个")
+    elif act == "2":
+        print(f"已修改 {set_items_status(task, keys, 'skipped')} 个")
+    elif act == "3":
+        print(f"已移除 {remove_items(task, keys)} 个条目")
+    elif act == "4":
+        for ti in task["items"]:
+            if item_key(ti) in keys:
+                for p in glob.glob(os.path.join(task["folder"], ti["name"] + "*")):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+        print(f"已移除 {remove_items(task, keys)} 个条目并删除文件")
+    elif act == "5":
+        n = 0
+        for ti in task["items"]:
+            if item_key(ti) in keys:
+                p = os.path.join(task["folder"], ti["name"])
+                if os.path.exists(p) and _open_path(p):
+                    n += 1
+        print(f"已尝试打开 {n} 个文件")
+    pause()
+
+
+async def task_edit_flow(client, task):
+    while True:
+        cur_par = int(task.get("params", {}).get("parallel") or 1)
+        opts = [
+            ("1", f"修改显示名称：{task['channel_title']}", True),
+            ("2", f"修改默认并行：{cur_par} 路", True),
+            ("3", f"修改保存目录：{task['folder']}", True),
+            ("0", "返回", True),
+        ]
+        key = choose_menu("任务设置", opts)
+        if key in (None, "0"):
+            return
+        if key == "1":
+            rename_task(task, ask("新的显示名称", task["channel_title"]))
+        elif key == "2":
+            set_parallel(task, ask_int("默认并行路数（1-8）", cur_par, 1, 8))
+        elif key == "3":
+            newp = ask("新保存目录（绝对路径）", task["folder"])
+            move = ask_yesno("把已下载文件一起搬过去", False)
+            ok, msgs = change_folder(task, newp, move)
+            for m in msgs:
+                print(paint(" " + m, YELLOW))
+            print("已修改" if ok else paint(" 未修改", DIM))
+        pause()
 
 
 async def task_menu(client, task):
     changed = reconcile_task(task)
     if changed:
         save_task(task)
-        print(f"（发现 {changed} 个已完成视频本地文件缺失，已重置为未下载）")
+        print(paint(f"（{changed} 个已完成视频本地文件缺失，已重置为未下载）",
+                    YELLOW))
 
     while True:
         c = task_counts(task)
-        print("\n" + "-" * 50)
-        print(f"任务：{task['channel_title']}（@{task['channel']}）")
-        print(
-            f"创建：{task['created']}    进度 {c['finished']}/{c['total']}"
-            f"（未下载 {c['pending']}，失败 {c['failed']}，手动跳过 {c['skipped']}）"
-        )
-        print("-" * 50)
-        if c["unfinished"]:
-            extra = "（含失败视频）" if c["failed"] else ""
-            print(f" [1] 继续未完成任务{extra}")
-        if c["failed"]:
-            print(" [2] 仅重试失败视频")
-        print(" [3] 查看视频明细")
-        print(" [4] 删除任务记录（不删除已下载视频）")
-        print(" [0] 返回上级")
-        choice = input("请选择：").strip()
-
+        clear_screen()
+        title_bar(f"{task['channel_title']}  @{task['channel']}",
+                  f"{c['finished']}/{c['total']} 完成")
+        print(paint(f" 创建 {task['created']}    未下载 {c['pending']}，"
+                    f"失败 {c['failed']}，跳过 {c['skipped']}", DIM))
+        opts = [
+            ("1", f"继续未完成（{c['unfinished']}）", bool(c["unfinished"])),
+            ("2", f"仅重试失败（{c['failed']}）", bool(c["failed"])),
+            ("3", "查看视频明细", True),
+            ("4", "条目管理（状态/删除/打开）", True),
+            ("5", "任务设置（改名/并行/目录）", True),
+            ("6", "追加视频", True),
+            ("7", "打开下载目录", True),
+            ("8", "删除任务记录（保留视频）", True),
+            ("0", "返回上级", True),
+        ]
+        key = choose_menu("请选择操作", opts)
         try:
-            if choice == "0":
+            if key == "0":
                 return
-            elif choice == "1" and c["unfinished"]:
+            elif key == "1":
                 await resume_flow(client, task, ("pending", "failed"))
-            elif choice == "2" and c["failed"]:
+            elif key == "2":
                 await resume_flow(client, task, ("failed",))
-            elif choice == "3":
+            elif key == "3":
                 show_task_detail(task)
-            elif choice == "4":
-                if input("确定删除任务记录？（视频文件保留）输入 y 确认："
-                         ).strip().lower() == "y":
+            elif key == "4":
+                await item_manage_flow(client, task)
+            elif key == "5":
+                await task_edit_flow(client, task)
+            elif key == "6":
+                await append_flow(client, task)
+            elif key == "7":
+                if not _open_path(task["folder"]):
+                    print(paint(" 目录不存在", YELLOW))
+                pause()
+            elif key == "8":
+                if ask_yesno("确定删除任务记录？视频文件保留", False):
                     delete_task(task)
-                    print("任务记录已删除")
                     return
-            else:
-                print("选择无效，请重新输入")
         except Exception as e:
-            print(f"\n操作中断：{type(e).__name__}: {str(e)[:120]}")
+            print(paint(f"\n 操作中断：{type(e).__name__}: {str(e)[:120]}", RED))
+            pause()
+
+
+async def logout_flow(client):
+    """退出登录：销毁授权、删除会话，随后必须重启程序。"""
+    if not ask_yesno("确定退出当前账号？下次启动需重新接收验证码", False):
+        return
+    try:
+        await client.log_out()
+    except Exception:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+    for p in (SESSION_PATH + ".session", SESSION_PATH + ".session-journal"):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    print(paint(" 已退出登录，请关闭窗口后重新启动程序", GREEN))
+    pause()
+    raise SystemExit(0)
 
 
 async def settings_menu(client):
     while True:
         cfg = load_config()
         cur_root = cfg.get("download_root") or str(DEFAULT_DOWNLOAD_ROOT)
-        print("\n" + "-" * 50)
-        print(" 设置")
-        print(f" 数据目录：{DATA_DIR}")
-        print(f" 下载目录：{cur_root}")
-        print(f" api_id ：{cfg.get('api_id', '(未设置)')}")
+        clear_screen()
+        title_bar("设置")
+        print(paint(f" 数据目录：{DATA_DIR}", DIM))
+        print(paint(f" 下载目录：{cur_root}", DIM))
+        print(paint(f" api_id ：{cfg.get('api_id', '(未设置)')}", DIM))
         masked = "(未设置)"
         if cfg.get("api_hash"):
             masked = cfg["api_hash"][:4] + "****" + cfg["api_hash"][-2:]
-        print(f" api_hash：{masked}")
-        print(f" 手机号 ：{cfg.get('phone', '(未设置)')}")
-        print("-" * 50)
-        print(" [1] 修改下载目录")
-        print(" [2] 修改 API 凭证 / 手机号")
-        print(" [3] 恢复下载目录为默认（数据目录内）")
-        print(" [4] 恢复使用内置登录凭证")
-        print(" [0] 返回")
-        choice = input("请选择：").strip()
+        print(paint(f" api_hash：{masked}", DIM))
+        print(paint(f" 手机号 ：{cfg.get('phone', '(未设置)')}", DIM))
+        opts = [
+            ("1", "修改下载目录", True),
+            ("2", "修改 API 凭证 / 手机号", True),
+            ("3", "恢复下载目录为默认", True),
+            ("4", "恢复使用内置登录凭证", True),
+            ("5", "退出登录", True),
+            ("0", "返回", True),
+        ]
+        choice = choose_menu("请选择", opts)
 
         if choice == "0":
             return
         elif choice == "1":
-            print("输入新的下载目录绝对路径（视频会按频道名在其下建子目录）")
-            raw = input("新目录：").strip()
+            raw = ask("新下载目录绝对路径（视频按频道名建子目录）")
             if raw:
                 try:
                     p = pathlib.Path(raw).expanduser()
                     p.mkdir(parents=True, exist_ok=True)
                     cfg["download_root"] = str(p.resolve())
                     save_config(cfg)
-                    print("已保存")
+                    print(paint(" 已保存", GREEN))
                 except Exception as e:
-                    print(f"目录不可用：{type(e).__name__}: {str(e)[:100]}")
+                    print(paint(f" 目录不可用：{type(e).__name__}: {str(e)[:100]}", RED))
+            pause()
         elif choice == "2":
-            print("直接回车表示保留原值")
-            raw_id = input(f"api_id [{cfg.get('api_id','')}]：").strip()
-            raw_hash = input("api_hash（回车保留）：").strip()
-            raw_phone = input(f"手机号 [{cfg.get('phone','')}]：").strip()
+            raw_id = ask(f"api_id", str(cfg.get("api_id", "")))
+            raw_hash = ask("api_hash（4位+****+2位显示）", "")
+            raw_phone = ask("手机号", cfg.get("phone", ""))
             if raw_id:
                 cfg["api_id"] = int(raw_id)
             if raw_hash:
@@ -1906,171 +2488,189 @@ async def settings_menu(client):
             if raw_phone:
                 cfg["phone"] = raw_phone
             save_config(cfg)
-            print("已保存（更换凭证后若登录失效，重启会重新要求验证码）")
+            print(paint(" 已保存（更换凭证后若登录失效，重启会重新要求验证码）", GREEN))
+            pause()
         elif choice == "3":
             cfg.pop("download_root", None)
             save_config(cfg)
-            DEFAULT_DOWNLOAD_ROOT.mkdir(parents=True,exist_ok=True)
-            print("已恢复默认下载目录")
+            DEFAULT_DOWNLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+            print(paint(" 已恢复默认下载目录", GREEN))
+            pause()
         elif choice == "4":
             cfg["api_id"] = BUILTIN_API_ID
             cfg["api_hash"] = BUILTIN_API_HASH
             cfg["builtin_api"] = True
             save_config(cfg)
-            print("已恢复内置凭证（重启程序后生效）")
-        else:
-            print("选择无效，请重新输入")
+            print(paint(" 已恢复内置凭证（重启程序后生效）", GREEN))
+            pause()
+        elif choice == "5":
+            await logout_flow(client)
 
 
 async def main_menu(client):
     while True:
         tasks = load_tasks()
-        print("\n" + "=" * 50)
-        print(" Telegram 频道视频下载器")
-        print(" [1] 新建下载任务")
+        clear_screen()
+        title_bar("TG 视频下载器", f"{len(tasks)} 个任务")
+        opts = [("1", "新建下载任务", True)]
         for i, t in enumerate(tasks, 2):
             if reconcile_task(t):
                 save_task(t)
             c = task_counts(t)
             if c["unfinished"]:
-                state = f"未完成 {c['unfinished']}（失败 {c['failed']}）"
+                state = paint(f"未完成 {c['unfinished']}（失败 {c['failed']}）", YELLOW)
             elif c["skipped"]:
-                state = f"已完成（另有 {c['skipped']} 个手动跳过）"
+                state = paint(f"已完成（另有 {c['skipped']} 个跳过）", GREEN)
             else:
-                state = "已完成"
-            print(
-                f" [{i}] {t['channel_title']}  {t['created']}  "
-                f"{c['finished']}/{c['total']}  {state}"
-            )
-        print(" [S] 设置（下载目录、账号凭证）")
-        print(" [0] 退出")
-        raw = input("请选择：").strip()
+                state = paint("已完成", GREEN)
+            print(f"  [{i}] {t['channel_title']}  {t['created']}  "
+                  f"{c['finished']}/{c['total']}  {state}")
+            opts.append((str(i), t["channel_title"], True))
+        opts.append(("s", "设置（下载目录、账号凭证）", True))
+        opts.append(("0", "退出", True))
+        raw = choose_menu("请选择", opts)
 
         if raw == "0":
             return
-        if raw.lower() == "s":
+        if raw and raw.lower() == "s":
             await settings_menu(client)
             continue
         if raw == "1":
             try:
                 await new_task_flow(client)
             except Exception as e:
-                print(f"\n任务中断：{type(e).__name__}: {str(e)[:120]}")
+                print(paint(f"\n 任务中断：{type(e).__name__}: {str(e)[:120]}", RED))
+                pause()
             continue
         try:
             idx = int(raw) - 2
             if 0 <= idx < len(tasks):
                 await task_menu(client, tasks[idx])
                 continue
-        except ValueError:
+        except (ValueError, TypeError):
             pass
-        print("选择无效，请重新输入")
+        print(paint(" 选择无效，请重新输入", YELLOW))
+        pause()
 
 
 # ---------------- 新建任务 ----------------
 
+def _ask_float(prompt):
+    raw = ask(prompt)
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.0
+
+
+def _ask_date(prompt):
+    for _ in range(3):
+        raw = ask(prompt)
+        if not raw:
+            return ""
+        if _parse_date(raw) is not None:
+            return raw
+        print(paint(" 日期格式应为 YYYY-MM-DD", YELLOW))
+    return ""
+
+
+def gather_search_params():
+    """交互式收集高级搜索参数（与 GUI 预览条件一一对应）。"""
+    clear_screen()
+    title_bar("搜索条件")
+    params = {"query": ask("关键词（逗号分隔，词首 - 排除）")}
+    mode = ask("匹配模式 all/phrase/any/fuzzy/regex", "all").lower()
+    params["mode"] = mode if mode in ("phrase", "all", "any", "fuzzy", "regex") else "all"
+    params["limit"] = ask_int("结果数量上限", 30, 1, 100000)
+    params["min_mb"] = _ask_float("只保留大于多少 MB")
+    params["max_mb"] = _ask_float("只保留小于多少 MB")
+    params["date_from"] = _ask_date("起始日期 YYYY-MM-DD")
+    params["date_to"] = _ask_date("截止日期 YYYY-MM-DD")
+    scope = ask("搜索范围 channel/comments/both", "channel").lower()
+    params["scope"] = scope if scope in ("channel", "comments", "both") else "channel"
+    sort = ask("排序方式 date/size", "date").lower()
+    params["sort"] = "size" if sort == "size" else "date"
+    return params
+
+
+async def preview_records(client, entity, title, params, auto_all):
+    print(paint(f"\n 频道：{title}，正在搜索最多 {params['limit']} 个视频 …", DIM))
+    items, meta = await search_videos(client, entity, params)
+    if not items:
+        print(paint(" 没有找到符合条件的视频", YELLOW))
+        return []
+    before_d = len(items)
+    items = dedup_records(items)
+    if len(items) < before_d:
+        print(paint(f" 同名同大小去重：{before_d} → {len(items)}（保留最新）", DIM))
+    rows = []
+    for it in items:
+        m = it["msg"]
+        src = paint(it.get("src", ""), MAGENTA)
+        rows.append(
+            paint("#" + str(m.id), CYAN)
+            + f"  {m.date:%Y-%m-%d}  {human(it['size']):>9}  "
+            + src + " " + trunc_width(it["name"], 40)
+        )
+    paged_view(f"找到 {len(items)} 个视频", rows)
+    if auto_all:
+        return items
+    raw = ask("输入不要的编号（如 1,3,5-8，回车=全部下载）")
+    excluded = set()
+    if raw:
+        try:
+            excluded = parse_excludes(raw, len(items))
+        except ValueError as e:
+            print(paint(f" {e}", RED))
+    return [it for i, it in enumerate(items, 1) if i not in excluded]
+
+
+async def append_flow(client, task):
+    """同频道按新条件搜索并追加条目（自动去重）。"""
+    entity = await client.get_entity(task["channel"])
+    params = gather_search_params()
+    records, _meta = await search_videos(client, entity, params)
+    added = append_records(task, records)
+    dup = len(records) - added
+    print(paint(f" 已追加 {added} 个新视频（{dup} 个已在清单中）", GREEN))
+    pause()
+
+
 async def new_task_flow(client, args=None):
     args = args or []
-
-    channel_in = args[0] if args else input(
-        "频道用户名（@xxx 或 t.me/xxx 链接）："
-    )
-    limit = int(args[1]) if len(args) > 1 else int(input("扫描几个视频："))
-    if limit <= 0:
-        print("数量必须大于 0")
-        return
-    min_mb = float(args[2]) if len(args) > 2 else float(
-        input("只保留大于多少 MB 的（回车=不限制）：").strip() or 0
-    )
+    channel_in = args[0] if args else ask(
+        "频道用户名（@xxx 或 t.me/xxx 链接）")
 
     channel_name = parse_channel(channel_in)
     try:
         entity = await client.get_entity(channel_name)
     except ValueError:
-        print(
-            f"\n找不到频道「{channel_name}」：用户名可能拼错，或该频道不是公开频道"
-            f"（你输入的是 {channel_name}，是不是想输 durov？）"
-        )
+        print(paint(f" 找不到频道「{channel_name}」：用户名拼错或不是公开频道", RED))
         return
     except Exception as e:
-        print(f"\n解析频道失败：{type(e).__name__}: {str(e)[:120]}")
+        print(paint(f" 解析频道失败：{type(e).__name__}: {str(e)[:120]}", RED))
         return
     title = getattr(entity, "title", None) or channel_name
 
-    auto_all = bool(args) and args[-1] == "all"
-    if len(args) > 3 and args[3] != "all":
-        kw_raw = args[3]
+    if args:
+        # 旧命令行参数兼容：channel 数量 最小MB 关键词 并行 [all]
+        limit = int(args[1])
+        min_mb = float(args[2]) if len(args) > 2 else 0
+        kw_raw = args[3] if len(args) > 3 and args[3] != "all" else ""
+        auto_all = args[-1] == "all"
+        params = {"query": kw_raw, "mode": "all", "limit": limit,
+                  "min_mb": min_mb, "max_mb": 0,
+                  "date_from": "", "date_to": "",
+                  "scope": "channel", "sort": "date"}
     else:
-        kw_raw = input(
-            "关键词过滤（逗号分隔，词首 - 排除；如 4K,预告片,-广告；回车=不过滤）："
-        )
-    includes, excludes_kw = parse_keywords(kw_raw)
+        auto_all = False
+        params = gather_search_params()
 
-    # 同时下载几路视频：命令行第 5 个参数；交互默认 1
-    if len(args) > 4:
-        parallel = int(args[4])
-    else:
-        parallel = int(
-            input("同时下载几路视频（回车=1，建议 1-4）：").strip() or 1
-        )
-    parallel = max(1, min(parallel, 8))
-
-    tips = []
-    if min_mb:
-        tips.append(f"≥{min_mb:g} MB")
-    if includes:
-        tips.append("含:" + "/".join(includes))
-    if excludes_kw:
-        tips.append("不含:" + "/".join(excludes_kw))
-    tip = f"（{'，'.join(tips)}）" if tips else ""
-    action = "正在服务端搜索" if includes else "正在扫描"
-    print(f"\n频道：{title}，{action}最多 {limit} 个视频{tip} …")
-
-    items, n_small = await scan_videos(
-        client, entity, limit, min_mb, includes, excludes_kw
-    )
-    if not items:
-        print("没有找到符合条件的视频")
-        return
-    if n_small:
-        print(f"（已自动忽略 {n_small} 个小于 {min_mb:g} MB 的视频）")
-
-    # 下载前清单（1 = 最新）；关键词模式下列出的全部是命中视频
-    print(f"\n找到 {len(items)} 个视频：")
-    for i, it in enumerate(items, 1):
-        m = it["msg"]
-        print(
-            f"  [{i:>2}] #{m.id:<10} {m.date:%Y-%m-%d}  "
-            f"{human(it['size']):>9}  {it['name']}"
-        )
-        shown_txt, hit_inc, hit_exc = snippet_with_hits(
-            it["text"], includes, excludes_kw, width=150
-        )
-        if shown_txt:
-            print(f"        文字：{shown_txt}")
-        if hit_inc:
-            print(f"        命中词：{', '.join(hit_inc)}")
-        if hit_exc:
-            print(f"        （排除词同时出现：{', '.join(hit_exc)}）")
-
-    excludes = set()
-    if not auto_all:
-        prompt = (
-            "\n输入不要的编号（如 1,3,5-8，直接回车=全部下载）："
-        )
-        for _ in range(3):
-            try:
-                extra = parse_excludes(input(prompt), len(items))
-                excludes |= extra
-                break
-            except ValueError as e:
-                print(f"  {e}，请重新输入")
-
-    todo = [it for i, it in enumerate(items, 1) if i not in excludes]
+    todo = await preview_records(client, entity, title, params, auto_all)
     if not todo:
-        print("全部被排除，没有要下载的内容")
         return
 
+    parallel = ask_int("同时下载几路（1-8）", 1, 1, 8)
     folder = get_download_root(load_config()) / safe_name(title, channel_name)
     folder.mkdir(parents=True, exist_ok=True)
 
@@ -2080,15 +2680,14 @@ async def new_task_flow(client, args=None):
         "created": time.strftime("%Y-%m-%d %H:%M:%S"),
         "channel": channel_name,
         "channel_title": title,
-        "params": {"limit": limit, "min_mb": min_mb,
-                   "keywords": kw_raw or "", "parallel": parallel},
+        "params": dict(params, parallel=parallel),
         "folder": str(folder),
         "items": [make_task_item(it) for it in todo],
     }
     save_task(task)
     await execute_downloads(client, task, todo, parallel)
     if not args:
-        input("\n按回车键返回菜单 …")
+        pause()
 
 
 # ---------------- 入口 ----------------

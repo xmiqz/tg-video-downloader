@@ -104,10 +104,58 @@ class Api:
         from System import Action
         form.Invoke(Action(_do))
 
+    # ---------- client 生命周期辅助 ----------
+    def _new_client(self):
+        return TelegramClient(
+            core.SESSION_PATH, self.cfg["api_id"], self.cfg["api_hash"],
+            flood_sleep_threshold=120,
+        )
+
+    def _discard_client(self, client):
+        """断开并丢弃一个（可能半连接的）client，任何失败都吞掉。"""
+        if client is None:
+            return
+
+        async def _do():
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+        try:
+            self.engine.submit(_do())
+        except Exception:
+            pass
+
+    def _remove_session_files(self):
+        for p in (core.SESSION_PATH + ".session",
+                  core.SESSION_PATH + ".session-journal"):
+            try:
+                pathlib.Path(p).unlink()
+            except Exception:
+                pass
+
+    def _ensure_client(self):
+        """client 缺失时（connect() 曾失败）新建并连接。返回 None 或错误串。"""
+        if self.client is not None:
+            return None
+        client = self._new_client()
+
+        async def _do():
+            await client.connect()
+
+        try:
+            self.engine.submit(_do())
+        except Exception as e:
+            self._discard_client(client)
+            return f"{type(e).__name__}: {e}"
+        self.client = client
+        return None
+
     # ---------- 退出登录 ----------
     def logout(self):
         """退出登录：通知 TG 销毁授权并删除本地会话，回到未登录状态。"""
-        if core.ACTIVE_SESSION.is_running():
+        if core.any_active():
             return {"ok": False, "busy": True,
                     "error": "有下载任务正在进行，请先中止下载后再退出登录。"}
         client = self.client
@@ -132,12 +180,7 @@ class Api:
             pass
         self.client = None
         self._preview = {}
-        for p in (core.SESSION_PATH + ".session",
-                  core.SESSION_PATH + ".session-journal"):
-            try:
-                pathlib.Path(p).unlink()
-            except Exception:
-                pass
+        self._remove_session_files()
         # 清掉已保存手机号，重新登录时从输入手机号开始
         self.cfg.pop("phone", None)
         try:
@@ -159,25 +202,45 @@ class Api:
             return {"ok": True}
         core.ensure_dirs_and_migrate()
         self.cfg = core.setup_credentials()
-        client = TelegramClient(
-            core.SESSION_PATH, self.cfg["api_id"], self.cfg["api_hash"],
-            flood_sleep_threshold=120,
-        )
+        client = self._new_client()
 
         async def _do():
-            await client.connect()
-            if await client.is_user_authorized():
-                return "ok"
-            phone = self.cfg.get("phone") or ""
-            if not phone:
-                return "need_phone"
-            await client.send_code_request(phone)
-            return "need_code"
+            # 连接 + 鉴权探测整体限时：网络不通 / 同一 session 被另一实例
+            # 占用导致服务端反复重置时，快速失败而不是在启动时长时间挂起。
+            async def _connect_and_check():
+                await client.connect()
+                if await client.is_user_authorized():
+                    return "ok"
+                phone = self.cfg.get("phone") or ""
+                if not phone:
+                    return "need_phone"
+                await client.send_code_request(phone)
+                return "need_code"
+
+            return await asyncio.wait_for(_connect_and_check(), timeout=20.0)
 
         try:
             status = self.engine.submit(_do())
         except Exception as e:
             msg = f"{type(e).__name__}: {e}"
+            if type(e).__name__ == "SendCodeUnavailableError":
+                # 首次 SendCodeRequest 已成功（验证码已通过 App 内消息送达，
+                # phone_code_hash 已在 client 内存），失败的只是升级重发。
+                # 保留 client，直接进入输入验证码步骤
+                self.client = client
+                return {"ok": True, "stage": "need_code",
+                        "warning": "验证码已通过 Telegram App 消息发送，请直接查看并输入最新验证码；无需重复点击发送。"}
+            # 半成品 client 不能保留，否则后续 send_code 会拿到死连接/None
+            self._discard_client(client)
+            if type(e).__name__ == "AuthKeyDuplicatedError":
+                # 会话密钥已被服务端作废（同一 session 被两处 IP 同时使用），
+                # 删除会话文件，稍后由 send_code 走全新连接
+                self._remove_session_files()
+                msg += "\n本地登录信息已失效，请直接重新发送验证码登录。"
+            if type(e).__name__ in ("TimeoutError", "asyncio.TimeoutError"):
+                msg = ("连接 Telegram 服务器超时（20 秒）。\n"
+                       "请检查网络或代理后重试；若桌面版正在运行，"
+                       "请先关闭它再启动。")
             if "locked" in msg or "is locked" in msg:
                 return {"ok": False, "busy": True,
                         "error": "会话正被其它程序占用（桌面版还在运行？），请先关闭后重试。"}
@@ -188,15 +251,33 @@ class Api:
         return {"ok": True, "stage": status}
 
     def send_code(self, phone):
+        # connect() 失败后 self.client 可能为 None，先补建连接
+        err = self._ensure_client()
+        if err:
+            return {"ok": False, "error": err}
+
         async def _do():
             await self.client.send_code_request(phone)
+
         try:
             self.engine.submit(_do())
-            self.cfg["phone"] = phone
-            core.save_config(self.cfg)
-            return {"ok": True}
         except Exception as e:
-            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            ename = type(e).__name__
+            if ename == "AuthKeyDuplicatedError":
+                self._discard_client(self.client)
+                self.client = None
+                self._remove_session_files()
+                return {"ok": False, "error": f"{ename}: {e}"}
+            if ename == "SendCodeUnavailableError":
+                # 首次发送已成功，验证码已到 App；失败的只是短信升级重发
+                self.cfg["phone"] = phone
+                core.save_config(self.cfg)
+                return {"ok": True, "stage": "need_code",
+                        "warning": "验证码已通过 Telegram App 消息发送，请直接查看并输入最新验证码；无需重复点击发送。"}
+            return {"ok": False, "error": f"{ename}: {e}"}
+        self.cfg["phone"] = phone
+        core.save_config(self.cfg)
+        return {"ok": True}
 
     def verify_code(self, code):
         async def _do():
@@ -301,14 +382,11 @@ class Api:
         }
         core.save_task(task)
 
-        import asyncio as _a
-        gui = {"abort": _a.Event(), "skip": _a.Event()}
-
         def _run_bg():
             async def _do():
                 await core.execute_downloads(
                     self.client, task, todo,
-                    task["params"]["parallel"], gui=gui,
+                    task["params"]["parallel"], gui={},
                 )
             fut = asyncio.run_coroutine_threadsafe(_do(), self.engine.loop)
             try:
@@ -320,21 +398,40 @@ class Api:
         return {"ok": True, "task_id": task["id"]}
 
     # ---------- 实时状态 ----------
-    def active_state(self):
-        return core.ACTIVE_SESSION.state()
+    def active_states(self):
+        return core.active_states()
 
     def is_active(self):
-        return core.ACTIVE_SESSION.is_running()
+        return core.any_active()
 
-    def abort(self):
-        if core.ACTIVE_SESSION.abort is not None:
-            core.ACTIVE_SESSION.abort.set()
+    def abort_task(self, task_id):
+        sess = core.ACTIVE_SESSIONS.get(task_id)
+        if sess is None:
+            return {"ok": False, "error": "该任务当前没有下载会话"}
+        sess.request_abort()
         return {"ok": True}
 
-    def skip_current(self):
-        if core.ACTIVE_SESSION.skip is not None:
-            core.ACTIVE_SESSION.skip.set()
-        return {"ok": True}
+    def item_action(self, task_id, action, keys):
+        """单项/批量操作。action: pause/resume/skip/remove。
+        任务下载中：走会话控制（暂停释放槽位、恢复优先调度）；
+        非下载中：remove 直接删条目，skip/resume 直接改持久状态。"""
+        ks = [(k.get("src", core.SRC_CHANNEL), int(k["mid"]))
+              for k in keys]
+        sess = core.ACTIVE_SESSIONS.get(task_id)
+        if sess is not None:
+            sess.request(action, ks)
+            return {"ok": True}
+        t = self._load_one(task_id)
+        if t is None:
+            return {"ok": False, "error": "任务不存在"}
+        if action == "remove":
+            return {"ok": True, "removed": core.remove_items(t, ks)}
+        changed = 0
+        target = "skipped" if action == "skip" else "pending"
+        for k in ks:
+            if core.set_item_status(t, k, target):
+                changed += 1
+        return {"ok": True, "changed": changed}
 
     # ---------- 任务历史 ----------
     def list_tasks(self):
@@ -368,20 +465,20 @@ class Api:
         for t in core.load_tasks():
             if t["id"] != task_id:
                 continue
+            if task_id in core.ACTIVE_SESSIONS:
+                return {"ok": False, "error": "该任务已在下载中，请勿重复开始"}
             statuses = ("failed",) if only_failed else ("pending", "failed")
             n = sum(1 for ti in t["items"] if ti["status"] in statuses)
             if not n:
                 return {"ok": False, "error": "没有需要下载的视频"}
             parallel = int(t.get("params", {}).get("parallel") or 1)
-            import asyncio as _a
-            gui = {"abort": _a.Event(), "skip": _a.Event()}
 
             def _run_bg():
                 async def _do():
                     records = await core.fetch_records(self.client, t, statuses)
                     if records:
                         await core.execute_downloads(
-                            self.client, t, records, parallel, gui=gui
+                            self.client, t, records, parallel, gui={}
                         )
                 fut = asyncio.run_coroutine_threadsafe(_do(), self.engine.loop)
                 try:
@@ -428,6 +525,11 @@ class Api:
         if t is None:
             return {"ok": False, "error": "任务不存在"}
         ks = [(k.get("src", core.SRC_CHANNEL), int(k["mid"])) for k in keys]
+        sess = core.ACTIVE_SESSIONS.get(task_id)
+        if sess is not None:
+            # 下载中：取消正在下的条目并从清单删除，槽位随之释放
+            sess.request("remove", ks)
+            return {"ok": True, "removed": len(ks)}
         n = core.remove_items(t, ks)
         return {"ok": True, "removed": n}
 
@@ -612,6 +714,8 @@ if sys.platform == "win32":
     from ctypes import wintypes
 
     class _MagImageHeader(ctypes.Structure):
+        # width/height/format/stride 的偏移（0/4/8/24）是回调唯一读取的
+        # 字段，必须与运行时一致；尾部字段不使用。
         _fields_ = [
             ("width", wintypes.UINT),
             ("height", wintypes.UINT),
@@ -630,6 +734,60 @@ if sys.platform == "win32":
     class _MagTransform(ctypes.Structure):
         _fields_ = [("v", ctypes.c_float * 3 * 3)]
 
+    # ---- 64 位安全的原型声明 ----
+    # 不声明时 ctypes 默认把句柄当 32 位 c_int：CreateWindowExW 返回的 HWND
+    # 一旦超过 0x7FFFFFFF 就被截断，后续 Mag* 调用拿到坏句柄而 access
+    # violation（取光组件偶发初始化失败、液态玻璃“时有时无”的根因）。
+    _u32 = ctypes.windll.user32
+    _magf = ctypes.windll.magnification
+    _EnumProcT = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    _u32.GetWindowRect.argtypes = [
+        wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    _u32.GetWindowRect.restype = wintypes.BOOL
+    _u32.EnumChildWindows.argtypes = [
+        wintypes.HWND, _EnumProcT, wintypes.LPARAM]
+    _u32.EnumChildWindows.restype = wintypes.BOOL
+    _u32.GetWindowThreadProcessId.argtypes = [
+        wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    _u32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    _u32.EnumThreadWindows.argtypes = [
+        wintypes.DWORD, _EnumProcT, wintypes.LPARAM]
+    _u32.EnumThreadWindows.restype = wintypes.BOOL
+    _u32.CreateWindowExW.argtypes = [
+        wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID]
+    _u32.CreateWindowExW.restype = wintypes.HWND
+    _u32.SetLayeredWindowAttributes.argtypes = [
+        wintypes.HWND, wintypes.COLORREF, wintypes.BYTE, wintypes.DWORD]
+    _u32.SetLayeredWindowAttributes.restype = wintypes.BOOL
+    _u32.SetWindowPos.argtypes = [
+        wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, wintypes.DWORD]
+    _u32.SetWindowPos.restype = wintypes.BOOL
+    _u32.InvalidateRect.argtypes = [
+        wintypes.HWND, wintypes.LPVOID, wintypes.BOOL]
+    _u32.InvalidateRect.restype = wintypes.BOOL
+    _u32.UpdateWindow.argtypes = [wintypes.HWND]
+    _u32.UpdateWindow.restype = wintypes.BOOL
+    _u32.IsIconic.argtypes = [wintypes.HWND]
+    _u32.IsIconic.restype = wintypes.BOOL
+
+    _magf.MagInitialize.restype = wintypes.BOOL
+    _magf.MagSetWindowFilterList.argtypes = [
+        wintypes.HWND, wintypes.DWORD, ctypes.c_int,
+        ctypes.POINTER(wintypes.HWND)]
+    _magf.MagSetWindowFilterList.restype = wintypes.BOOL
+    _magf.MagSetImageScalingCallback.argtypes = [wintypes.HWND, _MAGCB]
+    _magf.MagSetImageScalingCallback.restype = wintypes.BOOL
+    _magf.MagSetWindowSource.argtypes = [wintypes.HWND, wintypes.RECT]
+    _magf.MagSetWindowSource.restype = wintypes.BOOL
+    _magf.MagSetWindowTransform.argtypes = [
+        wintypes.HWND, ctypes.POINTER(_MagTransform)]
+    _magf.MagSetWindowTransform.restype = wintypes.BOOL
+
 
 class AmbientCapture:
     """实时环境取光。
@@ -646,9 +804,16 @@ class AmbientCapture:
         self.sw = self.sh = 0
         self._lock = threading.Lock()
         self._frame = None           # (w, h, buffer BGRA)
+        self._buf = None             # 复用的全屏缓冲，避免每帧分配大块
         self.version = 0
         self._cache_key = None
         self._prev_bytes = None       # 上一次 JPEG 字节，用于内容去重
+
+    def _main_rect(self):
+        r = wintypes.RECT()
+        ctypes.windll.user32.GetWindowRect(
+            self.main_hwnd, ctypes.byref(r))
+        return (r.left, r.top, r.right - r.left, r.bottom - r.top)
 
     def start(self, main_hwnd):
         user32 = ctypes.windll.user32
@@ -671,7 +836,10 @@ class AmbientCapture:
         tid = user32.GetWindowThreadProcessId(self.main_hwnd, None)
         user32.EnumThreadWindows(int(tid), enum_proc, 0)
 
-        # 放大镜自身：分层（alpha=0 不可见）+ 鼠标穿透 + 工具窗（不进任务栏）。
+        # 放大镜始终为全屏：几何完全不依赖主窗当前矩形（主窗在线程恢复
+        # DPI 的瞬间可能处于虚拟化中间态），这是取光稳定不崩的关键。
+        # 主窗背后的像素在 render_jpeg 里按主窗矩形实时裁剪。
+        # 分层（alpha=0 不可见）+ 鼠标穿透 + 工具窗（不进任务栏）。
         # 归主窗所有（owned），确保不在任务栏/Alt+Tab 出现，并随主窗销毁。
         self.mag_hwnd = user32.CreateWindowExW(
             0x00080000 |            # WS_EX_LAYERED
@@ -690,12 +858,12 @@ class AmbientCapture:
 
         # 去重
         seen, uniq = set(), []
-        for h in excluded:
-            if h not in seen:
-                seen.add(h)
-                uniq.append(h)
+        for hh in excluded:
+            if hh not in seen:
+                seen.add(hh)
+                uniq.append(hh)
 
-        arr = (wintypes.HWND * len(uniq))(*[wintypes.HWND(h) for h in uniq])
+        arr = (wintypes.HWND * len(uniq))(*[wintypes.HWND(hh) for hh in uniq])
         # MW_FILTERMODE_EXCLUDE = 0
         mag.MagSetWindowFilterList(self.mag_hwnd, 0, len(uniq), arr)
 
@@ -711,12 +879,18 @@ class AmbientCapture:
         try:
             if src and hdr.stride and hdr.width and hdr.height:
                 w, h, st = int(hdr.width), int(hdr.height), int(hdr.stride)
-                buf = ctypes.create_string_buffer(w * 4 * h)
-                row = w * 4
-                addr = ctypes.addressof(buf)
-                for y in range(h):
-                    ctypes.memmove(addr + y * row, src + y * st, row)
+                row, need = w * 4, w * 4 * h
                 with self._lock:
+                    if self._buf is None or len(self._buf) < need:
+                        self._buf = ctypes.create_string_buffer(need)
+                    buf = self._buf
+                    if st == row:
+                        # 行紧凑：一次整块拷贝，不再逐行 Python 循环
+                        ctypes.memmove(buf, src, need)
+                    else:
+                        addr = ctypes.addressof(buf)
+                        for yy in range(h):
+                            ctypes.memmove(addr + yy * row, src + yy * st, row)
                     self._frame = (w, h, buf)
                     self.version += 1
         except Exception:
@@ -724,7 +898,7 @@ class AmbientCapture:
         return True
 
     def pump(self):
-        """在 UI 线程主动驱动放大镜重采样（UpdateWindow 同步触发回调）。"""
+        """在 UI 线程主动驱动全屏放大镜重采样（UpdateWindow 同步触发回调）。"""
         user32 = ctypes.windll.user32
         mag = ctypes.windll.magnification
         mag.MagSetWindowSource(self.mag_hwnd,
@@ -732,20 +906,17 @@ class AmbientCapture:
         user32.InvalidateRect(self.mag_hwnd, None, False)
         user32.UpdateWindow(self.mag_hwnd)
 
-    def render_jpeg(self, out_w=600, quality=52):
-        """按主窗当前屏幕位置裁剪最新一帧，降采样编码为 JPEG data URL。
+    def render_jpeg(self, out_w=560, quality=58):
+        """按主窗当前屏幕位置，从最新全屏帧裁剪背后区域，降采样并烘焙
+        模糊，编码为 JPEG data URL。
         返回 (是否有变化, url或None, 版本号)。可从任意线程调用。"""
-        user32 = ctypes.windll.user32
-        r = wintypes.RECT()
-        user32.GetWindowRect(self.main_hwnd, ctypes.byref(r))
-        rect = (r.left, r.top, r.right - r.left, r.bottom - r.top)
-
+        rect = self._main_rect()
         with self._lock:
             if self._frame is None:
                 return False, None, 0
             fw, fh, buf = self._frame
             ver = self.version
-            key = (ver, rect)
+            key = (ver, rect, out_w, quality)
             if key == self._cache_key:
                 return False, None, ver
             x, y, w, h = rect
@@ -753,17 +924,28 @@ class AmbientCapture:
             x1, y1 = min(fw, x + w), min(fh, y + h)
             if x1 <= x0 or y1 <= y0:
                 return False, None, ver
-            # crop 在锁内完成，得到独立图像，避免 buf 被 pump 替换
             from PIL import Image
             full = Image.frombuffer("RGBA", (fw, fh), buf, "raw", "BGRA", 0, 1)
+            # crop 在锁内完成，得到独立图像，避免 buf 被 pump 复用
             crop = full.crop((x0, y0, x1, y1))
+            cw = out_w
+            ch = max(2, round(cw * crop.size[1] / crop.size[0]))
+            small = crop.resize((cw, ch), Image.BILINEAR).convert("RGB")
 
-        # 锁外缩放/编码
-        cw, ch = crop.size
-        th = max(2, int(out_w * ch / cw))
-        crop = crop.resize((out_w, th), Image.BILINEAR).convert("RGB")
+        # 锁外：用“缩到 1/7 再放大”近似重模糊（C 级，毫秒级）。
+        # 系数过大(12)会把环境糊成色块、丢失折射细节；7 保留色彩与轮廓。
+        k = 7
+        baked = small.resize(
+            (max(1, cw // k), max(1, ch // k)), Image.BILINEAR
+        ).resize((cw, ch), Image.BILINEAR)
+        # 轻微提色：环境彩光在玻璃边缘的折射更生动
+        try:
+            from PIL import ImageEnhance
+            baked = ImageEnhance.Color(baked).enhance(1.15)
+        except Exception:
+            pass
         bio = io.BytesIO()
-        crop.save(bio, format="JPEG", quality=quality)
+        baked.save(bio, format="JPEG", quality=quality)
         data = bio.getvalue()
         if data == self._prev_bytes:
             # 裁剪内容真正未变，不重复推送（静止画面零 JS 通信）
@@ -827,7 +1009,8 @@ class _BackdropDriver:
     def on_pump(self, sender, event):
         # 必须在 UI 线程：同步驱动放大镜更新最新帧
         try:
-            if self.cap is not None:
+            # 主窗最小化时不采样（保留最后一帧背景，零开销）
+            if self.cap is not None and not self.user32.IsIconic(self.hwnd):
                 self.cap.pump()
         except Exception as ex:
             print("[GUI] pump 失败：", ex)
@@ -836,7 +1019,7 @@ class _BackdropDriver:
         # 后台线程：编码并通过 evaluate_js 推送（该同步调用禁止在 UI 线程执行）
         last = 0
         while True:
-            time.sleep(0.06)
+            time.sleep(0.1)              # 10fps 推送，静止画面字节去重零通信
             try:
                 if self.cap is None or self.cap.version == last:
                     continue
@@ -911,7 +1094,7 @@ def main():
                 drv = _BackdropDriver(api, window, hwnd, user32)
                 handler = EventHandler(drv.on_pump)
                 timer = Timer()
-                timer.Interval = 50
+                timer.Interval = 100       # 10fps 环境取光，够用且省一半开销
                 timer.Tick += handler
                 drv.timer = timer
                 threading.Thread(target=drv.push_loop,

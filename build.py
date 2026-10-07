@@ -4,6 +4,7 @@ TG视频下载器 —— 跨平台一键打包脚本（PyInstaller）
 
   Windows（x64/ARM64）：打包图形界面 gui.py + web/ 资产
                        （pywebview + WebView2 + pythonnet + Pillow）
+                       同时打包控制台 TUI 版 tg_video_dl.py（ANSI 界面）
   Linux / macOS       ：打包命令行内核 tg_video_dl.py
   （PyInstaller 不支持交叉编译，每个平台在自己的 runner 上构建）
 
@@ -54,6 +55,24 @@ def build_windows_gui(dist):
         "--workpath", WORK,
         "--specpath", WORK,
         os.path.join(HERE, "gui.py"),
+    ]
+    print(">>", " ".join(cmd))
+    subprocess.check_call(cmd)
+
+
+def build_windows_tui(dist):
+    machine = platform.machine().lower()
+    name = ("TG视频下载器_TUI_ARM64" if machine in ("arm64", "aarch64")
+            else "TG视频下载器_TUI")
+    cmd = [
+        sys.executable, "-m", "PyInstaller",
+        "--noconfirm", "--onefile", "--console",
+        "--name", name,
+        "--collect-submodules", "telethon",
+        "--distpath", dist,
+        "--workpath", WORK,
+        "--specpath", WORK,
+        os.path.join(HERE, "tg_video_dl.py"),
     ]
     print(">>", " ".join(cmd))
     subprocess.check_call(cmd)
@@ -110,6 +129,7 @@ def main():
 
     if platform.system() == "Windows":
         build_windows_gui(dist)
+        build_windows_tui(dist)
     else:
         build_cli(dist)
 
