@@ -104,6 +104,48 @@ class Api:
         from System import Action
         form.Invoke(Action(_do))
 
+    # ---------- 退出登录 ----------
+    def logout(self):
+        """退出登录：通知 TG 销毁授权并删除本地会话，回到未登录状态。"""
+        if core.ACTIVE_SESSION.is_running():
+            return {"ok": False, "busy": True,
+                    "error": "有下载任务正在进行，请先中止下载后再退出登录。"}
+        client = self.client
+
+        async def _do():
+            if client is None:
+                return
+            try:
+                await client.log_out()
+            except Exception:
+                # 网络异常等导致服务端注销失败，也要本地断开，
+                # 否则旧连接仍占着事件循环
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+
+        try:
+            if client is not None:
+                self.engine.submit(_do())
+        except Exception:
+            pass
+        self.client = None
+        self._preview = {}
+        for p in (core.SESSION_PATH + ".session",
+                  core.SESSION_PATH + ".session-journal"):
+            try:
+                pathlib.Path(p).unlink()
+            except Exception:
+                pass
+        # 清掉已保存手机号，重新登录时从输入手机号开始
+        self.cfg.pop("phone", None)
+        try:
+            core.save_config(self.cfg)
+        except Exception:
+            pass
+        return {"ok": True}
+
     # ---------- 登录 ----------
     def login_state(self):
         if self.client is not None:

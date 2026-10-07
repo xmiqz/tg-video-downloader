@@ -95,6 +95,37 @@ async function afterLogin() {
   }
 }
 
+// ---------- 退出登录（重置账号） ----------
+async function doLogout() {
+  try {
+    if (await api().is_active())
+      return alert("有下载任务正在进行，请先到「下载中」中止下载后再退出。");
+  } catch (e) {}
+  if (!confirm("退出当前账号？\n\n· 本地登录信息将被删除，重新登录需输入手机号与验证码\n· 任务清单与已下载视频不受影响")) return;
+  const r = await api().logout();
+  if (!r.ok) return alert(r.error || "退出登录失败");
+
+  // 收起可能打开的滑层/弹层
+  closeSheetNoRefresh();
+  closeAppend();
+  // 重置预览与向导
+  previewData = { items: [], channel: "", title: "" };
+  selected = new Set();
+  gotoStep(1);
+  // 重置侧边栏账号信息
+  document.getElementById("me-name").textContent = "未登录";
+  document.getElementById("me-user").textContent = "";
+  document.getElementById("me-avatar").textContent = "·";
+  // 显示登录界面（从手机号开始）
+  loginErr("");
+  document.getElementById("login-phone").value = "";
+  document.getElementById("login-code").value = "";
+  document.getElementById("login-pwd").value = "";
+  showLoginStep("phone");
+  document.getElementById("login").classList.remove("hidden");
+  switchView("new");
+}
+
 // ============================================================
 // 新建下载 —— 步骤/高级选项
 // ============================================================
@@ -385,8 +416,15 @@ function renderSheet() {
     `<span><b>${c.failed}</b> 失败</span>` +
     `<span><b>${c.skipped}</b> 跳过</span>` +
     `<span>共 <b>${c.total}</b></span>`;
-  document.querySelectorAll("#sheet-status-seg .seg").forEach(el =>
-    el.classList.toggle("active", el.dataset.st === sheet.filter));
+  document.querySelectorAll("#sheet-status-seg .seg").forEach(el => {
+    el.classList.toggle("active", el.dataset.st === sheet.filter);
+    let n = c.total;
+    if (el.dataset.st === "done") n = c.finished;
+    else if (el.dataset.st === "pending") n = c.pending;
+    else if (el.dataset.st === "failed") n = c.failed;
+    else if (el.dataset.st === "skipped") n = c.skipped;
+    el.textContent = `${el.dataset.label} ${n}`;
+  });
   document.getElementById("detail-q").value = sheet.q;
   // 底部按钮
   const hasUn = c.pending + c.failed > 0;
@@ -395,7 +433,11 @@ function renderSheet() {
   resumeBtn.disabled = !hasUn;
   resumeBtn.style.opacity = hasUn ? 1 : .4;
 }
-function setDetailFilter(st) { sheet.filter = st; renderDetailItems(); }
+function setDetailFilter(st) {
+  sheet.filter = st;
+  renderSheet();          // 同步标签高亮（此前漏调，导致 UI 无变化）
+  renderDetailItems();
+}
 
 const STATUS_LABEL = {
   done: "完成", exists: "完成", pending: "未下载",
@@ -639,6 +681,10 @@ async function runAppend() {
 async function loadSettings() {
   const r = await api().get_settings();
   document.getElementById("set-root").value = r.download_root;
+  const n = document.getElementById("me-name").textContent;
+  const u = document.getElementById("me-user").textContent;
+  document.getElementById("set-account").textContent =
+    n === "未登录" ? "未登录" : `${n}${u ? "  " + u : ""}`;
 }
 async function chooseFolder() {
   const r = await api().choose_folder();

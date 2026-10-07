@@ -87,6 +87,8 @@
           <div id="me-name" class="me-name">未登录</div>
           <div id="me-user" class="me-user"></div>
         </div>
+        <button id="me-logout" class="me-logout-btn" title="退出登录"
+          onclick="doLogout()">⎋</button>
       </div>
     </div>
   </aside>
@@ -275,6 +277,14 @@
     <section id="view-settings" class="view hidden">
       <header class="page-head"><div><h2>设置</h2><p class="page-sub">外观、下载目录与数据</p></div></header>
       <div class="glass form-card narrow">
+        <label>当前账号</label>
+        <div class="account-row">
+          <div id="set-account" class="account-info">未登录</div>
+          <button class="btn danger sm" onclick="doLogout()">退出登录</button>
+        </div>
+        <p class="hint">退出后本地登录授权将被删除，重新登录需输入手机号与验证码；任务清单和已下载视频不会被删除。下载进行中无法退出。</p>
+      </div>
+      <div class="glass form-card narrow">
         <label>界面外观</label>
         <div class="segmented" id="set-appearance-seg">
           <button class="seg" data-mode="dark" onclick="setAppearance('dark')">静态暗</button>
@@ -316,11 +326,11 @@
       <div id="sheet-counters" class="sheet-counters"></div>
     </div>
     <div class="segmented sheet-tabs" id="sheet-status-seg">
-      <button class="seg active" data-st="all" onclick="setDetailFilter('all')">全部</button>
-      <button class="seg" data-st="done" onclick="setDetailFilter('done')">已完成</button>
-      <button class="seg" data-st="pending" onclick="setDetailFilter('pending')">未下载</button>
-      <button class="seg" data-st="failed" onclick="setDetailFilter('failed')">失败</button>
-      <button class="seg" data-st="skipped" onclick="setDetailFilter('skipped')">跳过</button>
+      <button class="seg active" data-st="all" data-label="全部" onclick="setDetailFilter('all')">全部</button>
+      <button class="seg" data-st="done" data-label="已完成" onclick="setDetailFilter('done')">已完成</button>
+      <button class="seg" data-st="pending" data-label="未下载" onclick="setDetailFilter('pending')">未下载</button>
+      <button class="seg" data-st="failed" data-label="失败" onclick="setDetailFilter('failed')">失败</button>
+      <button class="seg" data-st="skipped" data-label="跳过" onclick="setDetailFilter('skipped')">跳过</button>
     </div>
     <div class="search-box sheet-search">
       <span class="search-ico">⌕</span>

@@ -21,6 +21,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # 构建中间目录强制用纯 ASCII 路径，避免中文路径导致的 hook/编码问题
 WORK = os.path.join(HERE, "build_tmp")
 
+# Windows runner 经 Git bash 调用时，stdout 默认可能是 cp1252，打印含中文的
+# 产物名/命令会直接 UnicodeEncodeError。统一切到 UTF-8，errors=replace 兜底。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+# 子进程（PyInstaller）同样强制 UTF-8 输出，避免其内部打印中文名时崩溃
+os.environ["PYTHONUTF8"] = "1"
+os.environ["PYTHONIOENCODING"] = "utf-8"
+
 
 def build_windows_gui(dist):
     machine = platform.machine().lower()
