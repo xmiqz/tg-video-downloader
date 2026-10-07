@@ -505,11 +505,12 @@ class Api:
 
             def _run_bg():
                 async def _do():
-                    records = await core.fetch_records(self.client, t, statuses)
-                    if records:
-                        await core.execute_downloads(
-                            self.client, t, records, parallel, gui={}
-                        )
+                    # 边读边下：立即建立下载会话，消息分批补取，
+                    # 避免大清单在读取阶段长时间无反馈
+                    await core.execute_downloads(
+                        self.client, t, [], parallel, gui={},
+                        lazy_statuses=statuses,
+                    )
                 fut = asyncio.run_coroutine_threadsafe(_do(), self.engine.loop)
                 try:
                     fut.result()

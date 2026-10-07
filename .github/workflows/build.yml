@@ -60,11 +60,23 @@ jobs:
           case "${{ matrix.target }}" in
             windows-x64)
               norm "dist/*_TUI.exe" "TGVideoDownloader_TUI.exe"
-              norm "dist/*.exe" "TGVideoDownloader.exe"
+              # 注意：dist/*.exe 此时也会匹配已改名的 TUI，必须排除，
+              # 否则 TUI 会被移动成 GUI 同名文件而互相覆盖
+              for f in dist/*.exe; do
+                case "$f" in
+                  *_TUI.exe) ;;
+                  *) mv "$f" "dist/TGVideoDownloader.exe" ;;
+                esac
+              done
               ;;
             windows-arm64)
               norm "dist/*_TUI_ARM64.exe" "TGVideoDownloader_TUI_ARM64.exe"
-              norm "dist/*_ARM64.exe" "TGVideoDownloader_ARM64.exe"
+              for f in dist/*_ARM64.exe; do
+                case "$f" in
+                  *_TUI_ARM64.exe) ;;
+                  *) mv "$f" "dist/TGVideoDownloader_ARM64.exe" ;;
+                esac
+              done
               ;;
             linux-x64)       norm "dist/*linux_x64" "TGVideoDownloader_linux_x64" ;;
             linux-arm64)     norm "dist/*linux_arm64" "TGVideoDownloader_linux_arm64" ;;

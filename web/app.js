@@ -358,6 +358,7 @@ async function refreshActive() {
 
   // ---- 跨任务聚合总览 ----
   let totBytes = 0, totSize = 0, speed = 0;
+  let fTasks = 0, fDone = 0, fTotal = 0, fNote = "";
   const cc = { done: 0, skip: 0, fail: 0, active: 0, paused: 0 };
   for (const s of states) {
     totBytes += s.total_bytes || 0;
@@ -368,6 +369,18 @@ async function refreshActive() {
     cc.fail += s.counts.fail || 0;
     cc.active += s.counts.active || 0;
     cc.paused += s.counts.paused || 0;
+    if (s.fetching) {
+      fTasks++;
+      fDone += s.fetched || 0;
+      fTotal += s.fetch_total || 0;
+      if (s.fetch_note) fNote = s.fetch_note;
+    }
+  }
+  const fb = document.getElementById("active-fetch");
+  fb.classList.toggle("hidden", fTasks === 0);
+  if (fTasks) {
+    fb.textContent = "正在分批从服务器核对视频信息：" + fDone + "/" + fTotal +
+      (fNote ? "（" + fNote + "）" : "");
   }
   const pct = totSize ? Math.round(totBytes * 100 / totSize) : 0;
   document.getElementById("ov-fill").style.width = pct + "%";

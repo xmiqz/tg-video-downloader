@@ -373,6 +373,12 @@ nav { flex: 1; display: flex; flex-direction: column; gap: 5px; }
 
 /* ---------- 下载条目（可展开） ---------- */
 .dl-list { display: flex; flex-direction: column; gap: 12px; }
+.fetch-banner {
+  margin: 2px 0; padding: 9px 16px; border-radius: 999px;
+  font-size: 13px; color: var(--ink-mute);
+  background: color-mix(in srgb, var(--accent, #6ea8fe) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent, #6ea8fe) 30%, transparent);
+}
 .dl-card {
   background: var(--glass-bg-soft);
   border: 1px solid rgba(255,255,255,.1);

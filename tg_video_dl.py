@@ -888,7 +888,10 @@ class Monitor:
     与按键线程（I 切换）互不干扰。
     """
 
-    def __init__(self, todo, parallel, title, vt, push_cb=None):
+    def __init__(self, planned, parallel, title, vt, push_cb=None):
+        """planned：占位条目列表，每项含 mid/src/size/name/date。
+        无需真实 Message 对象——消息可在下载开始后分批补取（边读边下），
+        条目取到后通过 fill() 补充日期/正文等展示信息。"""
         self.vt = vt
         self.title = title
         self.parallel = parallel
@@ -901,23 +904,46 @@ class Monitor:
         # 全局测速滑动窗口：元素 (monotonic 时刻, 全部条目已下字节总量)，
         # 仅保留最近 SPEED_WIN_SEC 秒，总速度取窗口首尾的平均，每秒更新。
         self.win = []
-        for n, it in enumerate(todo, 1):
-            mid = it["msg"].id
-            src = it.get("src", SRC_CHANNEL)
+        for n, p in enumerate(planned, 1):
+            src = p.get("src", SRC_CHANNEL)
             e = {
-                "n": n, "mid": mid, "src": src,
-                "key": (src, mid),
-                "total": it["size"],
-                "name": it["name"],
-                "date": f"{it['msg'].date:%Y-%m-%d %H:%M}" if it["msg"].date else "",
-                "text": getattr(it["msg"], "message", "") or "",
+                "n": n, "mid": p["mid"], "src": src,
+                "key": (src, p["mid"]),
+                "total": p["size"],
+                "name": p["name"],
+                "date": p.get("date", ""),
+                "text": "",
                 "done": 0, "status": "等待中", "speed": 0.0,
                 "samples": [], "started": None, "ended": None,
                 "error": "", "final": "",
             }
             self.entries.append(e)
-            self.order[(src, mid)] = e
+            self.order[(src, p["mid"])] = e
         self.active_count = 0
+        # 边读边下的读取进度（fetched/总数/说明）；非 lazy 模式直接置完成
+        self.fetched = 0
+        self.fetch_total = len(planned)
+        self.fetching = False
+        self.fetch_note = ""
+
+    async def fill(self, rec):
+        """记录从服务器取到后，补充占位条目的展示信息。"""
+        async with self.lock:
+            e = self.order.get(_rec_key(rec))
+            if e is None:
+                return
+            m = rec["msg"]
+            e["total"] = rec["size"]
+            if m.date:
+                e["date"] = f"{m.date:%Y-%m-%d %H:%M}"
+            e["text"] = getattr(m, "message", "") or ""
+
+    async def set_fetch(self, done, total, note="", fetching=True):
+        async with self.lock:
+            self.fetched, self.fetch_total = done, total
+            self.fetching = fetching
+            if note:
+                self.fetch_note = note
 
     def snapshot_json(self):
         """当前状态的可序列化快照（GUI 轮询/推送用）"""
@@ -931,6 +957,10 @@ class Monitor:
             "total_tot": snap["total_tot"],
             "remaining": snap["remaining"],
             "eta": (None if snap["eta"] == float("inf") else round(snap["eta"], 1)),
+            "fetching": self.fetching,
+            "fetched": self.fetched,
+            "fetch_total": self.fetch_total,
+            "fetch_note": self.fetch_note,
             "counts": {"done": snap["done"], "fail": snap["fail"],
                        "skip": snap["skip"], "paused": snap["paused"],
                        "active": len(snap["active"])},
@@ -1823,7 +1853,8 @@ def _rec_key(it):
     return (it.get("src", SRC_CHANNEL), it["msg"].id)
 
 
-async def execute_downloads(client, task, todo, parallel, gui=None):
+async def execute_downloads(client, task, todo, parallel, gui=None,
+                           lazy_statuses=None):
     """下载 todo（含消息对象的记录），每完成一个就把状态写回任务清单。
 
     - 已完成/已存在的成品：download_one 内部按大小跳过，不重下
@@ -1831,6 +1862,8 @@ async def execute_downloads(client, task, todo, parallel, gui=None):
     - 暂停：立即停在断点并释放槽位，队列里下一个视频马上开始，可随时恢复
     - 关机/强杀：清单里仍为 pending 的，重启继续即可
     gui 非空：GUI 模式（无控制台按键/无交互输入），控制走 DownloadSession。
+    lazy_statuses 非空：边读边下模式（todo 可为空），按状态筛选清单，
+    消息分批从服务器拉取，取到即排队开下，不再一次性等完全部消息。
     """
     if task["id"] in ACTIVE_SESSIONS:
         print("[!] 该任务已有下载会话，忽略重复启动")
@@ -1849,10 +1882,25 @@ async def execute_downloads(client, task, todo, parallel, gui=None):
             ti.pop("error", None)
         save_task(task)
 
-    print(f"\n本次处理 {len(todo)} 个；保存目录：{folder}")
+    # 占位计划（全部待处理条目）：Monitor 与磁盘估算都基于它，
+    # 不依赖真实 Message 对象
+    if lazy_statuses is not None:
+        planned = [{
+            "mid": ti["msg"], "src": ti.get("src", SRC_CHANNEL),
+            "size": ti["size"], "name": ti["name"],
+            "date": ti.get("date", ""),
+        } for ti in task["items"] if ti["status"] in lazy_statuses]
+    else:
+        planned = [{
+            "mid": it["msg"].id, "src": it.get("src", SRC_CHANNEL),
+            "size": it["size"], "name": it["name"],
+            "date": (f"{it['msg'].date:%Y-%m-%d}" if it["msg"].date else ""),
+        } for it in todo]
+
+    print(f"\n本次处理 {len(planned)} 个；保存目录：{folder}")
 
     # 磁盘空间检查（按待下视频总大小粗估，含已部分下载的，偏保守）
-    need = sum(it["size"] for it in todo)
+    need = sum(p["size"] for p in planned)
     free = shutil.disk_usage(str(folder)).free
     if need > free:
         if gui is not None:
@@ -1868,7 +1916,7 @@ async def execute_downloads(client, task, todo, parallel, gui=None):
     if gui is None:
         keys.start()
     mon = Monitor(
-        todo, parallel,
+        planned, parallel,
         task.get("channel_title", task.get("channel", "")), vt
     )
 
@@ -1877,11 +1925,52 @@ async def execute_downloads(client, task, todo, parallel, gui=None):
 
     loop = asyncio.get_running_loop()
     sess = DownloadSession(task, mon, loop)
-    sess.records = {_rec_key(it): it for it in todo}
-    sess.queue = collections.deque(todo)
     sess.resume_q = collections.deque()
     sess.wake = asyncio.Event()
     ACTIVE_SESSIONS[task["id"]] = sess
+
+    feeder_task = None
+    feeder_done = lazy_statuses is None
+
+    if lazy_statuses is None:
+        # 常规模式：记录已在内存，直接全部入队
+        sess.records = {_rec_key(it): it for it in todo}
+        sess.queue = collections.deque(todo)
+        async def _prefill():
+            for it in todo:
+                await mon.fill(it)
+        await _prefill()
+    else:
+        # 边读边下：后台分批拉取，取到一批补占位信息并立即入队
+        mon.fetching = True
+
+        def _progress(done, total, note=None):
+            asyncio.ensure_future(
+                mon.set_fetch(done, total, note or "", fetching=True))
+            if gui is None and note:
+                print("  " + note)
+
+        async def _feed():
+            nonlocal feeder_done
+            try:
+                async for rec in pull_records(
+                    client, task, lazy_statuses, progress=_progress
+                ):
+                    await mon.fill(rec)
+                    sess.records[_rec_key(rec)] = rec
+                    sess.queue.append(rec)
+                    sess.wake.set()
+            except Exception as ex:
+                print(f"[!] 读取消息信息失败：{type(ex).__name__}: {ex}")
+            finally:
+                feeder_done = True
+                await mon.set_fetch(mon.fetched, mon.fetch_total,
+                                    "", fetching=False)
+                sess.wake.set()
+
+        sess.records = {}
+        sess.queue = collections.deque()
+        feeder_task = asyncio.create_task(_feed())
 
     FINAL_LABEL = {"ok": "完成", "skipped": "已跳过",
                    "skip-exists": "已存在"}
@@ -1953,12 +2042,15 @@ async def execute_downloads(client, task, todo, parallel, gui=None):
     async def schedule():
         while True:
             if sess.abort.is_set():
+                if feeder_task is not None:
+                    feeder_task.cancel()
                 for tsk in list(sess.tasks.values()):
                     tsk.cancel()
-                if sess.tasks:
-                    await asyncio.gather(
-                        *sess.tasks.values(), return_exceptions=True
-                    )
+                pending = list(sess.tasks.values())
+                if feeder_task is not None:
+                    pending.append(feeder_task)
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
                 return
             if sess.resume_q or sess.queue:
                 await sem.acquire()
@@ -1974,8 +2066,10 @@ async def execute_downloads(client, task, todo, parallel, gui=None):
                 sess.tasks = {
                     k: t for k, t in sess.tasks.items() if not t.done()
                 }
-                if not sess.tasks:
-                    return            # 全部落定
+                # 队列暂时空了：工作任务全落定且消息也全部读取完才结束；
+                # 否则等 feeder 取下一批或有其他唤醒
+                if not sess.tasks and feeder_done:
+                    return
                 sess.wake.clear()
                 await sess.wake.wait()
     # 控制台按键 → 会话控制。独立轮询，不依赖 schedule：
@@ -2054,64 +2148,97 @@ async def execute_downloads(client, task, todo, parallel, gui=None):
     print("=" * 50)
 
 
-async def fetch_records(client, task, statuses):
-    """续传/重试时：按清单中的消息ID从服务器重新取消息，构造下载记录。
-    频道条目从频道取，评论条目（src=评论）从关联讨论组取。
-    服务器上已删除/不可访问的条目标记 failed。按清单顺序返回。"""
+async def pull_records(client, task, statuses, progress=None):
+    """续传/重试专用的分批拉取生成器：按清单消息ID逐批从服务器取消息，
+    每取完一批就 yield 该批记录（保持清单顺序），供"边读边下"使用——
+    不必等全部消息取完才开始下载（大清单在网络抖动/限流时可达十几分钟）。
+
+    - 服务器上已删除/不可访问的条目标记 failed，不出现在结果里
+    - 单批失败自动重试（连接错误退避；FloodWait 按服务器要求等待）
+    progress(done, total, note=None)：每批结束回调（TUI/GUI 展示进度）
+    """
     entity = await client.get_entity(task["channel"])
     wanted = [ti for ti in task["items"] if ti["status"] in statuses]
 
     groups = {SRC_CHANNEL: [], SRC_COMMENT: []}
     for ti in wanted:
         groups[ti.get("src", SRC_CHANNEL)].append(ti)
-
-    remote = {}   # (src, id) -> msg
-
-    async def pull(ent, items, src):
-        ids = [ti["msg"] for ti in items]
-        for i in range(0, len(ids), 100):
-            msgs = await client.get_messages(ent, ids=ids[i:i + 100])
-            for m in msgs:
-                if m is not None:
-                    remote[(src, m.id)] = m
-
-    if groups[SRC_CHANNEL]:
-        await pull(entity, groups[SRC_CHANNEL], SRC_CHANNEL)
+    discuss = None
     if groups[SRC_COMMENT]:
         discuss = await get_discuss_entity(client, entity)
-        if discuss is not None:
-            await pull(discuss, groups[SRC_COMMENT], SRC_COMMENT)
 
-    records, missing = [], []
-    reset = 0
-    for ti in wanted:
-        src = ti.get("src", SRC_CHANNEL)
-        m = remote.get((src, ti["msg"]))
-        if m is None or not m.document:
-            missing.append(ti)
-            continue
+    dirty = False
+
+    async def pull_batch(ent, items):
+        ids = [ti["msg"] for ti in items]
+        for i in range(0, len(ids), 100):
+            chunk = ids[i:i + 100]
+            for attempt in range(4):
+                try:
+                    return await client.get_messages(ent, ids=chunk)
+                except FloodWaitError as e:
+                    if progress:
+                        progress(0, len(wanted),
+                                 f"服务器限流，等待 {e.seconds}s …")
+                    await asyncio.sleep(e.seconds + 1)
+                except Exception:
+                    if attempt == 3:
+                        raise
+                    await asyncio.sleep(2 * (attempt + 1))
+
+    def make(ti, m, src):
+        nonlocal dirty
         actual_size = m.document.size or ti["size"]
-        # 关键修复：消息确认可取，立即把状态重置为 pending 并清错，
-        # 否则下载全程任务库仍把它算作失败
+        # 消息确认可取，立即把状态重置为 pending 并清错，否则下载全程
+        # 任务库仍把它算作失败
         if ti["status"] != "pending" or ti.get("error"):
             ti["status"] = "pending"
             ti.pop("error", None)
-            reset += 1
+            dirty = True
         if actual_size and actual_size != ti.get("size"):
             ti["size"] = actual_size
-        records.append({
+        return {
             "msg": m, "doc": m.document,
             "size": actual_size,
             "name": ti["name"], "text": "", "matched": True,
             "src": src,
-        })
-    for ti in missing:
-        ti["status"] = "failed"
-        ti["error"] = "消息已删除或无权访问"
-        print(f"  #{ti['msg']} 已不存在，标记为失败")
-    if missing or reset:
-        save_task(task)
-    return records
+        }
+
+    done = 0
+    for src, ent, items in (
+        (SRC_CHANNEL, entity, groups[SRC_CHANNEL]),
+        (SRC_COMMENT, discuss, groups[SRC_COMMENT]),
+    ):
+        if not items or ent is None:
+            continue
+        for i in range(0, len(items), 100):
+            grp = items[i:i + 100]
+            msgs = await pull_batch(ent, grp)
+            remote = {m.id: m for m in msgs if m is not None}
+            batch_recs = []
+            for ti in grp:
+                m = remote.get(ti["msg"])
+                if m is None or not m.document:
+                    ti["status"] = "failed"
+                    ti["error"] = "消息已删除或无权访问"
+                    dirty = True
+                    if progress:
+                        progress(0, len(wanted),
+                                 f"#{ti['msg']} 已不存在，标记为失败")
+                    continue
+                batch_recs.append(make(ti, m, src))
+            if dirty:
+                save_task(task)
+            done += len(grp)
+            if progress:
+                progress(done, len(wanted))
+            for rec in batch_recs:
+                yield rec
+
+
+async def fetch_records(client, task, statuses):
+    """一次性拉取（旧入口）：等效把 pull_records 全部收集为列表。"""
+    return [r async for r in pull_records(client, task, statuses)]
 
 
 # ---------------- 终端 UI 基础设施（无第三方依赖） ----------------
@@ -2331,12 +2458,10 @@ async def resume_flow(client, task, statuses):
     stored_par = int(task.get("params", {}).get("parallel") or 1)
     parallel = ask_int("同时下载几路（1-8）", stored_par, 1, 8)
 
-    print(f"\n正在从服务器读取 {n_sel} 个视频的最新信息 …")
-    records = await fetch_records(client, task, statuses)
-    if not records:
-        print(paint(" 没有可下载的视频", DIM))
-        return
-    await execute_downloads(client, task, records, parallel)
+    print(f"\n开始下载：共 {n_sel} 个视频，将分批从服务器核对信息，"
+          f"读到即下 …")
+    await execute_downloads(client, task, [], parallel,
+                           lazy_statuses=statuses)
     pause()
 
 
