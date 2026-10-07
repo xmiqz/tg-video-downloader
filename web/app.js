@@ -255,6 +255,14 @@ async function doStart() {
 // ============================================================
 const expandedActive = new Set();
 const activeSel = new Set();          // 选中卡片：taskId|||src|mid
+const activeTexts = new Map();        // cardKey -> 消息原文（展开时才按需拉取）
+const qAttr = v => String(v).replace(/["\\]/g, "\\$&");  // 属性选择器值转义
+function parseCk(ck) {
+  const ix = ck.indexOf("|||");
+  const rest = ck.slice(ix + 3);
+  const p = rest.lastIndexOf("|");
+  return [ck.slice(0, ix), rest.slice(0, p), Number(rest.slice(p + 1))];
+}
 const cardKey = (tid, src, mid) => `${tid}|||${src}|${mid}`;
 
 const ACTIVE_BADGE_CLS = {
@@ -308,21 +316,8 @@ async function refreshActive() {
   document.getElementById("active-bulk-count").textContent =
     `已选 ${activeSel.size}`;
 
-  // ---- 按任务分组渲染 ----
-  document.getElementById("active-list").innerHTML = states.map(s => {
-    const cards = s.items.map(it => activeCard(s.task_id, it)).join("");
-    return `
-      <div class="dl-group">
-        <div class="dl-group-head">
-          <div class="dl-group-title">
-            <span class="dl-group-name">${esc(s.title || "任务")}</span>
-            <span class="dl-group-stat">${s.task_finished}/${s.task_total} 完成</span>
-          </div>
-          <button class="btn danger sm" onclick="abortGroup('${esc(s.task_id)}')">中止任务</button>
-        </div>
-        <div class="dl-group-body">${cards}</div>
-      </div>`;
-  }).join("");
+  // ---- 按任务分组：增量同步 DOM（复用节点，只更新变化字段）----
+  syncActiveList(states);
 }
 
 function activeItemButtons(tid, it) {
@@ -349,13 +344,13 @@ function activeCard(tid, it) {
   const on = activeSel.has(ck);
   const etaSingle = it.speed ? (it.size - it.done) / it.speed : null;
   return `
-    <div class="dl-card ${ex ? "expanded" : ""} ${on ? "checked" : ""}">
+    <div class="dl-card ${ex ? "expanded" : ""} ${on ? "checked" : ""}" data-ck="${esc(ck)}">
       <div class="dl-top" onclick="toggleActiveExpand('${esc(ck)}')">
         <span class="mini-cbox" onclick="event.stopPropagation();toggleActiveSel('${esc(ck)}')">${on ? "✓" : ""}</span>
         <div class="dl-name">${esc(it.name)}</div>
         <div class="dl-meta">
           <span class="sp">${humanSpeed(it.speed)}</span>
-          <span>${human(it.done)} / ${human(it.size)}</span>
+          <span class="prog">${human(it.done)} / ${human(it.size)}</span>
           <span class="src-tag">${esc(it.src)}</span>
           <span class="badge ${bc}">${esc(it.status)}</span>
         </div>
@@ -363,16 +358,117 @@ function activeCard(tid, it) {
       </div>
       <div class="dl-bar"><div class="dl-fill ${fc}" style="width:${it.pct}%"></div></div>
       <div class="dl-foot">
-        <span>${esc(it.date)} · 剩余 ${humanSec(etaSingle)}</span>
+        <span class="foot-main">${esc(it.date)} · 剩余 ${humanSec(etaSingle)}</span>
         ${it.error ? `<span class="err">${esc(it.error)}</span>` : ""}
       </div>
-      <div class="dl-detail-text">${esc(it.text) || "（该消息无文字内容）"}</div>
+      <div class="dl-detail-text"></div>
     </div>`;
 }
 
-function toggleActiveExpand(k) {
-  expandedActive.has(k) ? expandedActive.delete(k) : expandedActive.add(k);
-  refreshActive();
+// ---------- 增量 DOM 同步 ----------
+function setText(root, sel, txt) {
+  const el = root.querySelector(sel);
+  if (el) el.textContent = txt;
+}
+
+function syncActiveList(states) {
+  const list = document.getElementById("active-list");
+  const liveGroups = new Set();
+  for (const s of states) {
+    liveGroups.add(s.task_id);
+    let g = list.querySelector(`[data-gid="${qAttr(s.task_id)}"]`);
+    if (!g) {
+      g = document.createElement("div");
+      g.className = "dl-group";
+      g.dataset.gid = s.task_id;
+      g.innerHTML = `
+        <div class="dl-group-head">
+          <div class="dl-group-title">
+            <span class="dl-group-name"></span>
+            <span class="dl-group-stat"></span>
+          </div>
+          <button class="btn danger sm" onclick="abortGroup('${esc(s.task_id)}')">中止任务</button>
+        </div>
+        <div class="dl-group-body"></div>`;
+      list.appendChild(g);
+    }
+    g.querySelector(".dl-group-name").textContent = s.title || "任务";
+    g.querySelector(".dl-group-stat").textContent =
+      `${s.task_finished}/${s.task_total} 完成`;
+    syncCards(g.querySelector(".dl-group-body"), s);
+  }
+  for (const oldG of Array.from(list.children)) {
+    if (!liveGroups.has(oldG.dataset.gid)) oldG.remove();
+  }
+}
+
+function syncCards(body, s) {
+  const live = new Set();
+  for (const it of s.items) {
+    const ck = cardKey(s.task_id, it.src, it.mid);
+    live.add(ck);
+    let card = body.querySelector(`[data-ck="${qAttr(ck)}"]`);
+    if (!card) {
+      const wrap = document.createElement("div");
+      wrap.innerHTML = activeCard(s.task_id, it);
+      card = wrap.firstElementChild;
+      body.appendChild(card);   // 首次刷新时全部条目即建齐，顺序与 items 一致
+    }
+    updateCard(card, s.task_id, it, ck);
+  }
+  for (const oldC of Array.from(body.querySelectorAll(".dl-card"))) {
+    if (!live.has(oldC.dataset.ck)) oldC.remove();
+  }
+}
+
+function updateCard(card, tid, it, ck) {
+  card.classList.toggle("expanded", expandedActive.has(ck));
+  card.classList.toggle("checked", activeSel.has(ck));
+  setText(card, ".dl-name", it.name);
+  setText(card, ".sp", humanSpeed(it.speed));
+  setText(card, ".prog", `${human(it.done)} / ${human(it.size)}`);
+  setText(card, ".src-tag", it.src);
+  const bc = ACTIVE_BADGE_CLS[it.status] || "wait";
+  const badge = card.querySelector(".badge");
+  badge.textContent = it.status;
+  badge.className = `badge ${bc}`;
+  const fill = card.querySelector(".dl-fill");
+  fill.style.width = it.pct + "%";
+  fill.className =
+    "dl-fill " + (bc === "done" ? "done" : bc === "fail" ? "fail"
+      : bc === "paused" ? "paused" : "");
+  const etaSingle = it.speed ? (it.size - it.done) / it.speed : null;
+  setText(card, ".foot-main", `${it.date} · 剩余 ${humanSec(etaSingle)}`);
+  setText(card, ".err", it.error || "");
+  // 操作按钮只在状态变化时重建（几个小节点，不必每秒重绘）
+  if (card.dataset.st !== it.status) {
+    card.dataset.st = it.status;
+    card.querySelector(".dl-item-actions").innerHTML =
+      activeItemButtons(tid, it);
+  }
+  // 已缓存的消息原文才回填（折叠/未拉取时留空）
+  if (activeTexts.has(ck)) {
+    setText(card, ".dl-detail-text",
+      activeTexts.get(ck) || "（该消息无文字内容）");
+  }
+}
+
+async function toggleActiveExpand(k) {
+  const opening = !expandedActive.has(k);
+  opening ? expandedActive.add(k) : expandedActive.delete(k);
+  await refreshActive();
+  if (opening && !activeTexts.has(k)) {
+    const [tid, src, mid] = parseCk(k);
+    try {
+      const r = await api().get_item_text(tid, src, mid);
+      if (r && r.ok) {
+        activeTexts.set(k, r.text || "");
+        const dt = document.querySelector(
+          `.dl-card[data-ck="${qAttr(k)}"] .dl-detail-text`);
+        if (dt) dt.textContent = r.text || "（该消息无文字内容）";
+      }
+    } catch (e) {}
+  }
 }
 function toggleActiveSel(k) {
   activeSel.has(k) ? activeSel.delete(k) : activeSel.add(k);
@@ -413,14 +509,23 @@ async function abortGroup(tid) {
   setTimeout(refreshActive, 400);
 }
 
-// 常驻轮询
-setInterval(async () => {
-  try {
-    const running = await api().is_active();
-    document.getElementById("nav-dot").classList.toggle("on", running);
-    if (currentView === "active") await refreshActive();
-  } catch (e) {}
-}, 1000);
+// 常驻轮询（防重叠：上一轮跑完再排下一轮；后端偶发慢响应时
+// 多个 refreshActive 不会堆积，杜绝桥调用雪崩）
+let activePollBusy = false;
+async function activePollTick() {
+  if (!activePollBusy) {
+    activePollBusy = true;
+    try {
+      const running = await api().is_active();
+      document.getElementById("nav-dot").classList.toggle("on", running);
+      if (currentView === "active") await refreshActive();
+    } catch (e) {} finally {
+      activePollBusy = false;
+    }
+  }
+  setTimeout(activePollTick, 1000);
+}
+activePollTick();
 
 // ============================================================
 // 任务库

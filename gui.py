@@ -404,6 +404,23 @@ class Api:
     def is_active(self):
         return core.any_active()
 
+    def get_item_text(self, task_id, src, mid):
+        """按需取单条消息原文（轮询快照为省流量不再携带 text）。"""
+        mid = int(mid)
+        # 活动会话：直接从监控条目取，含最新文本
+        sess = core.ACTIVE_SESSIONS.get(task_id)
+        if sess is not None:
+            e = sess.mon.order.get((src, mid))
+            if e is not None:
+                return {"ok": True, "text": e.get("text", "")}
+        t = self._load_one(task_id)
+        if t is None:
+            return {"ok": False, "error": "任务不存在"}
+        for ti in t["items"]:
+            if ti["msg"] == mid and ti.get("src", core.SRC_CHANNEL) == src:
+                return {"ok": True, "text": ti.get("text", "")}
+        return {"ok": False, "error": "未找到该条目"}
+
     def abort_task(self, task_id):
         sess = core.ACTIVE_SESSIONS.get(task_id)
         if sess is None:
@@ -875,6 +892,16 @@ class AmbientCapture:
             mt.v[i][i] = 1.0
         mag.MagSetWindowTransform(self.mag_hwnd, ctypes.byref(mt))
 
+        # 放大镜宿主窗口在创建/首次显示阶段会自行带上 WS_EX_TOPMOST，并把
+        # 属主（主窗）一起抬进置顶层——表现为其它应用窗口无法盖到主窗上。
+        # 该窗口 alpha=0 不可见、只用于采样，置顶毫无必要：统一显式取消。
+        # 已实测 pump 的 MagSetWindowSource 不会再把置顶加回。
+        _SWP = 0x0001 | 0x0002      # SWP_NOSIZE | SWP_NOMOVE
+        _NOTOPMOST = wintypes.HWND(-2)
+        user32.SetWindowPos(self.mag_hwnd, _NOTOPMOST, 0, 0, 0, 0, _SWP)
+        user32.SetWindowPos(wintypes.HWND(self.main_hwnd),
+                            _NOTOPMOST, 0, 0, 0, 0, _SWP)
+
     def _on_frame(self, hwnd, src, hdr, dst, dhdr, unc, clip, dirty):
         try:
             if src and hdr.stride and hdr.width and hdr.height:
@@ -906,7 +933,7 @@ class AmbientCapture:
         user32.InvalidateRect(self.mag_hwnd, None, False)
         user32.UpdateWindow(self.mag_hwnd)
 
-    def render_jpeg(self, out_w=560, quality=58):
+    def render_jpeg(self, out_w=None, quality=72):
         """按主窗当前屏幕位置，从最新全屏帧裁剪背后区域，降采样并烘焙
         模糊，编码为 JPEG data URL。
         返回 (是否有变化, url或None, 版本号)。可从任意线程调用。"""
@@ -916,6 +943,12 @@ class AmbientCapture:
                 return False, None, 0
             fw, fh, buf = self._frame
             ver = self.version
+            if out_w is None:
+                # 输出宽按主窗物理宽自适应：背景是预模糊环境光，按物理
+                # 像素 2:1 降采样即可，彻底消除旧版固定 560 宽在 4K 屏被
+                # 拉伸 6 倍造成的缩略图/马赛克感；上下限兼容低 DPI 窗口。
+                rw = rect[2]
+                out_w = max(640, min(1600, round(rw * 0.5)))
             key = (ver, rect, out_w, quality)
             if key == self._cache_key:
                 return False, None, ver
@@ -932,9 +965,10 @@ class AmbientCapture:
             ch = max(2, round(cw * crop.size[1] / crop.size[0]))
             small = crop.resize((cw, ch), Image.BILINEAR).convert("RGB")
 
-        # 锁外：用“缩到 1/7 再放大”近似重模糊（C 级，毫秒级）。
-        # 系数过大(12)会把环境糊成色块、丢失折射细节；7 保留色彩与轮廓。
-        k = 7
+        # 锁外：用“缩到 1/5 再放大”近似重模糊（C 级，毫秒级）。
+        # 输出分辨率提高后 1/5 仍有平滑模糊、无色块；旧版 560 宽配 1/7
+        # 时中间图仅 80px，是缩略图质感的来源之一。
+        k = 5
         baked = small.resize(
             (max(1, cw // k), max(1, ch // k)), Image.BILINEAR
         ).resize((cw, ch), Image.BILINEAR)
@@ -1019,7 +1053,8 @@ class _BackdropDriver:
         # 后台线程：编码并通过 evaluate_js 推送（该同步调用禁止在 UI 线程执行）
         last = 0
         while True:
-            time.sleep(0.1)              # 10fps 推送，静止画面字节去重零通信
+            time.sleep(0.2)              # 5fps 推送；环境光变化缓慢，足够流畅，
+                                        # 静止画面字节去重零通信
             try:
                 if self.cap is None or self.cap.version == last:
                     continue
@@ -1094,7 +1129,8 @@ def main():
                 drv = _BackdropDriver(api, window, hwnd, user32)
                 handler = EventHandler(drv.on_pump)
                 timer = Timer()
-                timer.Interval = 100       # 10fps 环境取光，够用且省一半开销
+                timer.Interval = 200       # 5fps 环境取光：背景帧每帧要解码+
+                                           # 重光栅全屏层，5fps 较 10fps GPU 减半
                 timer.Tick += handler
                 drv.timer = timer
                 threading.Thread(target=drv.push_loop,

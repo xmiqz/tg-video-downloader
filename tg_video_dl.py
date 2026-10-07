@@ -900,7 +900,7 @@ class Monitor:
                     "pct": round(e["done"] * 100 / (e["total"] or 1), 1),
                     "speed": round(e["speed"], 1),
                     "status": e["status"], "error": e["error"],
-                    "text": e["text"],
+                    # text（消息原文）不随每秒轮询返回，前端展开时按需取
                 }
                 for e in self.entries
             ],
