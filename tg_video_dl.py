@@ -177,12 +177,23 @@ def prompt_manual_api(cfg):
 
 # ---------------- 工具函数 ----------------
 
-def parse_channel(text):
-    text = text.strip()
-    m = re.match(r"(?:https?://)?t\.me/([A-Za-z0-9_]{4,})", text)
+def parse_channel_ref(text):
+    """解析频道输入，返回 (频道标识, 消息id|None)。
+    支持 t.me/<频道>/<id> 链接、裸写的 用户名/id、@用户名。
+    私有频道 t.me/c/<...> 链接不在此处理（需邀请权限）。"""
+    text = (text or "").strip()
+    m = re.match(r"(?:https?://)?t\.me/([A-Za-z0-9_]{4,})(?:/(\d+))?", text)
     if m:
-        return m.group(1)
-    return text.lstrip("@")
+        return m.group(1), (int(m.group(2)) if m.group(2) else None)
+    # 裸写 用户名 或 用户名/消息id
+    m = re.match(r"@?([A-Za-z0-9_]{4,})(?:/(\d+))?$", text)
+    if m:
+        return m.group(1), (int(m.group(2)) if m.group(2) else None)
+    return text.lstrip("@"), None
+
+
+def parse_channel(text):
+    return parse_channel_ref(text)[0]
 
 
 def safe_name(name, fallback):
@@ -347,6 +358,7 @@ def kw_match(text, includes, excludes):
 
 
 MAX_LOCAL_SCAN = 5000     # 本地兜底扫描条数上限
+HARD_SCAN_CAP = 100000    # 指定起始日期时的绝对安全上限，防止超大频道失控
 
 SRC_CHANNEL = "频道"
 SRC_COMMENT = "评论"
@@ -485,6 +497,11 @@ async def search_videos(client, entity, p):
     use_server = bool(terms) and mode in ("phrase", "all", "any")
     server_terms = [raw.strip()] if mode == "phrase" else terms
 
+    # 指定起始日期时，日期本身就是天然的扫描停止点：允许突破
+    # MAX_LOCAL_SCAN 继续向旧消息翻页，直到扫到早于 dfrom 的消息；
+    # 否则频道历史超过上限时，日期符合的早期视频会被漏扫。
+    scan_cap = HARD_SCAN_CAP if dfrom is not None else MAX_LOCAL_SCAN
+
     async def gather(ent):
         pool = {}
         capped = False
@@ -495,7 +512,9 @@ async def search_videos(client, entity, p):
         else:
             async for m in client.iter_messages(ent):
                 pool[m.id] = m
-                if len(pool) >= MAX_LOCAL_SCAN:
+                if dfrom is not None and m.date is not None and m.date < dfrom:
+                    break   # 已覆盖全部目标时间段，不算触顶
+                if len(pool) >= scan_cap:
                     capped = True
                     break
         return pool, capped
@@ -545,7 +564,7 @@ async def search_videos(client, entity, p):
     records = records[:limit]
     meta = {"n_small": n_small, "n_large": n_large,
             "n_video": n_video, "capped": capped,
-            "scan_cap": MAX_LOCAL_SCAN,
+            "scan_cap": scan_cap,
             "candidates": len(cand), "mode": mode,
             "has_comments": scope in ("comments", "both")}
     return records, meta

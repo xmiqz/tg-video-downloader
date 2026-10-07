@@ -606,17 +606,22 @@ async function abortGroup(tid, btn) {
 // 多个 refreshActive 不会堆积，杜绝桥调用雪崩）
 let activePollBusy = false;
 async function activePollTick() {
+  let delay = 1000;
   if (!activePollBusy) {
     activePollBusy = true;
     try {
       const running = await api().is_active();
       document.getElementById("nav-dot").classList.toggle("on", running);
       if (currentView === "active") await refreshActive();
+      // 无下载且停留在其他页面时退避到 4 秒：空闲期不再每秒做一次
+      // JS↔Python 桥往返持续唤醒 CPU（省电、降发热）；开始下载后前端
+      // 会主动切到下载页并立即刷新，不依赖这个轮询。
+      else if (!running) delay = 4000;
     } catch (e) {} finally {
       activePollBusy = false;
     }
   }
-  setTimeout(activePollTick, 1000);
+  setTimeout(activePollTick, delay);
 }
 activePollTick();
 

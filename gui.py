@@ -320,7 +320,7 @@ class Api:
         """params: 前端组装的高级搜索参数对象"""
         try:
             channel_in = params.get("channel", "")
-            channel_name = core.parse_channel(channel_in)
+            channel_name, ref_mid = core.parse_channel_ref(channel_in)
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -330,6 +330,19 @@ class Api:
             p = dict(params)
             p.pop("channel", None)
             records, meta = await core.search_videos(self.client, entity, p)
+            # 链接里带了具体消息 id（t.me/频道/4 或裸写 频道/4）：
+            # 精准补抓该消息，不受扫描条数上限与体积/日期筛选限制。
+            if ref_mid is not None:
+                have = {(r.get("src", core.SRC_CHANNEL), r["msg"].id)
+                        for r in records}
+                if (core.SRC_CHANNEL, ref_mid) not in have:
+                    try:
+                        pm = await self.client.get_messages(entity, ids=ref_mid)
+                    except Exception:
+                        pm = None
+                    if pm is not None and core.is_video_message(pm):
+                        records.insert(0, core.make_record(pm, core.SRC_CHANNEL))
+                        meta["permalink"] = True
             # 用 (来源, mid) 做键，支持评论区
             self._preview = {
                 (r.get("src", core.SRC_CHANNEL), r["msg"].id): r
