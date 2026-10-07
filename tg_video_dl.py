@@ -1560,6 +1560,63 @@ def item_key(ti):
     return (ti.get("src", SRC_CHANNEL), ti["msg"])
 
 
+# ---------------- 大任务自动拆分 ----------------
+SPLIT_TARGET_GB = 200      # 拆分后每片目标体积
+SPLIT_TRIGGER_GB = 300     # 触发拆分的体积阈值
+SPLIT_TRIGGER_COUNT = 300  # 与体积阈值同时满足的条数条件
+SPLIT_MAX_ITEMS = 999      # 单任务条数硬上限（超过必拆）
+
+
+def task_should_split(items):
+    """是否需要自动拆分：条数>999 必拆；或条数>300 且总体积>300GB。
+    只有一两个条目的任务永不拆（单个超大视频保持完整）。"""
+    n = len(items)
+    if n > SPLIT_MAX_ITEMS:
+        return True
+    if n > SPLIT_TRIGGER_COUNT and \
+            sum(i.get("size", 0) for i in items) > SPLIT_TRIGGER_GB * 2**30:
+        return True
+    return False
+
+
+def chunk_task_items(items):
+    """按给定顺序贪心打包：每片不超过 200GB 且不超过 999 条。
+    体积与条数两条上限同时生效——按 200GB 切完仍超 999 条的会继续切。
+    单个视频本身超过 200GB 也不会被切开（该片即该视频）。"""
+    target = SPLIT_TARGET_GB * 2**30
+    chunks, cur, cur_sz = [], [], 0
+    for it in items:
+        size = it.get("size", 0)
+        if cur and (cur_sz + size > target or len(cur) >= SPLIT_MAX_ITEMS):
+            chunks.append(cur)
+            cur, cur_sz = [], 0
+        cur.append(it)
+        cur_sz += size
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def build_task_dicts(channel, title, params, folder, items, stamp=None):
+    """生成一个或按规则拆分后的多个任务字典；调用方负责 save_task。
+    items 为已构造好的任务条目（make_task_item 的产物）。"""
+    stamp = stamp or new_task_id()
+    chunks = chunk_task_items(items) if task_should_split(items) else [items]
+    total = len(chunks)
+    out = []
+    for n, chunk in enumerate(chunks, 1):
+        out.append({
+            "id": stamp if total == 1 else f"{stamp}_{n}",
+            "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "channel": channel,
+            "channel_title": title if total == 1 else f"{title}（{n}/{total}）",
+            "params": dict(params),
+            "folder": folder,
+            "items": chunk,
+        })
+    return out
+
+
 def find_item(task, key):
     src, mid = key
     for ti in task["items"]:
@@ -2894,18 +2951,23 @@ async def new_task_flow(client, args=None):
     folder = get_download_root(load_config()) / safe_name(title, channel_name)
     folder.mkdir(parents=True, exist_ok=True)
 
-    # 建立任务清单并立即落盘：之后哪怕立刻关机，任务也已可继续
-    task = {
-        "id": new_task_id(),
-        "created": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "channel": channel_name,
-        "channel_title": title,
-        "params": dict(params, parallel=parallel),
-        "folder": str(folder),
-        "items": [make_task_item(it) for it in todo],
-    }
-    save_task(task)
-    await execute_downloads(client, task, todo, parallel)
+    # 建立任务清单并立即落盘：之后哪怕立刻关机，任务也已可继续。
+    # 符合规则的大任务自动按 200GB/999 条拆分为多个任务。
+    items = [make_task_item(it) for it in todo]
+    tasks = build_task_dicts(
+        channel_name, title, dict(params, parallel=parallel),
+        str(folder), items,
+    )
+    for t in tasks:
+        save_task(t)
+    if len(tasks) > 1:
+        print(paint(f"\n 任务较大，已自动拆分为 {len(tasks)} 个任务"
+                    f"（每个约 200GB、不超过 999 条），先下载第 1 个，"
+                    f"其余在任务库中可随时继续。", YELLOW))
+    first = tasks[0]
+    first_ids = {it["msg"] for it in first["items"]}
+    first_todo = [r for r in todo if r["msg"].id in first_ids]
+    await execute_downloads(client, first, first_todo, parallel)
     if not args:
         pause()
 

@@ -385,21 +385,27 @@ class Api:
         folder_dest = root / (safe or "channel")
         folder_dest.mkdir(parents=True, exist_ok=True)
 
-        task = {
-            "id": core.new_task_id(),
-            "created": __import__("time").strftime("%Y-%m-%d %H:%M:%S"),
-            "channel": channel, "channel_title": title,
-            "params": {"parallel": max(1, min(int(parallel), 8))},
-            "folder": str(folder_dest),
-            "items": [core.make_task_item(r) for r in todo],
-        }
-        core.save_task(task)
+        task_items = [core.make_task_item(r) for r in todo]
+        tasks = core.build_task_dicts(
+            channel, title,
+            {"parallel": max(1, min(int(parallel), 8))},
+            str(folder_dest), task_items,
+        )
+        for t in tasks:
+            core.save_task(t)
+        n_split = len(tasks)
+
+        # 只自动开始第 1 个任务；拆分后的其余任务保存在任务库，
+        # 由用户按需点"继续下载"，避免同时建立过多连接
+        first = tasks[0]
+        first_ids = {it["msg"] for it in first["items"]}
+        first_todo = [r for r in todo if r["msg"].id in first_ids]
 
         def _run_bg():
             async def _do():
                 await core.execute_downloads(
-                    self.client, task, todo,
-                    task["params"]["parallel"], gui={},
+                    self.client, first, first_todo,
+                    first["params"]["parallel"], gui={},
                 )
             fut = asyncio.run_coroutine_threadsafe(_do(), self.engine.loop)
             try:
@@ -408,7 +414,7 @@ class Api:
                 print("[GUI] 下载异常：", ex)
 
         threading.Thread(target=_run_bg, daemon=True).start()
-        return {"ok": True, "task_id": task["id"]}
+        return {"ok": True, "task_id": first["id"], "split": n_split}
 
     # ---------- 实时状态 ----------
     def active_states(self):
