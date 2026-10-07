@@ -49,6 +49,35 @@ jobs:
         shell: bash
         run: python build.py dist
 
+      - name: Rename to ASCII release names
+        shell: bash
+        run: |
+          # GitHub 会强制剥离资产名里的非 ASCII（中文）字符，因此上传前
+          # 统一改成 ASCII 英文名；中文名通过后续的 asset label 展示。
+          norm() {  # $1=源 glob（匹配单个），$2=目标文件名
+            for f in $1; do [ -f "$f" ] && mv "$f" "dist/$2"; done
+          }
+          case "${{ matrix.target }}" in
+            windows-x64)
+              norm "dist/*_TUI.exe" "TGVideoDownloader_TUI.exe"
+              norm "dist/*.exe" "TGVideoDownloader.exe"
+              ;;
+            windows-arm64)
+              norm "dist/*_TUI_ARM64.exe" "TGVideoDownloader_TUI_ARM64.exe"
+              norm "dist/*_ARM64.exe" "TGVideoDownloader_ARM64.exe"
+              ;;
+            linux-x64)       norm "dist/*linux_x64" "TGVideoDownloader_linux_x64" ;;
+            linux-arm64)     norm "dist/*linux_arm64" "TGVideoDownloader_linux_arm64" ;;
+            macos-x64)
+              norm "dist/*mac_x64.command" "TGVideoDownloader_mac_x64.command"
+              norm "dist/*mac_x64" "TGVideoDownloader_mac_x64"
+              ;;
+            macos-arm64)
+              norm "dist/*mac_arm64.command" "TGVideoDownloader_mac_arm64.command"
+              norm "dist/*mac_arm64" "TGVideoDownloader_mac_arm64"
+              ;;
+          esac
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -81,13 +110,13 @@ jobs:
 
           Telegram 频道视频批量下载工具（Telethon）。
 
-          ### 下载文件（按系统选择）
-          - Windows x64：`TG视频下载器.exe`（图形界面）；`TG视频下载器_TUI.exe`（控制台版）
-          - Windows ARM64（WOA）：`TG视频下载器_ARM64.exe`（图形界面）；`TG视频下载器_TUI_ARM64.exe`（控制台版）
-          - Linux x64：`TG视频下载器_linux_x64`（命令行）
-          - Linux ARM64：`TG视频下载器_linux_arm64`（命令行）
-          - macOS Intel：`TG视频下载器_mac_x64`（命令行，另附 `.command` 双击启动）
-          - macOS Apple Silicon：`TG视频下载器_mac_arm64`（命令行，另附 `.command` 双击启动）
+          ### 下载文件（按系统选择；文件名均为 ASCII，中文说明见资产标签）
+          - Windows x64：`TGVideoDownloader.exe`（图形界面）；`TGVideoDownloader_TUI.exe`（控制台版）
+          - Windows ARM64（WOA）：`TGVideoDownloader_ARM64.exe`（图形界面）；`TGVideoDownloader_TUI_ARM64.exe`（控制台版）
+          - Linux x64：`TGVideoDownloader_linux_x64`（命令行）
+          - Linux ARM64：`TGVideoDownloader_linux_arm64`（命令行）
+          - macOS Intel：`TGVideoDownloader_mac_x64`（命令行，另附 `.command` 双击启动）
+          - macOS Apple Silicon：`TGVideoDownloader_mac_arm64`（命令行，另附 `.command` 双击启动）
 
           Windows 图形界面支持三种外观：静态暗（默认）、静态亮、液态玻璃（实时采样窗口后方画面）。
           首次运行输入手机号与验证码即可，数据保存在程序平级目录「TG视频下载器数据」。
@@ -99,6 +128,30 @@ jobs:
             --title "$TAG" \
             --notes "$NOTES" \
             --latest
+
+      - name: Set Chinese asset labels
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          set_label() {  # $1=ASCII 资产名，$2=中文说明
+            local id
+            id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+              --jq ".assets[]|select(.name==\"$1\").id")
+            if [ -n "$id" ]; then
+              gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/assets/${id}" \
+                -f label="$2" >/dev/null
+            fi
+          }
+          set_label "TGVideoDownloader.exe" "Windows x64 · 图形界面版 GUI"
+          set_label "TGVideoDownloader_TUI.exe" "Windows x64 · 控制台 TUI 版"
+          set_label "TGVideoDownloader_ARM64.exe" "Windows ARM64 · 图形界面版 GUI"
+          set_label "TGVideoDownloader_TUI_ARM64.exe" "Windows ARM64 · 控制台 TUI 版"
+          set_label "TGVideoDownloader_linux_x64" "Linux x64 · 命令行版"
+          set_label "TGVideoDownloader_linux_arm64" "Linux ARM64 · 命令行版"
+          set_label "TGVideoDownloader_mac_x64" "macOS Intel · 命令行版（附 .command 双击启动）"
+          set_label "TGVideoDownloader_mac_arm64" "macOS Apple Silicon · 命令行版（附 .command 双击启动）"
 
       - name: Create pre-release (manual dispatch)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
