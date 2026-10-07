@@ -28,6 +28,27 @@ function humanSec(s) {
 }
 const keyOf = (src, mid) => `${src || "频道"}|${mid}`;
 
+// 让按钮在异步操作期间显示转圈+禁用并可换文案，结束后自动恢复原内容。
+// 异常照常抛出，由调用方处理；重复点击会被忽略。
+async function withBusy(btn, busyText, fn) {
+  if (!btn) return fn();
+  if (btn.dataset.busy === "1") throw new Error("操作进行中");
+  const oldHTML = btn.innerHTML;
+  btn.dataset.busy = "1";
+  btn.disabled = true;
+  btn.classList.add("is-busy");
+  btn.innerHTML = `<span class="spinner"></span>` +
+    (busyText != null ? esc(busyText) : "");
+  try {
+    return await fn();
+  } finally {
+    btn.classList.remove("is-busy");
+    btn.disabled = false;
+    delete btn.dataset.busy;
+    btn.innerHTML = oldHTML;
+  }
+}
+
 // ---------- 全局状态 ----------
 let currentView = "new";
 const opts = { mode: "all", scope: "channel", sort: "date" };
@@ -159,7 +180,7 @@ function setSort(o) {
 }
 function gotoStep(n) {
   document.getElementById("wizard-1").classList.toggle("hidden", n !== 1);
-  document.getElementById("wizard-3").classList.toggle("hidden", n !== 3);
+  document.getElementById("wizard-2").classList.toggle("hidden", n !== 2);
   document.querySelectorAll(".steps .step").forEach((el, i) => {
     el.classList.toggle("active", i === n - 1);
     el.classList.toggle("done", i < n - 1);
@@ -185,10 +206,16 @@ async function doPreview() {
   document.getElementById("wizard-note").textContent = "";
   const params = collectSearchParams();
   if (!params.channel) return (document.getElementById("wizard-err").textContent = "请输入频道");
-  btn.textContent = "搜索中…"; btn.disabled = true;
-  const r = await api().preview(params);
-  btn.textContent = "开始搜索"; btn.disabled = false;
-  if (!r.ok) return (document.getElementById("wizard-err").textContent = r.error);
+  document.getElementById("wizard-note").textContent =
+    "正在扫描频道历史消息，频道消息较多时可能需要等待几十秒…";
+  let r;
+  try {
+    r = await withBusy(btn, "搜索中…", () => api().preview(params));
+  } catch (e) { return; }
+  if (!r.ok) {
+    document.getElementById("wizard-note").textContent = "";
+    return (document.getElementById("wizard-err").textContent = r.error);
+  }
   previewData = r;
   selected = new Set(r.items.map(it => keyOf(it.src, it.mid)));
   document.getElementById("video-search").value = "";
@@ -197,15 +224,53 @@ async function doPreview() {
   const bits = [];
   if (r.meta.n_small) bits.push(`${r.meta.n_small} 个小于下限`);
   if (r.meta.n_large) bits.push(`${r.meta.n_large} 个大于上限`);
+  if (r.meta.capped)
+    bits.push(`消息过多，仅扫描了最近 ${r.meta.scan_cap} 条`);
   document.getElementById("wizard-note").textContent = bits.length
-    ? `已按体积过滤：${bits.join("，")}` : "";
+    ? `已按条件过滤：${bits.join("，")}` : "";
+}
+
+function previewEmptyHint(meta) {
+  if (!meta.candidates)
+    return "没有扫描到任何消息。请确认频道用户名或链接是否正确，以及当前账号是否有权限访问该频道。";
+  if (!meta.n_video)
+    return `扫描到 ${meta.candidates} 条消息，但其中没有视频文件。`;
+  const why = [];
+  if (meta.n_small) why.push(`${meta.n_small} 个小于体积下限`);
+  if (meta.n_large) why.push(`${meta.n_large} 个大于体积上限`);
+  return `共扫描到 ${meta.n_video} 个视频，但都不符合当前筛选条件` +
+    (why.length ? `（${why.join("，")}）` : "") +
+    "。可返回上一步放宽体积、日期或关键词条件。";
 }
 
 function renderPreview() {
+  const listEl = document.getElementById("preview-list");
   const q = document.getElementById("video-search").value.trim().toLowerCase();
+  // 搜索完成但一条结果都没有：给出具体原因，而不是空白卡住
+  if (!previewData.items.length) {
+    listEl.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-ico">∅</div>
+        <h3>没有可选择的视频</h3>
+        <p>${esc(previewEmptyHint(previewData.meta || {}))}</p>
+        <button class="btn primary" onclick="gotoStep(1)">返回修改条件</button>
+      </div>`;
+    document.getElementById("sel-count").textContent = 0;
+    return;
+  }
   const rows = previewData.items.filter(it =>
     !q || it.name.toLowerCase().includes(q) || (it.text || "").toLowerCase().includes(q));
-  document.getElementById("preview-list").innerHTML = rows.map(it => {
+  // 有关键词但筛不出：提示清除搜索词，而不是空白
+  if (!rows.length) {
+    listEl.innerHTML = `
+      <div class="empty-state pad">
+        <div class="empty-title">没有匹配“${esc(q)}”的视频</div>
+        <button class="btn glass-btn" onclick="clearPreviewSearch()">清除搜索词</button>
+      </div>`;
+    document.getElementById("sel-count").textContent = selected.size;
+    return;
+  }
+  listEl.innerHTML = rows.map(it => {
     const k = keyOf(it.src, it.mid);
     const on = selected.has(k);
     return `
@@ -227,6 +292,10 @@ function toggleVideo(k) {
   selected.has(k) ? selected.delete(k) : selected.add(k);
   renderPreview();
 }
+function clearPreviewSearch() {
+  document.getElementById("video-search").value = "";
+  renderPreview();
+}
 function selectAll(v) {
   const q = document.getElementById("video-search").value.trim().toLowerCase();
   if (v) previewData.items
@@ -236,16 +305,18 @@ function selectAll(v) {
   renderPreview();
 }
 
-async function doStart() {
+async function doStart(btn) {
   if (!selected.size) return alert("请选择至少一个视频");
   const keys = [...selected].map(k => {
     const [src, mid] = k.split("|");
     return { src, mid };
   });
   const parallel = document.getElementById("w-parallel").value || 2;
-  const r = await api().start_download(
-    previewData.channel, previewData.title, keys, parallel
-  );
+  let r;
+  try {
+    r = await withBusy(btn, "准备下载…", () =>
+      api().start_download(previewData.channel, previewData.title, keys, parallel));
+  } catch (e) { return; }
   if (!r.ok) return alert(r.error);
   switchView("active");
 }
@@ -324,7 +395,7 @@ function activeItemButtons(tid, it) {
   const b = (action, glyph, title, cls = "") =>
     `<button class="mini-action ${cls}" title="${title}" ` +
     `onclick="event.stopPropagation();activeItem('${esc(tid)}',` +
-    `'${esc(it.src)}',${it.mid},'${action}')">${glyph}</button>`;
+    `'${esc(it.src)}',${it.mid},'${action}',this)">${glyph}</button>`;
   const st = it.status;
   if (st === "已暂停" || st === "失败")
     return b("resume", "▶", "继续") + b("remove", "✕", "移除", "danger");
@@ -387,7 +458,7 @@ function syncActiveList(states) {
             <span class="dl-group-name"></span>
             <span class="dl-group-stat"></span>
           </div>
-          <button class="btn danger sm" onclick="abortGroup('${esc(s.task_id)}')">中止任务</button>
+          <button class="btn danger sm" onclick="abortGroup('${esc(s.task_id)}',this)">中止任务</button>
         </div>
         <div class="dl-group-body"></div>`;
       list.appendChild(g);
@@ -439,7 +510,19 @@ function updateCard(card, tid, it, ck) {
       : bc === "paused" ? "paused" : "");
   const etaSingle = it.speed ? (it.size - it.done) / it.speed : null;
   setText(card, ".foot-main", `${it.date} · 剩余 ${humanSec(etaSingle)}`);
-  setText(card, ".err", it.error || "");
+  // error 有值则更新/补建，空则移除节点，避免旧报错残留显示
+  const foot = card.querySelector(".dl-foot");
+  let errEl = foot.querySelector(".err");
+  if (it.error) {
+    if (!errEl) {
+      errEl = document.createElement("span");
+      errEl.className = "err";
+      foot.appendChild(errEl);
+    }
+    errEl.textContent = it.error;
+  } else if (errEl) {
+    errEl.remove();
+  }
   // 操作按钮只在状态变化时重建（几个小节点，不必每秒重绘）
   if (card.dataset.st !== it.status) {
     card.dataset.st = it.status;
@@ -479,12 +562,15 @@ function activeSelClear() {
   refreshActive();
 }
 
-async function activeItem(tid, src, mid, action) {
-  await api().item_action(tid, action, [{ src, mid }]);
+async function activeItem(tid, src, mid, action, btn) {
+  try {
+    await withBusy(btn, null,
+      () => api().item_action(tid, action, [{ src, mid }]));
+  } catch (e) { return; }
   setTimeout(refreshActive, 250);
 }
 
-async function activeBulk(action) {
+async function activeBulk(action, btn) {
   if (!activeSel.size) return;
   if (action === "remove" &&
       !confirm(`从任务中移除选中的 ${activeSel.size} 个条目？本地文件不会删除。`))
@@ -496,16 +582,23 @@ async function activeBulk(action) {
     const [src, mid] = ck.slice(ix + 3).split("|");
     (byTask[tid] ||= []).push({ src, mid: Number(mid) });
   }
-  for (const [tid, ks] of Object.entries(byTask))
-    await api().item_action(tid, action, ks);
+  const labels = { resume: "开始中…", pause: "暂停中…", skip: "跳过中…", remove: "移除中…" };
+  try {
+    await withBusy(btn, labels[action] || "处理中…", async () => {
+      for (const [tid, ks] of Object.entries(byTask))
+        await api().item_action(tid, action, ks);
+    });
+  } catch (e) { return; }
   activeSel.clear();
   setTimeout(refreshActive, 250);
 }
 
-async function abortGroup(tid) {
+async function abortGroup(tid, btn) {
   if (!confirm("中止该任务的全部下载？\n未完成视频状态保留，可随时继续。"))
     return;
-  await api().abort_task(tid);
+  try {
+    await withBusy(btn, "正在中止…", () => api().abort_task(tid));
+  } catch (e) { return; }
   setTimeout(refreshActive, 400);
 }
 
@@ -554,9 +647,9 @@ async function renderTasks() {
         <div class="task-bar"><div class="task-fill ${t.finished === t.total ? "full" : ""}" style="width:${pct}%"></div></div>
         <div class="task-stat"><span>${t.finished}/${t.total} 完成</span><span>${esc(t.created)}</span></div>
         <div class="task-actions">
-          ${t.pending + t.failed ? `<button class="btn primary sm" onclick="quickResume('${esc(t.id)}',false)">继续</button>` : ""}
-          ${t.failed ? `<button class="btn glass-btn sm" onclick="quickResume('${esc(t.id)}',true)">重试失败</button>` : ""}
-          <button class="btn danger sm" onclick="quickDelete('${esc(t.id)}')">删除</button>
+          ${t.pending + t.failed ? `<button class="btn primary sm" onclick="quickResume('${esc(t.id)}',false,this)">继续</button>` : ""}
+          ${t.failed ? `<button class="btn glass-btn sm" onclick="quickResume('${esc(t.id)}',true,this)">重试失败</button>` : ""}
+          <button class="btn danger sm" onclick="quickDelete('${esc(t.id)}',this)">删除</button>
         </div>
       </div>`;
   }).join("");
@@ -567,14 +660,20 @@ function setTaskFilter(f) {
     el.classList.toggle("active", el.dataset.f === f));
   renderTasks();
 }
-async function quickResume(id, failed) {
-  const r = await api().resume_task(id, failed);
+async function quickResume(id, failed, btn) {
+  let r;
+  try {
+    r = await withBusy(btn, failed ? "重试中…" : "继续中…",
+      () => api().resume_task(id, failed));
+  } catch (e) { return; }
   if (r.ok || (r.error || "").includes("已在下载")) switchView("active");
   else alert(r.error);
 }
-async function quickDelete(id) {
+async function quickDelete(id, btn) {
   if (!confirm("删除任务记录？已下载视频不会被删除。")) return;
-  await api().delete_task(id);
+  try {
+    await withBusy(btn, "删除中…", () => api().delete_task(id));
+  } catch (e) { return; }
   renderTasks();
 }
 

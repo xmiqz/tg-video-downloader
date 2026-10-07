@@ -587,19 +587,31 @@ class Api:
         )
         return {"ok": True}
 
-    def editor_data(self, task_id):
-        """任务与全部条目（含 TG 消息原文、时长、日期）。"""
+    def editor_data(self, task_id, enrich=True):
+        """任务与全部条目（含 TG 消息原文、时长、日期）。
+        enrich=True 时后台补全缺失 text/duration；回捞时传 False 仅取本地。"""
         t = self._load_one(task_id)
         if t is None:
             return {"ok": False, "error": "任务不存在"}
-        # 已登录则从 Telegram 补全旧条目缺失的消息文本/时长
-        if self.client is not None:
-            async def _en():
-                await core.enrich_task_items(self.client, t)
-            try:
-                self.engine.submit(_en())
-            except Exception as e:
-                print("[GUI] 条目详情补全失败：", e)
+        # 从 Telegram 补全旧条目缺失的消息文本/时长：改为后台执行，绝不阻塞
+        # 首屏返回——否则条目多时 get_entity + 分批 get_messages 会让编辑窗口
+        # 长时间停在 loading。后台独立重新加载任务副本，避免与本次返回竞争；
+        # 补全结果由 enrich 内部 save_task 持久化，前端再静默拉一次即可。
+        if enrich and self.client is not None:
+            def _bg_enrich():
+                try:
+                    tt = self._load_one(task_id)
+                    if tt is None:
+                        return
+
+                    async def _en():
+                        await core.enrich_task_items(self.client, tt)
+
+                    self.engine.submit(_en())
+                except Exception as e:
+                    print("[GUI] 条目详情补全失败：", e)
+
+            threading.Thread(target=_bg_enrich, daemon=True).start()
         return {
             "ok": True,
             "task": {
@@ -965,13 +977,22 @@ class AmbientCapture:
             ch = max(2, round(cw * crop.size[1] / crop.size[0]))
             small = crop.resize((cw, ch), Image.BILINEAR).convert("RGB")
 
-        # 锁外：用“缩到 1/5 再放大”近似重模糊（C 级，毫秒级）。
-        # 输出分辨率提高后 1/5 仍有平滑模糊、无色块；旧版 560 宽配 1/7
-        # 时中间图仅 80px，是缩略图质感的来源之一。
-        k = 5
+        # 锁外：盒式霜化的有效遮挡宽度以“物理像素 48px”为目标（第一版
+        # 560宽/k7 在 4K 上恰好≈48 物理像素），按当前输出宽与主窗物理宽
+        # 反推 k——即霜化中间图保持约 80px 的绝对尺寸，与第一版一致；
+        # 而最终输出仍为高分辨率+q72，不会重现当年的 JPEG 块/马赛克。
+        # 再叠一道小高斯抹平盒式振铃。注：仅 liquid 调用，静态主题不受影响。
+        phys_w = rect[2] or cw
+        k = max(6, min(cw // 70, round(48 * cw / phys_w)))
         baked = small.resize(
             (max(1, cw // k), max(1, ch // k)), Image.BILINEAR
         ).resize((cw, ch), Image.BILINEAR)
+        try:
+            from PIL import ImageFilter
+            frost_r = max(1, round(k * 0.2))   # 抹平盒式网格，随 k 等比
+            baked = baked.filter(ImageFilter.GaussianBlur(frost_r))
+        except Exception:
+            pass
         # 轻微提色：环境彩光在玻璃边缘的折射更生动
         try:
             from PIL import ImageEnhance

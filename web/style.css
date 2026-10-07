@@ -109,24 +109,17 @@ body.fake-light .ambient { display: block; }
 .blob {
   position: absolute; border-radius: 50%;
   filter: blur(70px); opacity: 0.55;
-  will-change: transform;
 }
 .b1 { width: 46vw; height: 46vw; left: -12vw; top: -14vw;
-      background: radial-gradient(circle, #3b6bff, transparent 65%);
-      animation: drift1 26s var(--ease) infinite alternate; }
+      background: radial-gradient(circle, #3b6bff, transparent 65%); }
 .b2 { width: 40vw; height: 40vw; right: -10vw; top: -8vw;
-      background: radial-gradient(circle, #a35bff, transparent 65%);
-      animation: drift2 32s var(--ease) infinite alternate; }
-@keyframes drift1 { to { transform: translate(10vw, 8vw) scale(1.15); } }
-@keyframes drift2 { to { transform: translate(-9vw, 10vw) scale(1.1); } }
+      background: radial-gradient(circle, #a35bff, transparent 65%); }
 
-/* 统一霜层：静态暗/亮模式全场唯一的 backdrop-filter 面。
-   卡片不再各自挂滤镜——光斑持续动画时，只有这一层随帧重光栅。 */
+/* 统一霜层：仅静态压暗，不做 backdrop-filter。
+   光斑自身已预模糊，定格静止后浏览器可缓存整层，静置时 GPU 零开销。 */
 #frost {
   position: fixed; inset: 0; z-index: 0;
   display: block; pointer-events: none;
-  backdrop-filter: blur(26px) saturate(150%);
-  -webkit-backdrop-filter: blur(26px) saturate(150%);
   background: rgba(9, 11, 20, .3);
 }
 body.liquid #frost { display: none; }
@@ -633,6 +626,19 @@ nav { flex: 1; display: flex; flex-direction: column; gap: 5px; }
 }
 .mini-action:hover { background: rgba(255,255,255,.16); color: var(--ink); transform: translateY(-1px); }
 .mini-action.danger { color: #ff8a97; border-color: rgba(255,97,114,.35); }
+
+/* ---------- 通用“进行中”指示（搜索/下载/暂停等非即时响应操作） ---------- */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+  display: inline-block; flex: none;
+  width: 12px; height: 12px;
+  border: 2px solid currentColor; border-top-color: transparent;
+  border-radius: 50%; vertical-align: -2px; margin-right: 6px;
+  animation: spin .7s linear infinite;
+}
+.btn.is-busy { pointer-events: none; opacity: .9; }
+.mini-action.is-busy { pointer-events: none; opacity: .85; }
+.mini-action .spinner { width: 10px; height: 10px; margin-right: 0; vertical-align: -1px; }
 .ditem-text { max-height: 0; overflow: hidden; transition: max-height .4s var(--ease);
               font-size: 12px; color: var(--ink-dim); line-height: 1.65; }
 .ditem.expanded .ditem-text { max-height: 160px; margin-top: 9px; overflow-y: auto; }
@@ -861,7 +867,6 @@ nav { flex: 1; display: flex; flex-direction: column; gap: 5px; }
 
 /* ---------- 低性能/减少动效降级 ---------- */
 @media (prefers-reduced-motion: reduce) {
-  .blob { animation: none !important; will-change: auto; }
   * { animation-duration: .01ms !important;
       transition-duration: .01ms !important; }
 }

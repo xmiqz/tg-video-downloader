@@ -62,6 +62,7 @@ PART = 8 * 1024 * 1024     # 分片大小
 CONCURRENT = 4             # 并行连接数
 RETRIES = 3                # 单视频重试次数
 STALL_SECS = 90            # 停滞判定秒数
+SPEED_WIN_SEC = 10.0       # 总速度滑动窗口：统计最近 10 秒下载量，每秒更新
 
 
 # ---------------- 配置与登录 ----------------
@@ -241,13 +242,17 @@ class ItemCtl:
 
 
 class KeyWatch:
-    """后台线程监听键盘：S=跳过当前视频，Q=中止全部，I=切换简洁/详细。
+    """后台线程监听键盘：P=暂停当前，R=继续一个暂停，S=跳过当前，
+    X=移除当前，Q=中止全部，I=切换简洁/详细。
     Windows 用 msvcrt，macOS/Linux 用 termios 原始模式，无需回车。"""
 
     def __init__(self):
         self.skip = threading.Event()
         self.abort = threading.Event()
         self.toggle = threading.Event()
+        self.pause = threading.Event()
+        self.resume = threading.Event()
+        self.remove = threading.Event()
         self._quit = False
 
     def start(self):
@@ -268,6 +273,12 @@ class KeyWatch:
             self.abort.set()
         elif ch == "i":
             self.toggle.set()
+        elif ch == "p":
+            self.pause.set()
+        elif ch == "r":
+            self.resume.set()
+        elif ch == "x":
+            self.remove.set()
 
     def _listen_win(self):
         import msvcrt
@@ -476,6 +487,7 @@ async def search_videos(client, entity, p):
 
     async def gather(ent):
         pool = {}
+        capped = False
         if use_server:
             for q in server_terms:
                 async for m in client.iter_messages(ent, search=q):
@@ -484,25 +496,32 @@ async def search_videos(client, entity, p):
             async for m in client.iter_messages(ent):
                 pool[m.id] = m
                 if len(pool) >= MAX_LOCAL_SCAN:
+                    capped = True
                     break
-        return pool
+        return pool, capped
 
     # 候选：(消息, 来源)
     cand = {}
+    capped = False
     if scope in ("channel", "both"):
-        for mid, m in (await gather(entity)).items():
+        pool, cap = await gather(entity)
+        capped = capped or cap
+        for mid, m in pool.items():
             cand[(SRC_CHANNEL, mid)] = (m, SRC_CHANNEL)
     if scope in ("comments", "both"):
         discuss = await get_discuss_entity(client, entity)
         if discuss is not None:
-            for mid, m in (await gather(discuss)).items():
+            pool, cap = await gather(discuss)
+            capped = capped or cap
+            for mid, m in pool.items():
                 cand[(SRC_COMMENT, mid)] = (m, SRC_COMMENT)
 
     records = []
-    n_small = n_large = 0
+    n_small = n_large = n_video = 0
     for m, src in cand.values():
         if not is_video_message(m):
             continue
+        n_video += 1
         size = m.document.size or 0
         if min_mb and size / 1048576 < min_mb:
             n_small += 1
@@ -525,6 +544,8 @@ async def search_videos(client, entity, p):
         )
     records = records[:limit]
     meta = {"n_small": n_small, "n_large": n_large,
+            "n_video": n_video, "capped": capped,
+            "scan_cap": MAX_LOCAL_SCAN,
             "candidates": len(cand), "mode": mode,
             "has_comments": scope in ("comments", "both")}
     return records, meta
@@ -858,6 +879,9 @@ class Monitor:
         self.lock = asyncio.Lock()
         self.entries = []
         self.order = {}
+        # 全局测速滑动窗口：元素 (monotonic 时刻, 全部条目已下字节总量)，
+        # 仅保留最近 SPEED_WIN_SEC 秒，总速度取窗口首尾的平均，每秒更新。
+        self.win = []
         for n, it in enumerate(todo, 1):
             mid = it["msg"].id
             src = it.get("src", SRC_CHANNEL)
@@ -930,8 +954,8 @@ class Monitor:
             e = self.order[key]
             e["done"] = min(e["total"], e["done"] + nb)
             e["samples"].append((now, e["done"]))
-            # 只保留最近约 2.5 秒的样本用于测速
-            while len(e["samples"]) > 2 and now - e["samples"][0][0] > 2.5:
+            # 只保留最近 SPEED_WIN_SEC 秒的样本用于测速
+            while len(e["samples"]) > 2 and now - e["samples"][0][0] > SPEED_WIN_SEC:
                 e["samples"].pop(0)
 
     async def finish(self, key, final):
@@ -983,20 +1007,25 @@ class Monitor:
 
     def _snapshot(self):
         now = time.monotonic()
-        active, agg_speed = [], 0.0
-        total_bytes = sum_e = total_tot = 0
+        active = []
+        total_bytes = total_tot = 0
         done_cnt = fail_cnt = skip_cnt = paused_cnt = 0
+        cutoff = now - SPEED_WIN_SEC
         for e in self.entries:
             st = e["status"]
             if st == "下载中":
                 sm = e["samples"]
+                # add() 只在收到分片时清旧样本；停滞期要靠这里补清窗口外数据
+                while len(sm) > 1 and sm[0][0] < cutoff:
+                    sm.pop(0)
                 spd = 0.0
                 if len(sm) >= 2:
-                    dt = sm[-1][0] - sm[0][0]
-                    if dt > 0.05:
-                        spd = (sm[-1][1] - sm[0][1]) / dt
+                    # 窗口右端锚定“当前时刻”：网络停滞期间没有新样本，
+                    # 分母随时间继续增大，速度平滑衰减到 0，不会卡在旧值。
+                    dt = now - sm[0][0]
+                    if dt > 0.1:
+                        spd = max(0.0, (sm[-1][1] - sm[0][1]) / dt)
                 e["speed"] = spd
-                agg_speed += spd
                 active.append(e)
             total_bytes += e["done"]
             total_tot += e["total"]
@@ -1008,6 +1037,17 @@ class Monitor:
                 skip_cnt += 1
             elif e["final"] == "已暂停":
                 paused_cnt += 1
+        # 全局滑动窗口：记录每次快照时“全部条目已下字节总量”，
+        # 总速度 = 最近 SPEED_WIN_SEC 秒的字节增量 / 实际经过时间，每秒更新。
+        win = self.win
+        win.append((now, total_bytes))
+        while len(win) > 1 and win[0][0] < cutoff:
+            win.pop(0)
+        agg_speed = 0.0
+        if len(win) >= 2:
+            dt = now - win[0][0]
+            if dt > 0.1:
+                agg_speed = max(0.0, (win[-1][1] - win[0][1]) / dt)
         remaining = max(0, total_tot - total_bytes)
         eta = remaining / agg_speed if agg_speed > 0 else float("inf")
         return {
@@ -1086,7 +1126,8 @@ class Monitor:
             ),
             trunc_width(
                 f" 并发 {self.parallel} 路 | 进行中 {len(snap['active'])} | "
-                f"完成 {snap['done']} 失败 {snap['fail']} 跳过 {snap['skip']}",
+                f"完成 {snap['done']} 失败 {snap['fail']} 跳过 {snap['skip']} "
+                f"暂停 {snap['paused']}",
                 w
             ),
             "-" * w,
@@ -1103,7 +1144,7 @@ class Monitor:
                 f"预计剩余 {human_secs(snap['eta'])}", w
             ),
             "=" * w,
-            trunc_width(" I=切换简洁/详细   S=跳过当前   Q=中止全部", w),
+            trunc_width(" I=详细  P=暂停  R=继续  S=跳过  X=移除  Q=中止", w),
         ]
 
         if self.detailed:
@@ -1308,6 +1349,10 @@ async def download_one(client, item, target, ctl, state=None):
             pass
 
     for attempt in range(RETRIES):
+        # 新一轮尝试开始即清掉上一轮的“限速等待/Ns 后重试”提示：
+        # 否则本次成功后旧报错仍残留在卡片上。
+        if mon:
+            await mon.error(key, "")
         try:
             if size > 4 * 1024 * 1024:
                 await parallel_download(client, item, target, ctl, state)
@@ -1888,16 +1933,6 @@ async def execute_downloads(client, task, todo, parallel, gui=None):
 
     async def schedule():
         while True:
-            # 控制台按键翻译（GUI 模式 KeyWatch 未启动）
-            if gui is None:
-                if keys.abort.is_set():
-                    keys.abort.clear()
-                    sess.abort.set()
-                if keys.skip.is_set():
-                    keys.skip.clear()
-                    if sess.ctls:
-                        next(iter(sess.ctls.values())).skip.set()
-
             if sess.abort.is_set():
                 for tsk in list(sess.tasks.values()):
                     tsk.cancel()
@@ -1924,6 +1959,35 @@ async def execute_downloads(client, task, todo, parallel, gui=None):
                     return            # 全部落定
                 sess.wake.clear()
                 await sess.wake.wait()
+    # 控制台按键 → 会话控制。独立轮询，不依赖 schedule：
+    # 所有槽位占满、调度器挂起等待时按键也能即时生效。
+    async def translate_keys():
+        while True:
+            if keys.abort.is_set():
+                keys.abort.clear()
+                sess.abort.set()
+            if keys.skip.is_set():
+                keys.skip.clear()
+                if sess.ctls:
+                    next(iter(sess.ctls.values())).skip.set()
+            if keys.pause.is_set():
+                keys.pause.clear()
+                if sess.ctls:
+                    next(iter(sess.ctls.values())).pause.set()
+            if keys.remove.is_set():
+                keys.remove.clear()
+                if sess.ctls:
+                    next(iter(sess.ctls.values())).cancel.set()
+            if keys.resume.is_set():
+                keys.resume.clear()
+                if sess.paused:
+                    sess._begin_resume(next(iter(sess.paused)))
+            await asyncio.sleep(0.15)
+
+    translate = (
+        None if gui is not None
+        else asyncio.create_task(translate_keys())
+    )
     display = (
         None if gui is not None
         else asyncio.create_task(mon.display_loop(keys))
@@ -1932,6 +1996,8 @@ async def execute_downloads(client, task, todo, parallel, gui=None):
         await schedule()
     finally:
         keys.stop()
+        if translate is not None:
+            translate.cancel()
         if display is not None:
             await asyncio.sleep(0.5)   # 让面板定格在最终状态
             display.cancel()
@@ -2597,8 +2663,18 @@ async def preview_records(client, entity, title, params, auto_all):
     print(paint(f"\n 频道：{title}，正在搜索最多 {params['limit']} 个视频 …", DIM))
     items, meta = await search_videos(client, entity, params)
     if not items:
-        print(paint(" 没有找到符合条件的视频", YELLOW))
+        if meta.get("capped"):
+            print(paint(
+                f" 没有找到符合条件的视频（已扫描最近 {meta.get('scan_cap')} 条消息仍触顶）",
+                YELLOW))
+            print(paint(" 可改用关键词走服务端搜索，或放宽大小/日期条件", DIM))
+        else:
+            print(paint(" 没有找到符合条件的视频", YELLOW))
         return []
+    if meta.get("capped"):
+        print(paint(
+            f" 本地扫描已达 {meta.get('scan_cap')} 条上限，更早的结果未覆盖："
+            "加关键词可走服务端搜索", DIM))
     before_d = len(items)
     items = dedup_records(items)
     if len(items) < before_d:

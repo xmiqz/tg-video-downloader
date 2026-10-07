@@ -111,10 +111,10 @@
 
       <div id="active-bulk" class="bulk-bar hidden">
         <span id="active-bulk-count">已选 0</span>
-        <button class="btn primary sm" onclick="activeBulk('resume')">开始</button>
-        <button class="btn glass-btn sm" onclick="activeBulk('pause')">暂停</button>
-        <button class="btn glass-btn sm" onclick="activeBulk('skip')">跳过</button>
-        <button class="btn danger sm" onclick="activeBulk('remove')">移除</button>
+        <button class="btn primary sm" onclick="activeBulk('resume',this)">开始</button>
+        <button class="btn glass-btn sm" onclick="activeBulk('pause',this)">暂停</button>
+        <button class="btn glass-btn sm" onclick="activeBulk('skip',this)">跳过</button>
+        <button class="btn danger sm" onclick="activeBulk('remove',this)">移除</button>
         <button class="btn glass-btn sm" onclick="activeSelClear()">取消选择</button>
       </div>
 
@@ -262,7 +262,7 @@
         </div>
       </div>
 
-      <div id="wizard-3" class="wizard-panel hidden">
+      <div id="wizard-2" class="wizard-panel hidden">
         <div class="sel-toolbar">
           <div class="search-box">
             <span class="search-ico">⌕</span>
@@ -277,7 +277,7 @@
         <div class="wizard-actions between">
           <button class="btn glass-btn" onclick="gotoStep(1)">上一步</button>
           <div class="start-box">
-            <button class="btn primary" onclick="doStart()">开始下载 (<span id="sel-count">0</span>)</button>
+            <button class="btn primary" onclick="doStart(this)">开始下载 (<span id="sel-count">0</span>)</button>
           </div>
         </div>
       </div>

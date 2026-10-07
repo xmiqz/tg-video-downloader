@@ -77,6 +77,23 @@ async function edLoad() {
   document.getElementById("ed2-parallel").value = r.task.parallel || 1;
 
   edRender();
+
+  // 有缺失 text/duration 时，后台补全完成后延时静默回捞一次（不触发新的
+  // 网络补全）；用户正在搜索则跳过，避免打断输入。
+  const needEnrich = (state.items || []).some(
+    (it) => !it.text || !it.duration);
+  if (needEnrich) {
+    setTimeout(async () => {
+      try {
+        const q = document.getElementById("ed2-q");
+        if (document.activeElement === q) return;
+        const r2 = await api().editor_data(TASK_ID, false);
+        if (!r2 || !r2.ok) return;
+        state.items = r2.items || state.items;
+        edRender();
+      } catch (e) {}
+    }, 3500);
+  }
 }
 
 // ---------- 筛选 ----------
