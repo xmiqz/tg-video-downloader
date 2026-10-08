@@ -213,10 +213,11 @@ def build_cli(dist):
         os.chmod(bin_path, 0o755)
         wrapper = os.path.join(dist, name + ".command")
         with open(wrapper, "w", encoding="utf-8") as f:
+            q = '"'
             f.write(
                 '#!/bin/bash\n'
                 'cd "$(dirname "$0")"\n'
-                'f\'"./{name}"\n'
+                f'{q}./{name}{q}\n'
                 'echo ""\n'
                 'read -n 1 -s -r -p "按任意键关闭窗口..."\n'
             )
