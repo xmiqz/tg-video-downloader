@@ -4,7 +4,7 @@
 [![Downloads](https://img.shields.io/github/downloads/xmiqz/tg-video-downloader/total?style=flat-square)](https://github.com/xmiqz/tg-video-downloader/releases)
 [![License: MIT](https://img.shields.io/github/license/xmiqz/tg-video-downloader?style=flat-square)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue?style=flat-square)](https://www.python.org/)
-[![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-brightgreen?style=flat-square)#快速开始)
+[![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-brightgreen?style=flat-square)](#快速开始)
 
 Telegram 频道视频批量下载工具。纯 Python 实现，基于 [Telethon](https://github.com/LonamiWebs/Telethon)，无需任何外部下载器或 ffmpeg。Windows 提供图形界面（pywebview + WebView2）与控制台 TUI 两种形态；Linux / macOS 提供命令行版本。
 
