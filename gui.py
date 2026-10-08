@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-"""TG 视频下载器 —— 现代图形界面（pywebview）。
+"""TG 视频下载器 —— 现代图形界面（宿主适配层架构，协议见 host.py）。
 
 架构说明：核心下载/扫描/任务引擎完全复用 tg_video_dl.py，本文件只做一层
-HTTP/JS 桥接，把引擎的异步能力暴露给 web/ 下的界面。引擎的 CLI 入口与
-本 GUI 互不影响。
+HTTP/JSON-RPC 桥接，把引擎的异步能力暴露给 web/ 下的界面。引擎的 CLI 入口
+与本 GUI 互不影响。窗口/定时器/UI 线程能力全部来自 host.HostApp 抽象，
+具体宿主（迁移期旧窗口栈 / v2.0 原生 WebView2 / 后续 NAS、Android）
+对本文件透明。
 """
 import asyncio
 import base64
@@ -18,12 +20,7 @@ import sys
 import threading
 import time
 
-# ARM64 Windows：在 import webview 前把 pythonnet 切到随包分发的
-# CoreCLR(.NET 8)；x64 上此调用为空操作。
-import arm64_runtime
-arm64_runtime.init()
-
-import webview
+import host
 
 import tg_video_dl as core
 from telethon import TelegramClient
@@ -73,12 +70,11 @@ class Api:
         self.client = None
         self.cfg = {}
         self._preview = {}      # mid -> record（含活动消息对象）
+        # 宿主适配（main 启动时注入；离线/假宿主测试时可为 None）
+        self.host = None
         # 实时取光相关（仅 Windows 液态玻璃模式使用）
         self.capture = None
-        self._form = None
         self._drv = None
-        self._pump_timer = None
-        self._handler = None
 
     # ---------- 外观模式 ----------
     def get_appearance(self):
@@ -98,16 +94,15 @@ class Api:
         return {"ok": True}
 
     def _apply_mode(self, mode):
-        """把取光任务的启停 marshal 到 UI 线程。"""
-        form, drv = self._form, self._drv
-        if form is None or drv is None:
+        """把取光任务的启停 marshal 到 UI 线程（经宿主适配接口）。"""
+        host_app, drv = self.host, self._drv
+        if host_app is None or drv is None:
             return
 
         def _do():
             drv.set_mode(mode)
 
-        from System import Action
-        form.Invoke(Action(_do))
+        host_app.ui_invoke(_do)
 
     # ---------- client 生命周期辅助 ----------
     def _new_client(self):
@@ -593,7 +588,7 @@ class Api:
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
-    # ---------- 独立编辑窗口 ----------
+    # ---------- 独立编辑窗口（Task 16 将改为应用内全屏路由） ----------
     def open_editor(self, task_id):
         """弹出第二个专业编辑窗口（任务/条目管理）。"""
         t = self._load_one(task_id)
@@ -603,12 +598,12 @@ class Api:
                + f"?id={task_id}")
         s = _dpi_scale()
         bg = "#e9ecf5" if self.cfg.get("appearance") == "light" else "#07080f"
-        webview.create_window(
+        self.host.create_aux_window(
             "任务编辑 · " + t.get("channel_title", ""),
-            url=url, js_api=self,
-            width=int(1080 * s), height=int(740 * s),
-            min_size=(int(880 * s), int(580 * s)),
-            background_color=bg,
+            url, self,
+            int(1080 * s), int(740 * s),
+            (int(880 * s), int(580 * s)),
+            bg,
         )
         return {"ok": True}
 
@@ -1061,13 +1056,21 @@ def _dpi_scale():
 
 
 class _BackdropDriver:
-    """绑定方法形式的定时器回调（pythonnet netfx 对 bound method 转委托最稳）。"""
+    """液态玻璃取光驱动：UI 线程周期采样 + 后台线程 JPEG 推送。
 
-    def __init__(self, api, window, hwnd, user32):
+    窗口与定时器能力全部来自 host.HostApp/HostWindow 抽象，不含任何
+    旧窗口栈专有符号（具体委托封装由宿主实现负责）。
+    """
+
+    PUMP_MS = 200       # 5fps 环境取光：背景帧每帧要解码+
+                        # 重光栅全屏层，5fps 较 10fps GPU 减半
+
+    def __init__(self, api, win, host_app, hwnd, user32):
         self.api = api
         self.cap = None        # 放大镜懒创建：仅液态玻璃模式才存在
-        self.timer = None
-        self.window = window
+        self.timer = None      # host.TimerHandle
+        self.win = win
+        self.host_app = host_app
         self.hwnd = hwnd
         self.user32 = user32
         self.last_ver = 0
@@ -1081,12 +1084,14 @@ class _BackdropDriver:
                 cap.start(self.hwnd)
                 self.cap = cap
                 self.api.capture = cap
-            if self.timer is not None:
-                self.timer.Start()
+            if self.timer is None:
+                self.timer = self.host_app.set_interval(self.on_pump,
+                                                        self.PUMP_MS)
+            self.timer.start()
         elif self.timer is not None:
-            self.timer.Stop()
+            self.timer.stop()
 
-    def on_pump(self, sender, event):
+    def on_pump(self):
         # 必须在 UI 线程：同步驱动放大镜更新最新帧
         try:
             # 主窗最小化时不采样（保留最后一帧背景，零开销）
@@ -1106,7 +1111,7 @@ class _BackdropDriver:
                     continue
                 changed, url, ver = self.cap.render_jpeg()
                 if changed and url:
-                    self.window.evaluate_js(
+                    self.win.evaluate_js(
                         "window._setBackdrop && window._setBackdrop("
                         + json.dumps(url) + ")"
                     )
@@ -1135,31 +1140,25 @@ def main():
     _mode = api.cfg.get("appearance", "dark")
     _bg = "#e9ecf5" if _mode == "light" else "#07080f"
     scale = _dpi_scale() if sys.platform == "win32" else 1.0
-    window = webview.create_window(
-        "TG 视频下载器",
-        url=str(pathlib.Path(resource_dir()) / "index.html"),
-        js_api=api,
-        width=int(1180 * scale),
-        height=int(780 * scale),
-        min_size=(int(960 * scale), int(640 * scale)),
-        transparent=False,                      # 玻璃完全由网页内 backdrop 层渲染
-        background_color=_bg,
-        frameless=False,
-    )
 
-    def on_shown():
+    # 迁移期宿主：旧窗口栈适配（唯一旧栈入口）。
+    # Task 9 切换为 wv2_native.NativeHost 后本行一并删除。
+    import host_pywebview
+    host_app = host_pywebview.PyWebViewHost()
+    api.host = host_app
+
+    def on_shown(win):
         if sys.platform != "win32":
-            window.evaluate_js("document.body.classList.add('fake-light')")
+            win.evaluate_js("document.body.classList.add('fake-light')")
             return
 
-        form = window.native
         user32 = ctypes.windll.user32
 
         def setup_ui():
-            # 本函数在真正的 UI 线程执行（Timer 必须建在有消息循环的线程）
-            hwnd = form.Handle.ToInt64()
+            # 本函数在真正的 UI 线程执行（宿主定时器必须建在有消息循环的线程）
+            hwnd = win.hwnd
 
-            # 恢复 UI 线程 PerMonitorV2 context：CLR/WinForms 启动后可能把
+            # 恢复 UI 线程 PerMonitorV2 context：旧窗口栈启动后可能把
             # UI 线程切到 GDI 缩放的 unaware context，导致放大镜只有逻辑分辨率
             user32.SetThreadDpiAwarenessContext.restype = wintypes.HANDLE
             user32.SetThreadDpiAwarenessContext.argtypes = [wintypes.HANDLE]
@@ -1168,23 +1167,10 @@ def main():
                   "DPI=", user32.GetDpiForSystem())
 
             try:
-                import clr
-                clr.AddReference("System.Windows.Forms")
-                from System.Windows.Forms import Timer
-                from System import EventHandler
-                drv = _BackdropDriver(api, window, hwnd, user32)
-                handler = EventHandler(drv.on_pump)
-                timer = Timer()
-                timer.Interval = 200       # 5fps 环境取光：背景帧每帧要解码+
-                                           # 重光栅全屏层，5fps 较 10fps GPU 减半
-                timer.Tick += handler
-                drv.timer = timer
+                drv = _BackdropDriver(api, win, host_app, hwnd, user32)
                 threading.Thread(target=drv.push_loop,
                                  daemon=True).start()
-                api._pump_timer = timer       # 保活
                 api._drv = drv
-                api._handler = handler
-                api._form = form
                 # 按已保存外观决定是否创建放大镜并启动泵
                 drv.set_mode(api.cfg.get("appearance", "dark"))
                 # 窗口在 unaware 线程创建（物理尺寸被虚拟化缩小3倍），线程
@@ -1201,24 +1187,32 @@ def main():
             except Exception as e:
                 print("[GUI] 取光组件初始化失败：", e)
                 try:
-                    window.evaluate_js(
+                    win.evaluate_js(
                         "document.body.classList.add('fake-light')")
                 except Exception:
                     pass
 
-        # on_shown 在非 UI 线程触发，需把初始化 marshal 到 UI 线程同步执行
-        from System import Action
+        # on_shown 在非 UI 线程触发，经宿主接口同步 marshal 到 UI 线程
         try:
-            form.Invoke(Action(setup_ui))
+            host_app.ui_invoke(setup_ui)
         except Exception as e:
             print("[GUI] Invoke 到 UI 线程失败：", e)
             try:
-                window.evaluate_js("document.body.classList.add('fake-light')")
+                win.evaluate_js("document.body.classList.add('fake-light')")
             except Exception:
                 pass
 
-    window.events.shown += on_shown
-    webview.start(debug=False)
+    host_app.create_window(
+        "TG 视频下载器",
+        str(pathlib.Path(resource_dir()) / "index.html"),
+        api,
+        int(1180 * scale),
+        int(780 * scale),
+        (int(960 * scale), int(640 * scale)),
+        _bg,
+        on_shown,
+    )
+    host_app.run()
 
 
 if __name__ == "__main__":
