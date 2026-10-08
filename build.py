@@ -47,7 +47,7 @@ _WPF_ONLY = [
     "WindowsFormsIntegration.dll", "PresentationFramework-SystemCore.dll",
     "PresentationFramework-SystemData.dll", "PresentationFramework-SystemDrawing.dll",
     "PresentationFramework-SystemXml.dll", "PresentationFramework-SystemXmlLinq.dll",
-    "System.Windows.Presentation.dll", "System.Windows.Input.Manipulations.dll",
+    "System.Windows.Presentation.dll", "System.Windows.Input.Manipulators.dll",
 ]
 
 
@@ -72,18 +72,47 @@ def prepare_arm64_assets():
     print(">> 修补 pywebview 以兼容 .NET 8")
     subprocess.check_call([sys.executable, os.path.join(HERE, "patch_pywebview.py")])
 
+    def install_runtime(runtime):
+        """用官方 dotnet-install.ps1 往 dotnet_dir 装一个 ARM64 运行时组件。
+
+        dot.net 现以 application/octet-stream 返回该脚本，PS 5.1 的
+        Invoke-WebRequest 对非文本类型 .Content 给出 byte[]，内联
+        [scriptblock]::Create((IWR ...).Content) 会把字节数组十进制串当
+        脚本解析（ParseException，曾导致 CI windows-arm64 失败）；
+        因此先 -OutFile 按字节落盘，再用 -File 执行。
+        """
+        import tempfile
+        fd, script_path = tempfile.mkstemp(suffix=".ps1", prefix="dotnet-install-")
+        os.close(fd)
+        try:
+            dl = (
+                "$ErrorActionPreference='Stop';"
+                "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;"
+                "Invoke-WebRequest -UseBasicParsing "
+                f"'https://dot.net/v1/dotnet-install.ps1' -OutFile '{script_path}'"
+            )
+            subprocess.check_call(["powershell", "-ExecutionPolicy", "Bypass",
+                                   "-Command", dl])
+            subprocess.check_call(
+                ["powershell", "-ExecutionPolicy", "Bypass", "-File", script_path,
+                 "-Runtime", runtime, "-Channel", "8.0",
+                 "-Architecture", "arm64", "-InstallDir", dotnet_dir])
+        finally:
+            try:
+                os.remove(script_path)
+            except OSError:
+                pass
+
+    # self-hosted 布局必须有 host/fxr（hostfxr 引导 CoreCLR）；
+    # windowsdesktop-runtime 压缩包只含 shared/Desktop，不含 hostfxr
+    # 与 NETCore.App，需要再补装 dotnet 基础运行时到同一目录。
     if not os.path.isdir(os.path.join(dotnet_dir, "host", "fxr")):
+        print(">> 下载 .NET 8 基础运行时 (ARM64, 含 hostfxr) 到 dotnet_arm64")
+        install_runtime("dotnet")
+    if not os.path.isdir(os.path.join(
+            dotnet_dir, "shared", "Microsoft.WindowsDesktop.App")):
         print(">> 下载 .NET 8 WindowsDesktop (ARM64) 运行时到 dotnet_arm64")
-        ps = (
-            "$ErrorActionPreference='Stop';"
-            "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;"
-            "& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing "
-            "'https://dot.net/v1/dotnet-install.ps1').Content)) "
-            "-Runtime windowsdesktop -Channel 8.0 -Architecture arm64 "
-            f"-InstallDir '{dotnet_dir}'"
-        )
-        subprocess.check_call(["powershell", "-ExecutionPolicy", "Bypass",
-                               "-Command", ps])
+        install_runtime("windowsdesktop")
 
     desktop_root = os.path.join(dotnet_dir, "shared", "Microsoft.WindowsDesktop.App")
     if os.path.isdir(desktop_root):
@@ -187,7 +216,7 @@ def build_cli(dist):
             f.write(
                 '#!/bin/bash\n'
                 'cd "$(dirname "$0")"\n'
-                f'"./{name}"\n'
+                f'./{name}\n'
                 'echo ""\n'
                 'read -n 1 -s -r -p "按任意键关闭窗口..."\n'
             )
