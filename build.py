@@ -216,7 +216,7 @@ def build_cli(dist):
             f.write(
                 '#!/bin/bash\n'
                 'cd "$(dirname "$0")"\n'
-                f'\"./{name}\"\n'
+                'f\'"./{name}"\n'
                 'echo ""\n'
                 'read -n 1 -s -r -p "按任意键关闭窗口..."\n'
             )
