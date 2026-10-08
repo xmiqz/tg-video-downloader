@@ -139,7 +139,8 @@ jobs:
           gh release create "$TAG" "${FILES[@]}" \
             --title "$TAG" \
             --notes "$NOTES" \
-            --latest
+            --latest \
+            || gh release upload "$TAG" "${FILES[@]}" --clobber
 
       - name: Set Chinese asset labels
         if: startsWith(github.ref, 'refs/tags/')
