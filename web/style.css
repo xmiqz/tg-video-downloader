@@ -524,12 +524,18 @@ nav { flex: 1; display: flex; flex-direction: column; gap: 5px; }
   border-radius: var(--r-lg);
   animation: rise .35s var(--ease);
 }
-.adv-row { display: flex; gap: 14px; margin-top: 2px; }
-.adv-field { flex: 1.4; }
-.adv-field.small { flex: 1; }
+.adv-row { display: flex; gap: 14px; margin-top: 2px; flex-wrap: wrap; }
+.adv-field { flex: 1.4 1 280px; min-width: 0; }
+.adv-field.small { flex: 1 1 220px; }
 .dual-input { display: flex; align-items: center; gap: 9px; }
 .dual-input span { color: var(--ink-mute); }
 .dual-input input { flex: 1 1 0; min-width: 0; padding: 10px 12px; }
+/* 窄布局下上下微调钮挤占文本空间：隐藏箭头，仍可键入数字 */
+.dual-input input[type=number]::-webkit-inner-spin-button,
+.dual-input input[type=number]::-webkit-outer-spin-button {
+  -webkit-appearance: none; margin: 0;
+}
+.dual-input input[type=number] { -moz-appearance: textfield; }
 
 /* 视频选择列表 */
 .video-list { display: flex; flex-direction: column; gap: 9px; max-height: 44vh;
