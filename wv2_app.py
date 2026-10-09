@@ -648,9 +648,22 @@ class NativeHost(host.HostApp):
 
         here = os.path.dirname(os.path.abspath(__file__))
         if loader_path is None:
-            loader_path = os.path.join(
-                here, "webview2_arm64", "runtimes", "win-arm64", "native",
-                "WebView2Loader.dll")
+            # 随包双架构 loader 放 lib/<arch>/；按本机架构选择，未知架构
+            # 保留原路径（旧资产已删除，随后加载时给出明确失败）
+            import platform
+            _machine = platform.machine().lower()
+            if _machine in ("arm64", "aarch64"):
+                _arch = "arm64"
+            elif _machine in ("amd64", "x86_64"):
+                _arch = "x64"
+            else:
+                loader_path = os.path.join(
+                    here, "webview2_arm64", "runtimes", "win-arm64", "native",
+                    "WebView2Loader.dll")
+                _arch = None
+            if _arch is not None:
+                loader_path = os.path.join(
+                    here, "lib", _arch, "WebView2Loader.dll")
         self._loader, loader_abs = wc.load_webview2_loader(loader_path)
         self.emit({"event": "loader_loaded", "loader": loader_abs})
 

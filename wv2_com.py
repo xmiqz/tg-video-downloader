@@ -961,9 +961,23 @@ def emit(obj):
 
 def main(argv=None):
     here = os.path.dirname(os.path.abspath(__file__))
-    default_loader = os.path.join(
-        here, "webview2_arm64", "runtimes", "win-arm64", "native",
-        "WebView2Loader.dll")
+    # 与 wv2_app.NativeHost 同一套架构选择：lib/<arch>/WebView2Loader.dll；
+    # 未知架构回退旧路径（旧资产已删除，加载时即明确失败）
+    import platform
+    _machine = platform.machine().lower()
+    if _machine in ("arm64", "aarch64"):
+        _arch = "arm64"
+    elif _machine in ("amd64", "x86_64"):
+        _arch = "x64"
+    else:
+        _arch = None
+    if _arch is not None:
+        default_loader = os.path.join(
+            here, "lib", _arch, "WebView2Loader.dll")
+    else:
+        default_loader = os.path.join(
+            here, "webview2_arm64", "runtimes", "win-arm64", "native",
+            "WebView2Loader.dll")
     default_user_data = (
         r"c:\Users\xqz\Documents\trae_projects\dayly"
         r"\.trae\team\evidence\T03\wv2data")

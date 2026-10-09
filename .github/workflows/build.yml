@@ -39,7 +39,7 @@ jobs:
 
       - name: Install deps (Windows GUI)
         if: runner.os == 'Windows'
-        run: python -m pip install --upgrade telethon pyinstaller pywebview pythonnet Pillow
+        run: python -m pip install --upgrade telethon pyinstaller "fastapi>=0.143,<0.144" "uvicorn>=0.54,<0.55" "websockets>=16,<17" Pillow
 
       - name: Install deps (CLI)
         if: runner.os != 'Windows'

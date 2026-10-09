@@ -2,8 +2,8 @@
 """
 TG视频下载器 —— 跨平台一键打包脚本（PyInstaller）
 
-  Windows（x64/ARM64）：打包图形界面 gui.py + web/ 资产
-                       （pywebview + WebView2 + pythonnet + Pillow）
+  Windows（x64/ARM64）：打包图形界面 gui.py + web/ 与 lib/ 原生资产
+                       （系统 WebView2 壳 wv2_app + 随包 WebView2Loader + Pillow）
                        同时打包控制台 TUI 版 tg_video_dl.py（ANSI 界面）
   Linux / macOS       ：打包命令行内核 tg_video_dl.py
   （PyInstaller 不支持交叉编译，每个平台在自己的 runner 上构建）
@@ -35,131 +35,68 @@ os.environ["PYTHONUTF8"] = "1"
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
 
-# 仅 WPF 使用、WinForms 宿主不需要的程序集/原生库，打包前裁掉以减小体积
-_WPF_ONLY = [
-    "PresentationFramework.dll", "PresentationCore.dll", "PresentationUI.dll",
-    "PresentationFramework.Luna.dll", "PresentationFramework.Aero.dll",
-    "PresentationFramework.Aero2.dll", "PresentationFramework.Royale.dll",
-    "PresentationFramework.Classic.dll", "PresentationFramework.AeroLite.dll",
-    "wpfgfx_cor3.dll", "PresentationNative_cor3.dll", "PenImc_cor3.dll",
-    "DirectWriteForwarder.dll", "ReachFramework.dll", "System.Printing.dll",
-    "System.Xaml.dll", "System.Windows.Controls.Ribbon.dll",
-    "WindowsFormsIntegration.dll", "PresentationFramework-SystemCore.dll",
-    "PresentationFramework-SystemData.dll", "PresentationFramework-SystemDrawing.dll",
-    "PresentationFramework-SystemXml.dll", "PresentationFramework-SystemXmlLinq.dll",
-    "System.Windows.Presentation.dll", "System.Windows.Input.Manipulations.dll",
-]
-
-
 def is_arm64_windows():
     return (platform.system() == "Windows"
             and platform.machine().lower() in ("arm64", "aarch64"))
 
 
-def prepare_arm64_assets():
-    """准备 ARM64 打包所需资产：
+def _write_stdio_runtime_hook():
+    """生成 GUI runtime hook 到 WORK 并返回路径。
 
-    1. 给已安装的 pywebview 打 .NET 8 兼容补丁；
-    2. 确保 dotnet_arm64/ 存在（缺失时用 dotnet-install 拉取
-       WindowsDesktop 运行时，非 SDK）；
-    3. 裁剪仅 WPF 使用的文件。
+    --windowed 冻结态（同 pythonw）PyInstaller 不提供控制台，sys.stdout/
+    sys.stderr 为 None。uvicorn 0.54 的 DefaultFormatter.__init__ 直接调用
+    sys.stdout.isatty()（uvicorn/logging.py 第 42 行，无 None 防护），
+    server_app 启动配置日志时即抛 AttributeError，进程弹"Unhandled exception"。
+    在任何业务模块导入前把 None 流替换为 devnull 文本流，isatty() 返回 False，
+    行为与"无控制台、日志丢弃"一致；崩溃时 PyInstaller 自带异常对话框不受影响。
 
-    返回 (dotnet_dir, webview2_dir)。
+    失效条件：uvicorn 上游对 None stdout 加防护，或 PyInstaller windowed 模式
+    提供默认 stdout 后，可连同 --runtime-hook 一并移除。
     """
-    dotnet_dir = os.path.join(HERE, "dotnet_arm64")
-    webview2_dir = os.path.join(HERE, "webview2_arm64")
-
-    print(">> 修补 pywebview 以兼容 .NET 8")
-    subprocess.check_call([sys.executable, os.path.join(HERE, "patch_pywebview.py")])
-
-    def install_runtime(runtime):
-        """用官方 dotnet-install.ps1 往 dotnet_dir 装一个 ARM64 运行时组件。
-
-        dot.net 现以 application/octet-stream 返回该脚本，PS 5.1 的
-        Invoke-WebRequest 对非文本类型 .Content 给出 byte[]，内联
-        [scriptblock]::Create((IWR ...).Content) 会把字节数组十进制串当
-        脚本解析（ParseException，曾导致 CI windows-arm64 失败）；
-        因此先 -OutFile 按字节落盘，再用 -File 执行。
-        """
-        import tempfile
-        fd, script_path = tempfile.mkstemp(suffix=".ps1", prefix="dotnet-install-")
-        os.close(fd)
-        try:
-            dl = (
-                "$ErrorActionPreference='Stop';"
-                "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;"
-                "Invoke-WebRequest -UseBasicParsing "
-                f"'https://dot.net/v1/dotnet-install.ps1' -OutFile '{script_path}'"
-            )
-            subprocess.check_call(["powershell", "-ExecutionPolicy", "Bypass",
-                                   "-Command", dl])
-            subprocess.check_call(
-                ["powershell", "-ExecutionPolicy", "Bypass", "-File", script_path,
-                 "-Runtime", runtime, "-Channel", "8.0",
-                 "-Architecture", "arm64", "-InstallDir", dotnet_dir])
-        finally:
-            try:
-                os.remove(script_path)
-            except OSError:
-                pass
-
-    # self-hosted 布局必须有 host/fxr（hostfxr 引导 CoreCLR）；
-    # windowsdesktop-runtime 压缩包只含 shared/Desktop，不含 hostfxr
-    # 与 NETCore.App，需要再补装 dotnet 基础运行时到同一目录。
-    if not os.path.isdir(os.path.join(dotnet_dir, "host", "fxr")):
-        print(">> 下载 .NET 8 基础运行时 (ARM64, 含 hostfxr) 到 dotnet_arm64")
-        install_runtime("dotnet")
-    if not os.path.isdir(os.path.join(
-            dotnet_dir, "shared", "Microsoft.WindowsDesktop.App")):
-        print(">> 下载 .NET 8 WindowsDesktop (ARM64) 运行时到 dotnet_arm64")
-        install_runtime("windowsdesktop")
-
-    desktop_root = os.path.join(dotnet_dir, "shared", "Microsoft.WindowsDesktop.App")
-    if os.path.isdir(desktop_root):
-        for ver in os.listdir(desktop_root):
-            vdir = os.path.join(desktop_root, ver)
-            for f in _WPF_ONLY:
-                p = os.path.join(vdir, f)
-                if os.path.isfile(p):
-                    os.remove(p)
-
-    if not os.path.isdir(dotnet_dir):
-        raise RuntimeError("ARM64 运行时准备失败：缺少 dotnet_arm64/")
-    if not os.path.isdir(webview2_dir):
-        raise RuntimeError("缺少 webview2_arm64/（.NET Core 版 WebView2 程序集）")
-
-    return dotnet_dir, webview2_dir
+    os.makedirs(WORK, exist_ok=True)
+    hook = os.path.join(WORK, "rthook_stdio.py")
+    with open(hook, "w", encoding="utf-8") as f:
+        f.write(
+            "# PyInstaller runtime hook: windowed mode has no console streams\n"
+            "import os\n"
+            "import sys\n"
+            "for _name in ('stdout', 'stderr'):\n"
+            "    if getattr(sys, _name) is None:\n"
+            "        setattr(sys, _name,\n"
+            "                open(os.devnull, 'w', encoding='utf-8'))\n"
+            "del _name\n"
+        )
+    return hook
 
 
 def build_windows_gui(dist):
     arm64 = is_arm64_windows()
     name = "TG视频下载器_ARM64" if arm64 else "TG视频下载器"
     web_dir = os.path.join(HERE, "web")
+    lib_dir = os.path.join(HERE, "lib")
+    rthook = _write_stdio_runtime_hook()
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--onefile", "--windowed",
         "--name", name,
         "--add-data", os.path.join(web_dir, "*") + os.pathsep + "web",
+        # onefile 解包后 wv2_app 按相对路径找 lib/<arch>/WebView2Loader.dll，
+        # 两个架构的 loader 都随包带上（每个约 0.2MB，壳按架构选用）
+        "--add-data", os.path.join(lib_dir, "*") + os.pathsep + "lib",
+        # 见 _write_stdio_runtime_hook：修复 windowed 态 stdout=None 崩溃
+        "--runtime-hook", rthook,
         "--collect-submodules", "telethon",
-        "--collect-submodules", "webview",
-        "--collect-all", "clr_loader",
-        "--hidden-import", "webview.platforms.edgechromium",
-        "--hidden-import", "clr",
         "--hidden-import", "PIL",
         "--distpath", dist,
         "--workpath", WORK,
         "--specpath", WORK,
     ]
 
-    if arm64:
-        dotnet_dir, webview2_dir = prepare_arm64_assets()
-        # 随包分发 CoreCLR(.NET 8) 运行时与 .NET Core 版 WebView2 程序集
-        cmd += [
-            "--add-data",
-            os.path.join(dotnet_dir, "*") + os.pathsep + "dotnet",
-            "--add-data",
-            os.path.join(webview2_dir, "*") + os.pathsep + "webview2_arm64",
-        ]
+    # v2.0 已彻底移除 pywebview/pythonnet(CLR) 栈；显式排除，防止环境里
+    # 残留安装或传递依赖把它们重新带进包（fastapi/uvicorn 不依赖它们）
+    for mod in ("webview", "clr", "pythonnet", "clr_loader",
+                "tkinter", "unittest", "test", "pydoc"):
+        cmd += ["--exclude-module", mod]
 
     cmd.append(os.path.join(HERE, "gui.py"))
     print(">>", " ".join(cmd))
