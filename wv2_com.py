@@ -121,6 +121,13 @@ WATCHDOG_EXIT_CODE = 98
 # wProcessorArchitecture（sysinfoapi.h，与 wv2_native.py 一致）
 _PROC_ARCH = {0: "x86", 5: "ARM", 6: "IA64", 9: "AMD64", 12: "ARM64"}
 
+# IMAGE_FILE_MACHINE_*（winnt.h）——IsWow64Process2 出参 / PE Machine 取值
+IMAGE_FILE_MACHINE_UNKNOWN = 0x0000
+IMAGE_FILE_MACHINE_I386 = 0x014C
+IMAGE_FILE_MACHINE_ARM = 0x01C2
+IMAGE_FILE_MACHINE_AMD64 = 0x8664
+IMAGE_FILE_MACHINE_ARM64 = 0xAA64
+
 # ============================================================================
 # GUID（rpcsal/guiddef.h：c_ulong + 2*c_ushort + 8*c_ubyte，16 字节）
 # ============================================================================
@@ -670,6 +677,28 @@ kernel32.GetLocalTime.argtypes = [ctypes.POINTER(SYSTEMTIME)]
 kernel32.GetLocalTime.restype = None
 kernel32.GetNativeSystemInfo.argtypes = [ctypes.POINTER(SYSTEM_INFO)]
 kernel32.GetNativeSystemInfo.restype = None
+# IsWow64Process2（processthreadsapi.h，Win10 1709+；老系统无此导出，
+# 函数指针解析失败时访问会抛 AttributeError，由 process_machine 兜底）
+kernel32.IsWow64Process2.argtypes = [
+    wintypes.HANDLE, ctypes.POINTER(wintypes.USHORT),
+    ctypes.POINTER(wintypes.USHORT)]
+kernel32.IsWow64Process2.restype = wintypes.BOOL
+# GetProcessInformation（processthreadsapi.h）：ProcessMachineTypeInfo 自
+# Win10 21H2 起给出“进程真实架构”——x64 模拟不算 WOW64（IsWow64Process2
+# 对其返回 pm=0，与 ARM64 原生无法区分），必须靠它判别，见 process_machine。
+ProcessMachineTypeInfo = 9
+
+
+class PROCESS_MACHINE_INFORMATION(ctypes.Structure):
+    _fields_ = [("ProcessMachine", wintypes.USHORT),
+                ("Res0", wintypes.USHORT),
+                ("MachineAttributes", wintypes.DWORD)]
+
+
+kernel32.GetProcessInformation.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD,
+    wintypes.LPVOID, wintypes.DWORD]
+kernel32.GetProcessInformation.restype = wintypes.BOOL
 
 # TimerProc：VOID CALLBACK(HWND, UINT, UINT_PTR, DWORD)
 FN_TimerProc = ctypes.WINFUNCTYPE(
@@ -719,6 +748,87 @@ def native_machine():
     kernel32.GetNativeSystemInfo(ctypes.byref(si))
     code = int(si.u.wProcessorArchitecture)
     return code, _PROC_ARCH.get(code, "UNKNOWN(%d)" % code)
+
+
+# PROCESSOR_ARCHITECTURE 环境变量 -> IMAGE_FILE_MACHINE_* 兜底映射
+_ENV_MACHINE = {
+    "ARM64": IMAGE_FILE_MACHINE_ARM64,
+    "AMD64": IMAGE_FILE_MACHINE_AMD64,
+    "X86": IMAGE_FILE_MACHINE_I386,
+    "ARM": IMAGE_FILE_MACHINE_ARM,
+}
+
+
+def process_machine():
+    """当前“进程”的 PE Machine（IMAGE_FILE_MACHINE_*，winnt.h）。
+
+    判定顺序（本机 ARM64 真机实测 + 微软官方 Q&A 佐证）：
+      1. kernel32.IsWow64Process2：
+         - pProcessMachine != 0：进程在 WOW64 容器（x86/ARM32 模拟），
+           其值即“进程”架构，直接返回；
+         - pProcessMachine == 0：进程“非 WOW64”——注意这包含两种情况：
+           原生 ARM64，以及 ARM64 上的 x64 模拟。按设计 x64 模拟不算
+           WOW64（微软工程师实测：x64 进程 pm 恒为 0、pNativeMachine
+           =0xAA64），仅凭 IsWow64Process2 无法区分二者。
+      2. 故 pm==0 时再调 kernel32.GetProcessInformation
+         (ProcessMachineTypeInfo) 取进程真实架构（实测：ARM64 原生
+         0xAA64/MachineAttributes=UserEnabled|KernelEnabled；x64 模拟
+         0x8664/UserEnabled）；该 API 不可用时退回 pNativeMachine。
+      3. IsWow64Process2 整体失败/不可用：环境变量
+         PROCESSOR_ARCHITECTURE 兜底映射。
+
+    为什么不用 platform.machine()（已实证）：Python 3.12 在 Windows 上
+    优先走 WMI 查物理 CPU，x64 模拟进程里也错误返回 "ARM64"。x64
+    onefile 因此误加载 arm64 的 WebView2Loader.dll，ctypes.WinDLL 报
+    WinError 193（%1 不是有效的 Win32 应用程序）。
+    """
+    pm = wintypes.USHORT(0xFFFF)
+    native = wintypes.USHORT(0xFFFF)
+    try:
+        ok = kernel32.IsWow64Process2(
+            wintypes.HANDLE(-1), ctypes.byref(pm), ctypes.byref(native))
+    except AttributeError:
+        ok = 0  # 老系统无 IsWow64Process2 导出
+    if ok:
+        pm_v = int(pm.value) & 0xFFFF
+        native_v = int(native.value) & 0xFFFF
+        if pm_v != 0xFFFF and pm_v != 0:
+            return pm_v
+        if pm_v == 0:
+            # 原生 ARM64 与 x64 模拟在此不可区分，GetProcessInformation
+            # 给出进程真实架构；不可用时按 pNativeMachine 处理。
+            info = PROCESS_MACHINE_INFORMATION(0xFFFF, 0xFFFF, 0xFFFFFFFF)
+            try:
+                got = kernel32.GetProcessInformation(
+                    wintypes.HANDLE(-1), ProcessMachineTypeInfo,
+                    ctypes.byref(info), ctypes.sizeof(info))
+            except AttributeError:
+                got = 0
+            if got and int(info.ProcessMachine) & 0xFFFF != 0xFFFF:
+                return int(info.ProcessMachine) & 0xFFFF
+            return native_v
+    # IsWow64Process2 失败/不可用：环境变量兜底
+    pa = os.environ.get("PROCESSOR_ARCHITECTURE", "").upper()
+    if pa in _ENV_MACHINE:
+        return _ENV_MACHINE[pa]
+    raise RuntimeError(
+        "无法确定进程架构：IsWow64Process2 不可用且 "
+        "PROCESSOR_ARCHITECTURE=%r" % pa)
+
+
+def loader_arch_dir(machine=None):
+    """随包 loader 目录名 lib/<arch>/，按“进程”架构选择。
+
+    0xAA64 -> "arm64"，0x8664 -> "x64"；x86(0x014C)/ARM(0x01C2) 及未知
+    架构无随包 loader，直接 RuntimeError（不再静默回退错误路径）。
+    """
+    if machine is None:
+        machine = process_machine()
+    if machine == IMAGE_FILE_MACHINE_ARM64:
+        return "arm64"
+    if machine == IMAGE_FILE_MACHINE_AMD64:
+        return "x64"
+    raise RuntimeError("不支持的进程架构 0x%04X" % (int(machine) & 0xFFFF))
 
 
 def local_time_iso():
@@ -785,14 +895,15 @@ def load_webview2_loader(loader_path):
     try:
         dll = ctypes.WinDLL(abs_path)
     except OSError as ex:
-        arch_code, arch_name = native_machine()
+        proc_arch = process_machine()
         raise OSError(
             "加载 WebView2Loader.dll 失败：%s\n"
             "  路径：%s\n"
-            "  本机原生架构：%s（指针宽度 %d 位）；请确认 DLL 与 Python "
-            "同为该架构（任务 loader 已核验 PE Machine=0xAA64/ARM64），"
-            "且其依赖的系统 DLL 齐全。原始错误：%r"
-            % (abs_path, abs_path, arch_name,
+            "  进程架构：0x%04X（指针宽度 %d 位）；请确认 DLL 与当前"
+            "进程同为该架构（x64 模拟下应为 0x8664/x64，切勿误用 arm64 "
+            "loader，否则即 WinError 193），且其依赖的系统 DLL 齐全。"
+            "原始错误：%r"
+            % (abs_path, abs_path, proc_arch,
                ctypes.sizeof(ctypes.c_void_p) * 8, ex))
     try:
         fn_ver = dll.GetAvailableCoreWebView2BrowserVersionString
@@ -961,23 +1072,11 @@ def emit(obj):
 
 def main(argv=None):
     here = os.path.dirname(os.path.abspath(__file__))
-    # 与 wv2_app.NativeHost 同一套架构选择：lib/<arch>/WebView2Loader.dll；
-    # 未知架构回退旧路径（旧资产已删除，加载时即明确失败）
-    import platform
-    _machine = platform.machine().lower()
-    if _machine in ("arm64", "aarch64"):
-        _arch = "arm64"
-    elif _machine in ("amd64", "x86_64"):
-        _arch = "x64"
-    else:
-        _arch = None
-    if _arch is not None:
-        default_loader = os.path.join(
-            here, "lib", _arch, "WebView2Loader.dll")
-    else:
-        default_loader = os.path.join(
-            here, "webview2_arm64", "runtimes", "win-arm64", "native",
-            "WebView2Loader.dll")
+    # 与 wv2_app.NativeHost 同一套架构选择：lib/<进程架构>/WebView2Loader.dll；
+    # 按进程架构（IsWow64Process2）而非 platform.machine()，x64 模拟下才能
+    # 选到 x64 loader；不支持的架构直接 RuntimeError，不再回退错误旧路径。
+    default_loader = os.path.join(
+        here, "lib", loader_arch_dir(), "WebView2Loader.dll")
     default_user_data = (
         r"c:\Users\xqz\Documents\trae_projects\dayly"
         r"\.trae\team\evidence\T03\wv2data")

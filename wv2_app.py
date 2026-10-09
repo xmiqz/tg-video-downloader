@@ -646,24 +646,15 @@ class NativeHost(host.HostApp):
         self.debug = bool(debug)
         self.failures = []
 
-        here = os.path.dirname(os.path.abspath(__file__))
         if loader_path is None:
-            # 随包双架构 loader 放 lib/<arch>/；按本机架构选择，未知架构
-            # 保留原路径（旧资产已删除，随后加载时给出明确失败）
-            import platform
-            _machine = platform.machine().lower()
-            if _machine in ("arm64", "aarch64"):
-                _arch = "arm64"
-            elif _machine in ("amd64", "x86_64"):
-                _arch = "x64"
-            else:
-                loader_path = os.path.join(
-                    here, "webview2_arm64", "runtimes", "win-arm64", "native",
-                    "WebView2Loader.dll")
-                _arch = None
-            if _arch is not None:
-                loader_path = os.path.join(
-                    here, "lib", _arch, "WebView2Loader.dll")
+            # 随包双架构 loader 放 lib/<进程架构>/；按进程架构选择而非
+            # platform.machine()：Python 3.12 在 x64 模拟层会误报物理
+            # CPU 为 ARM64，导致 x64 进程误加载 arm64 loader（WinError
+            # 193）。loader_arch_dir 经 IsWow64Process2 判定，x64 模拟
+            # 选 x64、ARM64 原生选 arm64；不支持的架构直接 RuntimeError。
+            loader_path = os.path.join(
+                os.path.dirname(os.path.abspath(wc.__file__)),
+                "lib", wc.loader_arch_dir(), "WebView2Loader.dll")
         self._loader, loader_abs = wc.load_webview2_loader(loader_path)
         self.emit({"event": "loader_loaded", "loader": loader_abs})
 
