@@ -340,6 +340,7 @@ nav { flex: 1; display: flex; flex-direction: column; gap: 5px; }
   border-radius: 999px;
 }
 .segmented.grow { display: flex; width: 100%; }
+.segmented.grow .seg { flex: 1 1 0; min-width: 0; padding: 7px 10px; text-align: center; }
 .seg {
   border: none; background: transparent; color: var(--ink-dim);
   padding: 7px 15px; border-radius: 999px; font-size: 12.5px;
