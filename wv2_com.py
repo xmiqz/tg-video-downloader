@@ -746,6 +746,12 @@ def _com_slot_addr(ptr, slot):
                            ctypes.POINTER(ctypes.c_void_p))[slot] or 0)
 
 
+# Task 4 起的 public helper（行为与 _com_slot_addr 完全一致，仅加公开别名；
+# wv2_app.py 等后续任务的 native 方法调用一律经此二次解引用裸槽入口，
+# 不允许把接口对象直接 cast 成 vtable 结构）。
+com_slot_addr = _com_slot_addr
+
+
 def com_addref(ptr):
     """对任意 IUnknown* 调 vtable[1] AddRef；返回 AddRef 后引用计数。"""
     ptr = int(ptr or 0)

@@ -72,6 +72,11 @@ class Api:
         self._preview = {}      # mid -> record（含活动消息对象）
         # 宿主适配（main 启动时注入；离线/假宿主测试时可为 None）
         self.host = None
+        # 进程内 HTTP/WS 连接信息（main 启动时从 server_app 句柄注入）
+        self.base_url = ""
+        self.token = ""
+        # 事件推送句柄（main 注入；签名 push_event(name:str, params:list)）
+        self.push_event = None
         # 实时取光相关（仅 Windows 液态玻璃模式使用）
         self.capture = None
         self._drv = None
@@ -594,8 +599,8 @@ class Api:
         t = self._load_one(task_id)
         if t is None:
             return {"ok": False, "error": "任务不存在"}
-        url = (str(pathlib.Path(resource_dir()) / "editor.html")
-               + f"?id={task_id}")
+        url = (self.base_url + "/editor.html?id=" + task_id
+               + "#t=" + self.token)
         s = _dpi_scale()
         bg = "#e9ecf5" if self.cfg.get("appearance") == "light" else "#07080f"
         self.host.create_aux_window(
@@ -1101,7 +1106,7 @@ class _BackdropDriver:
             print("[GUI] pump 失败：", ex)
 
     def push_loop(self):
-        # 后台线程：编码并通过 evaluate_js 推送（该同步调用禁止在 UI 线程执行）
+        # 后台线程：编码并经 main 注入的推送句柄发出事件（不直接触碰页面）
         last = 0
         while True:
             time.sleep(0.2)              # 5fps 推送；环境光变化缓慢，足够流畅，
@@ -1111,10 +1116,7 @@ class _BackdropDriver:
                     continue
                 changed, url, ver = self.cap.render_jpeg()
                 if changed and url:
-                    self.win.evaluate_js(
-                        "window._setBackdrop && window._setBackdrop("
-                        + json.dumps(url) + ")"
-                    )
+                    self.api.push_event("_setBackdrop", [url])
                 last = ver
             except Exception as ex:
                 print("[GUI] 背景推送失败：", ex)
@@ -1122,59 +1124,62 @@ class _BackdropDriver:
 
 
 def main():
-    if sys.platform == "win32":
-        # PerMonitorV2 DPI 感知，保证物理坐标与放大镜裁剪准确
+    if sys.platform != "win32":
+        sys.stderr.write("v2.0 原生壳仅支持 Windows 桌面系统。\n")
+        return 2
+
+    # 1) PerMonitorV2 DPI 感知，保证物理坐标与放大镜裁剪准确
+    try:
+        if not ctypes.windll.user32.SetProcessDpiAwarenessContext(-4):
+            raise OSError
+    except Exception:
         try:
-            if not ctypes.windll.user32.SetProcessDpiAwarenessContext(-4):
-                raise OSError
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
         except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()
+
+    # 2) 启动进程内 HTTP/WS 服务（api.cfg 由 server_app 负责加载）
+    import server_app
+    handle = server_app.start(None)
+    try:
+        api = handle.api
+        _mode = api.cfg.get("appearance", "dark")
+        _bg = "#e9ecf5" if _mode == "light" else "#07080f"
+
+        # 3) 原生壳初始化：UserDataFolder 入数据目录
+        import wv2_app
+        host_app = wv2_app.NativeHost(
+            os.path.join(str(core.DATA_DIR), "wv2"))
+
+        # 4) 注入连接信息与事件推送句柄
+        api.host = host_app
+        api.base_url = handle.base_url
+        api.token = handle.token
+        api.push_event = handle.push_event
+
+        # on_shown：原生壳在 UI 线程直接触发 setup，不再 Invoke 包一层
+        def on_shown(win):
+            user32 = ctypes.windll.user32
             try:
-                ctypes.windll.shcore.SetProcessDpiAwareness(2)
-            except Exception:
-                ctypes.windll.user32.SetProcessDPIAware()
+                hwnd = win.hwnd
 
-    engine = EngineLoop()
-    engine.start()
-    api = Api(engine)
-    api.cfg = core.load_config()          # 提前读取，外观在登录前即生效
-    _mode = api.cfg.get("appearance", "dark")
-    _bg = "#e9ecf5" if _mode == "light" else "#07080f"
-    scale = _dpi_scale() if sys.platform == "win32" else 1.0
+                # 恢复/确认 UI 线程 PerMonitorV2 context（保留 Win32 接线）
+                user32.SetThreadDpiAwarenessContext.restype = wintypes.HANDLE
+                user32.SetThreadDpiAwarenessContext.argtypes = [
+                    wintypes.HANDLE]
+                _newctx = user32.SetThreadDpiAwarenessContext(
+                    wintypes.HANDLE(-4))
+                print("[GUI] thread ctx ->", _newctx,
+                      "DPI=", user32.GetDpiForSystem())
 
-    # 迁移期宿主：旧窗口栈适配（唯一旧栈入口）。
-    # Task 9 切换为 wv2_native.NativeHost 后本行一并删除。
-    import host_pywebview
-    host_app = host_pywebview.PyWebViewHost()
-    api.host = host_app
-
-    def on_shown(win):
-        if sys.platform != "win32":
-            win.evaluate_js("document.body.classList.add('fake-light')")
-            return
-
-        user32 = ctypes.windll.user32
-
-        def setup_ui():
-            # 本函数在真正的 UI 线程执行（宿主定时器必须建在有消息循环的线程）
-            hwnd = win.hwnd
-
-            # 恢复 UI 线程 PerMonitorV2 context：旧窗口栈启动后可能把
-            # UI 线程切到 GDI 缩放的 unaware context，导致放大镜只有逻辑分辨率
-            user32.SetThreadDpiAwarenessContext.restype = wintypes.HANDLE
-            user32.SetThreadDpiAwarenessContext.argtypes = [wintypes.HANDLE]
-            _newctx = user32.SetThreadDpiAwarenessContext(wintypes.HANDLE(-4))
-            print("[GUI] thread ctx ->", _newctx,
-                  "DPI=", user32.GetDpiForSystem())
-
-            try:
                 drv = _BackdropDriver(api, win, host_app, hwnd, user32)
                 threading.Thread(target=drv.push_loop,
                                  daemon=True).start()
                 api._drv = drv
                 # 按已保存外观决定是否创建放大镜并启动泵
                 drv.set_mode(api.cfg.get("appearance", "dark"))
-                # 窗口在 unaware 线程创建（物理尺寸被虚拟化缩小3倍），线程
-                # 恢复 V2 后需把物理尺寸补回，WebView2 才能得到 1180 CSS 视口
+
+                # 物理尺寸补回（原生壳窗口已按物理尺寸创建，保留接线）
                 s = user32.GetDpiForSystem() / 96.0
                 if s > 1.0:
                     SWP_NOMOVE = 0x0002
@@ -1183,36 +1188,25 @@ def main():
                         hwnd, 0, 0, 0,
                         int(1180 * s), int(780 * s),
                         SWP_NOMOVE | SWP_NOZORDER)
-                user32.SetWindowTextW(hwnd, "TG 视频下载器")   # 恢复标题
+                user32.SetWindowTextW(hwnd, "TG 视频下载器")
             except Exception as e:
                 print("[GUI] 取光组件初始化失败：", e)
-                try:
-                    win.evaluate_js(
-                        "document.body.classList.add('fake-light')")
-                except Exception:
-                    pass
 
-        # on_shown 在非 UI 线程触发，经宿主接口同步 marshal 到 UI 线程
-        try:
-            host_app.ui_invoke(setup_ui)
-        except Exception as e:
-            print("[GUI] Invoke 到 UI 线程失败：", e)
-            try:
-                win.evaluate_js("document.body.classList.add('fake-light')")
-            except Exception:
-                pass
+        # 5) 创建主窗：token 只走 URL hash（不进访问日志）
+        host_app.create_window(
+            "TG 视频下载器",
+            handle.base_url + "/#t=" + handle.token,
+            api,
+            1180, 780,
+            (960, 640),
+            _bg,
+            on_shown,
+        )
 
-    host_app.create_window(
-        "TG 视频下载器",
-        str(pathlib.Path(resource_dir()) / "index.html"),
-        api,
-        int(1180 * scale),
-        int(780 * scale),
-        (int(960 * scale), int(640 * scale)),
-        _bg,
-        on_shown,
-    )
-    host_app.run()
+        # 6) 消息循环；退出路径收口服务
+        host_app.run()
+    finally:
+        handle.shutdown()
 
 
 if __name__ == "__main__":
