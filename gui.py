@@ -1151,6 +1151,11 @@ def main():
             ctypes.windll.user32.SetProcessDPIAware()
 
     # 2) 启动进程内 HTTP/WS 服务（api.cfg 由 server_app 负责加载）
+    # 以脚本启动时本模块名是 __main__，而 server_app 顶层有 `import gui`：
+    # 不登记会把 gui.py 二次加载为模块 gui，产生两份 WinFunctionType，第二份
+    # 覆盖放大镜回调的 argtypes，导致 MagSetImageScalingCallback 注册失败。
+    # 先把自身登记为 gui，保证全进程唯一模块身份（已存在则不覆盖）。
+    sys.modules.setdefault("gui", sys.modules[__name__])
     import server_app
     handle = server_app.start(None)
     try:
