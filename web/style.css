@@ -59,7 +59,7 @@ button { cursor: pointer; color: inherit; }
 body.liquid #backdrop { display: block; }
 #backdrop::after {
   content: ""; position: absolute; inset: 0;
-  background: linear-gradient(155deg, rgba(8,10,18,.10), rgba(8,10,18,.28));
+  background: linear-gradient(155deg, rgba(8,10,18,.06), rgba(8,10,18,.22));
 }
 
 /* 液态玻璃模式：背景帧是预烘焙模糊图。卡片不做实时 backdrop-filter
@@ -83,22 +83,22 @@ body.liquid .task-card,
 body.liquid .bulk-bar {
   background:
     linear-gradient(155deg,
-      rgba(255,255,255,.17) 0%,
-      rgba(255,255,255,.08) 42%,
-      rgba(255,255,255,.04) 100%);
-  border-color: rgba(255,255,255,.26);
+      rgba(255,255,255,.20) 0%,
+      rgba(255,255,255,.10) 42%,
+      rgba(255,255,255,.05) 100%);
+  border-color: rgba(255,255,255,.34);
   box-shadow:
-    inset 0 1px 0 rgba(255,255,255,.42),
-    inset 0 -1px 0 rgba(255,255,255,.06),
+    inset 0 1.5px 0 rgba(255,255,255,.55),
+    inset 0 -1px 0 rgba(255,255,255,.08),
     0 16px 40px rgba(4,6,18,.42);
 }
 body.liquid .glass,
 body.liquid .task-card { position: relative; }
 body.liquid .btn.glass-btn {
   background: linear-gradient(160deg,
-    rgba(255,255,255,.2), rgba(255,255,255,.07));
-  border-color: rgba(255,255,255,.3);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.45);
+    rgba(255,255,255,.22), rgba(255,255,255,.08));
+  border-color: rgba(255,255,255,.36);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.55);
 }
 
 /* ---------- 环境光（静态暗/静态亮模式显示，实时模式隐藏） ---------- */
@@ -526,11 +526,13 @@ nav { flex: 1; display: flex; flex-direction: column; gap: 5px; }
   animation: rise .35s var(--ease);
 }
 .adv-row { display: flex; gap: 14px; margin-top: 2px; flex-wrap: wrap; }
-.adv-field { flex: 1.4 1 280px; min-width: 0; }
-.adv-field.small { flex: 1 1 220px; }
+.adv-field { flex: 1 1 200px; min-width: 0; }
+.adv-field.small { flex: 1 1 180px; }
 .dual-input { display: flex; align-items: center; gap: 9px; }
 .dual-input span { color: var(--ink-mute); }
 .dual-input input { flex: 1 1 0; min-width: 0; padding: 10px 12px; }
+/* 日期输入默认不可压缩，会把同排数字输入挤成小椭圆：与数字输入同权可压缩 */
+.dual-input input[type=date] { flex: 1 1 0; min-width: 0; }
 /* 窄布局下上下微调钮挤占文本空间：隐藏箭头，仍可键入数字 */
 .dual-input input[type=number]::-webkit-inner-spin-button,
 .dual-input input[type=number]::-webkit-outer-spin-button {

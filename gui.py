@@ -970,7 +970,7 @@ class AmbientCapture:
         user32.InvalidateRect(self.mag_hwnd, None, False)
         user32.UpdateWindow(self.mag_hwnd)
 
-    def render_jpeg(self, out_w=None, quality=72):
+    def render_jpeg(self, out_w=None, quality=82):
         """按主窗当前屏幕位置，从最新全屏帧裁剪背后区域，降采样并烘焙
         模糊，编码为 JPEG data URL。
         返回 (是否有变化, url或None, 版本号)。可从任意线程调用。"""
@@ -1002,28 +1002,40 @@ class AmbientCapture:
             ch = max(2, round(cw * crop.size[1] / crop.size[0]))
             small = crop.resize((cw, ch), Image.BILINEAR).convert("RGB")
 
-        # 锁外：盒式霜化的有效遮挡宽度以“物理像素 48px”为目标（第一版
-        # 560宽/k7 在 4K 上恰好≈48 物理像素），按当前输出宽与主窗物理宽
-        # 反推 k——即霜化中间图保持约 80px 的绝对尺寸，与第一版一致；
-        # 而最终输出仍为高分辨率+q72，不会重现当年的 JPEG 块/马赛克。
-        # 再叠一道小高斯抹平盒式振铃。注：仅 liquid 调用，静态主题不受影响。
+        # 锁外后处理：一次干净的高斯霜化 + 提色 + gamma 提亮 + 白色雾气 +
+        # 对角冷色液晶染色。旧版“盒式 resize 霜化”（先缩到约 74px 再放大
+        # 回全尺寸）会让文本行变成横向条带，深色 IDE 背景整体 murky 灰暗，
+        # 故彻底删除。注：仅 liquid 主题调用，静态主题不受影响。
+        from PIL import Image, ImageFilter, ImageEnhance
         phys_w = rect[2] or cw
-        k = max(6, min(cw // 70, round(48 * cw / phys_w)))
-        baked = small.resize(
-            (max(1, cw // k), max(1, ch // k)), Image.BILINEAR
-        ).resize((cw, ch), Image.BILINEAR)
-        try:
-            from PIL import ImageFilter
-            frost_r = max(1, round(k * 0.2))   # 抹平盒式网格，随 k 等比
-            baked = baked.filter(ImageFilter.GaussianBlur(frost_r))
-        except Exception:
-            pass
-        # 轻微提色：环境彩光在玻璃边缘的折射更生动
-        try:
-            from PIL import ImageEnhance
-            baked = ImageEnhance.Color(baked).enhance(1.15)
-        except Exception:
-            pass
+        # 输出宽约为主窗物理宽的一半，半径按比例反推，目标≈28 物理像素霜化
+        r_eff = max(8, min(22, round(28 * cw / max(1, phys_w))))
+        baked = small.filter(ImageFilter.GaussianBlur(r_eff))
+        # 提亮前提色：环境彩光在玻璃边缘的折射更生动
+        baked = ImageEnhance.Color(baked).enhance(1.40)
+        # gamma 提亮暗部（指数 <1 把暗灰抬起），LUT 三通道复用
+        lut = bytes(int(255 * ((i / 255.0) ** 0.82)) for i in range(256))
+        baked = baked.point(lut * 3)
+        # 整体亮度
+        baked = ImageEnhance.Brightness(baked).enhance(1.16)
+        # 白色雾气混合：通透感的关键
+        baked = Image.blend(
+            baked, Image.new("RGB", (cw, ch), (255, 255, 255)), 0.10)
+        # 冷色液晶染色：左上纯蓝 (59,107,255) → 右下纯紫 (163,91,255) 的
+        # 对角渐变，alpha 0.10，让灰色背景也有液晶冷调。256x256 对角掩码
+        # 只生成一次并缓存，渐变层随后放大到当前帧尺寸。
+        if getattr(self, "_diag_mask", None) is None:
+            diag = Image.new("L", (256, 256))
+            dpx = diag.load()
+            for yy in range(256):
+                for xx in range(256):
+                    dpx[xx, yy] = (xx + yy) >> 1   # 左上 0 → 右下 255
+            self._diag_mask = diag
+        blue = Image.new("RGB", (256, 256), (59, 107, 255))
+        purple = Image.new("RGB", (256, 256), (163, 91, 255))
+        tint = Image.composite(purple, blue, self._diag_mask)
+        tint = tint.resize((cw, ch), Image.BILINEAR)
+        baked = Image.blend(baked, tint, 0.10)
         bio = io.BytesIO()
         baked.save(bio, format="JPEG", quality=quality)
         data = bio.getvalue()
