@@ -117,7 +117,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          NOTES=$(cat <<'EOF'
+          # Release Notes 单一信源：仓库 release-notes/<tag>.md；
+          # 缺失时回落到内置通用说明
+          if [ -f "release-notes/${TAG}.md" ]; then
+            NOTES=$(cat "release-notes/${TAG}.md")
+          else
+            NOTES=$(cat <<'EOF'
           ## TG 视频下载器
 
           Telegram 频道视频批量下载工具（Telethon）。
@@ -133,13 +138,21 @@ jobs:
           Windows 图形界面支持三种外观：静态暗（默认）、静态亮、液态玻璃（实时采样窗口后方画面）。
           首次运行输入手机号与验证码即可，数据保存在程序平级目录「TG视频下载器数据」。
           EOF
-          )
+            )
+          fi
           mapfile -t FILES < <(find artifacts -type f)
           printf '%s\n' "$TAG"
+          # 语义化预发布 tag（如 v2.0.0-beta.1，含连字符）标记为 prerelease，
+          # 正式 tag 才标记 latest；若 Release 已由人工预先创建则走 upload 兜底
+          if [[ "$TAG" == *-* ]]; then
+            RELEASE_FLAG="--prerelease"
+          else
+            RELEASE_FLAG="--latest"
+          fi
           gh release create "$TAG" "${FILES[@]}" \
             --title "$TAG" \
             --notes "$NOTES" \
-            --latest \
+            $RELEASE_FLAG \
             || gh release upload "$TAG" "${FILES[@]}" --clobber
 
       - name: Set Chinese asset labels
