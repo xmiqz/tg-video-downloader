@@ -360,6 +360,11 @@ def kw_match(text, includes, excludes):
 MAX_LOCAL_SCAN = 5000     # 本地兜底扫描条数上限
 HARD_SCAN_CAP = 100000    # 指定起始日期时的绝对安全上限，防止超大频道失控
 
+ENRICH_BATCH_SIZE = 100     # 引用/相册文本补抓：每批 get_messages 的 id 数，与 enrich_task_items/pull_records 既有 100/批约定一致
+ENRICH_MAX_BATCHES = 60     # 单次 search_videos 全局补抓批次预算（channel+discuss 合计）；耗尽则 meta["truncated"]=True
+ALBUM_ID_WINDOW = 10        # 相册组补抓的候选 id 近邻窗口半径（频道相册各条 id 连续，±10 覆盖 ≤21 条）
+REF_TEXT_MAX_CHARS = 120    # record["ref_text"] 最大字符数（空白压缩后，超长追加省略号）
+
 SRC_CHANNEL = "频道"
 SRC_COMMENT = "评论"
 
@@ -458,13 +463,257 @@ async def get_discuss_entity(client, entity):
 
 
 def make_record(msg, src=SRC_CHANNEL):
-    """消息 → 统一视频记录"""
+    """消息 → 统一视频记录。match_in 默认 self：引用/相册/转发来源
+    命中的记录由 search_videos 补抓流程覆写（gui permalink 直抓等
+    旧调用点拿到默认值即可，消费方一律 .get）。"""
     doc = msg.document
     return {
         "msg": msg, "doc": doc, "size": doc.size or 0,
         "name": pick_filename(doc, msg.id),
         "text": msg.message or "", "matched": True, "src": src,
+        "match_in": "self",
     }
+
+
+def _peer_key(peer):
+    """reply_to_peer_id 等 peer 对象 → ('PeerChannel', id) 形式的可比较键。
+
+    Telethon 1.45 里频道/超级群组是 PeerChannel、小群组是 PeerChat；
+    一律 getattr 防护（story 回复头等取不到就返回 None），不假设类型。
+    """
+    if peer is None:
+        return None
+    name = type(peer).__name__
+    for attr in ("channel_id", "chat_id", "user_id"):
+        v = getattr(peer, attr, None)
+        if isinstance(v, int):
+            return (name, v)
+    return None
+
+
+def _clip_ref_text(text):
+    """外部命中文本 → 展示片段：空白压成单空格，超 REF_TEXT_MAX_CHARS
+    字符截断后追加省略号（省略号在长度上限之外）。"""
+    s = re.sub(r"\s+", " ", text or "").strip()
+    if len(s) > REF_TEXT_MAX_CHARS:
+        return s[:REF_TEXT_MAX_CHARS] + "…"
+    return s
+
+
+async def _pull_ids_retry(client, ent, chunk):
+    """T47：批量补抓一批消息 id（重试/退避照抄 pull_records.pull_batch）。
+
+    FloodWaitError 按秒等待；其它异常 2/4/6s 退避；4 次仍失败视为该批
+    未取到（返回 None 继续后续批次），不把异常抛出 search_videos。
+    """
+    for attempt in range(4):
+        try:
+            return await client.get_messages(ent, ids=chunk)
+        except FloodWaitError as e:
+            await asyncio.sleep(e.seconds + 1)
+        except Exception:
+            if attempt == 3:
+                return None
+            await asyncio.sleep(2 * (attempt + 1))
+    return None
+
+
+async def _search_ref_matches(client, pending, entity, discuss, pools,
+                               terms, mode, excludes, raw):
+    """T47：为"自身文本未命中"的候选补全外部文本并二次匹配。
+
+    外部文本三桶（self 桶已在 search_videos 主循环判定）：
+      reply  被引用消息文本。entity 选择：{channel, discuss} 的
+             peer_id→entity 映射按 reply_to_peer_id 定位（评论区评论
+             回复频道帖的情形落到 channel entity）；无法判别时用候选
+             自身 scope 的 entity 兜底。reply_to.quote_text 零请求兜底。
+      album  同 grouped_id 相册组消息文本。本地池零成本先取；不足时按
+             候选 id 近邻窗口（ALBUM_ID_WINDOW）批量补抓，取回后按
+             grouped_id 相等严格配对，近邻但不同组的绝不关联。
+      fwd    弱权重补充：fwd_from.from_name / fwd_from.post_author /
+             m.post_author 非空去重，零额外请求。
+
+    匹配规则：对文本集中每一条文本分别调用一次未改动的
+    advanced_match，任一命中即候选命中；排除词在同一条文本内否决；
+    命中桶优先级 reply > album > fwd；album 桶取同组消息 id 最小者的
+    命中文本。只补抓一跳：取回消息不再递归解析。
+
+    批量与缓存：先把全部待补候选的目标 id 汇总（跨候选去重、剔除
+    池内已有、剔除候选自身 id），按 entity 分组、id 升序，每
+    ENRICH_BATCH_SIZE 个一批 get_messages；ENRICH_MAX_BATCHES 预算
+    耗尽即停（truncated），取回消息全部入池供同批其它候选复用。
+
+    引数：
+      pending  [(msg, src)]：已过体积/日期过滤、terms 非空且自身文本
+                未命中的候选；
+      pools    {entity_id: {mid: msg}}：本地池消息（本函数向其追加
+                补抓取回的消息作为缓存）；
+    返回 (records, stats)；stats = {enrich_batches, enrich_fetched,
+                enrich_cache_hits, truncated}。enrich_fetched 为实际
+    发出请求的各批 id 数之和；enrich_cache_hits 为直接从池/缓存取到、
+    未贡献任何补抓 id 的去重外部消息 id 数。
+    """
+    ent_of = {SRC_CHANNEL: entity, SRC_COMMENT: discuss or entity}
+
+    def _fallback_ent(src):
+        return ent_of.get(src) or entity
+
+    # peer_id → entity 映射：频道与讨论组两个 entity（同 id 双登记
+    # PeerChannel/PeerChat，覆盖讨论组被建模成任一形态的夹具）
+    entity_map = {}
+    for _ent in (entity, discuss):
+        _eid = getattr(_ent, "id", None) if _ent is not None else None
+        if _eid is None:
+            continue
+        entity_map[("PeerChannel", _eid)] = _ent
+        entity_map[("PeerChat", _eid)] = _ent
+
+    # 相册组索引：ent_id → grouped_id → [msg]（取回的消息同样登记）
+    gidx = {}
+
+    def _gidx_add(eid, m):
+        g = getattr(m, "grouped_id", None)
+        if not isinstance(g, int):
+            return
+        gidx.setdefault(eid, {}).setdefault(g, []).append(m)
+
+    for _eid, _pool in pools.items():
+        for _m in _pool.values():
+            _gidx_add(_eid, _m)
+
+    def _reply_target(m, src):
+        """返回 (目标 entity, 目标 entity id, 目标消息 id)；无则 (None,)*3"""
+        reply_to = getattr(m, "reply_to", None)
+        rid = getattr(reply_to, "reply_to_msg_id", None)
+        if not rid:
+            return None, None, None
+        pk = _peer_key(getattr(reply_to, "reply_to_peer_id", None))
+        ent_t = entity_map.get(pk) if pk else None
+        if ent_t is None:
+            ent_t = _fallback_ent(src)
+        return ent_t, getattr(ent_t, "id", None), rid
+
+    # ---- 阶段 1：汇总待补抓 id（跨候选去重、剔除池内已有/候选自身）----
+    needed = set()   # 需要取文本的外部消息 key（ent_id, mid）——缓存命中口径
+    plan = {}        # ent_id → set(需补抓的 mid)
+    plan_ent = {}    # ent_id → entity 对象
+    for m, src in pending:
+        eid = getattr(_fallback_ent(src), "id", None)
+        pool = pools.setdefault(eid, {})
+        _ent_t, _teid, _rid = _reply_target(m, src)
+        if _rid is not None:
+            needed.add((_teid, _rid))
+            if _rid not in pools.setdefault(_teid, {}):
+                plan.setdefault(_teid, set()).add(_rid)
+                plan_ent.setdefault(_teid, _ent_t)
+        if getattr(m, "grouped_id", None) is not None:
+            for _sib in gidx.get(eid, {}).get(m.grouped_id, ()):
+                if _sib.id != m.id:
+                    needed.add((eid, _sib.id))
+            base = max(1, m.id - ALBUM_ID_WINDOW)
+            for wid in range(base, m.id + ALBUM_ID_WINDOW + 1):
+                if wid == m.id or wid in pool:
+                    continue
+                plan.setdefault(eid, set()).add(wid)
+                plan_ent.setdefault(eid, _fallback_ent(src))
+
+    # ---- 阶段 2：按 entity 分组、id 升序、ENRICH_BATCH_SIZE 一批补抓 ----
+    # 补抓顺序固定：先频道后讨论组（entity/discuss 传入序），行为确定。
+    order = []
+    for _ent in (entity, discuss):
+        _eid = getattr(_ent, "id", None) if _ent is not None else None
+        if _eid in plan and _eid not in order:
+            order.append(_eid)
+    order += [e for e in plan if e not in order]
+
+    batches = 0
+    fetched = 0
+    truncated = False
+    for eid in order:
+        ids = sorted(plan[eid])
+        ent_t = plan_ent[eid]
+        pool = pools.setdefault(eid, {})
+        for i in range(0, len(ids), ENRICH_BATCH_SIZE):
+            if batches >= ENRICH_MAX_BATCHES:
+                truncated = True
+                break
+            chunk = ids[i:i + ENRICH_BATCH_SIZE]
+            msgs = await _pull_ids_retry(client, ent_t, chunk)
+            batches += 1
+            fetched += len(chunk)
+            for mm in msgs or []:
+                if mm is None:
+                    continue
+                mid = getattr(mm, "id", None)
+                if mid is None:
+                    continue
+                pool[mid] = mm
+                _gidx_add(eid, mm)
+        if truncated:
+            break
+
+    # ---- 阶段 3：文本集逐条调用 advanced_match（桶优先级 reply>album>fwd）----
+    records = []
+    for m, src in pending:
+        eid = getattr(_fallback_ent(src), "id", None)
+        bucket = None
+        ref_text = None
+
+        # reply 桶：被引用消息文本在前，quote_text 零请求兜底在后
+        _ent_t, _teid, _rid = _reply_target(m, src)
+        reply_texts = []
+        if _rid is not None:
+            tm = pools.get(_teid, {}).get(_rid)
+            if tm is not None:
+                reply_texts.append(getattr(tm, "message", "") or "")
+        qt = getattr(getattr(m, "reply_to", None), "quote_text", None)
+        if qt:
+            reply_texts.append(qt)
+        for t in reply_texts:
+            if advanced_match(t, terms, mode, excludes, raw):
+                bucket, ref_text = "reply", t
+                break
+
+        # album 桶：同组消息 id 升序，取 id 最小者的命中文本
+        if bucket is None and getattr(m, "grouped_id", None) is not None:
+            sibs = sorted(
+                (x for x in gidx.get(eid, {}).get(m.grouped_id, ())
+                 if x.id != m.id),
+                key=lambda x: x.id)
+            for x in sibs:
+                t = getattr(x, "message", "") or ""
+                if advanced_match(t, terms, mode, excludes, raw):
+                    bucket, ref_text = "album", t
+                    break
+
+        # fwd 桶：转发来源/发帖署名（零额外请求，三值非空去重）
+        if bucket is None:
+            ff = getattr(m, "fwd_from", None)
+            seen_fwd = set()
+            for t in (getattr(ff, "from_name", None),
+                      getattr(ff, "post_author", None),
+                      getattr(m, "post_author", None)):
+                if isinstance(t, str) and t.strip() and t not in seen_fwd:
+                    seen_fwd.add(t)
+                    if advanced_match(t, terms, mode, excludes, raw):
+                        bucket, ref_text = "fwd", t
+                        break
+
+        if bucket is None:
+            continue
+        rec = make_record(m, src)
+        rec["match_in"] = bucket
+        rec["ref_text"] = _clip_ref_text(ref_text)
+        records.append(rec)
+
+    planned_keys = {(eid, i) for eid, s in plan.items() for i in s}
+    stats = {
+        "enrich_batches": batches,
+        "enrich_fetched": fetched,
+        "enrich_cache_hits": len(needed - planned_keys),
+        "truncated": truncated,
+    }
+    return records, stats
 
 
 async def search_videos(client, entity, p):
@@ -502,6 +751,19 @@ async def search_videos(client, entity, p):
     # 否则频道历史超过上限时，日期符合的早期视频会被漏扫。
     scan_cap = HARD_SCAN_CAP if dfrom is not None else MAX_LOCAL_SCAN
 
+    async def local_scan(ent, pool):
+        """与无词/fuzzy/regex 路径完全相同的本地整扫（dfrom 提前停、
+        scan_cap 上限）；T47 也把它追加到服务端命中之后做合池。"""
+        capped = False
+        async for m in client.iter_messages(ent):
+            pool[m.id] = m
+            if dfrom is not None and m.date is not None and m.date < dfrom:
+                break   # 已覆盖全部目标时间段，不算触顶
+            if len(pool) >= scan_cap:
+                capped = True
+                break
+        return capped
+
     async def gather(ent):
         pool = {}
         capped = False
@@ -509,22 +771,26 @@ async def search_videos(client, entity, p):
             for q in server_terms:
                 async for m in client.iter_messages(ent, search=q):
                     pool[m.id] = m
+            # T47：服务端 search= 只命中消息自身文本，文案在被引用
+            # 消息/相册组首条上的视频（自身无 caption）永远进不了
+            # 服务端结果。追加一次与无词路径完全相同的本地整扫，
+            # 两路按消息 id 合池去重——只影响候选面构成，体积/日期/
+            # scope/sort/limit 与 capped 语义均不变（成本说明见报告）。
+            capped = await local_scan(ent, pool)
         else:
-            async for m in client.iter_messages(ent):
-                pool[m.id] = m
-                if dfrom is not None and m.date is not None and m.date < dfrom:
-                    break   # 已覆盖全部目标时间段，不算触顶
-                if len(pool) >= scan_cap:
-                    capped = True
-                    break
+            capped = await local_scan(ent, pool)
         return pool, capped
 
-    # 候选：(消息, 来源)
+    # 候选：(消息, 来源)；pools：各 entity 的本地池，兼作 T47 外部消息缓存
     cand = {}
+    pools = {}
     capped = False
+    discuss = None
     if scope in ("channel", "both"):
         pool, cap = await gather(entity)
         capped = capped or cap
+        if getattr(entity, "id", None) is not None:
+            pools[entity.id] = pool
         for mid, m in pool.items():
             cand[(SRC_CHANNEL, mid)] = (m, SRC_CHANNEL)
     if scope in ("comments", "both"):
@@ -532,11 +798,14 @@ async def search_videos(client, entity, p):
         if discuss is not None:
             pool, cap = await gather(discuss)
             capped = capped or cap
+            if getattr(discuss, "id", None) is not None:
+                pools[discuss.id] = pool
             for mid, m in pool.items():
                 cand[(SRC_COMMENT, mid)] = (m, SRC_COMMENT)
 
     records = []
     n_small = n_large = n_video = 0
+    pending_refs = []   # T47：自身文本未命中、待引用/相册/转发来源匹配的候选
     for m, src in cand.values():
         if not is_video_message(m):
             continue
@@ -550,9 +819,25 @@ async def search_videos(client, entity, p):
             continue
         if not _date_in_range(m.date, dfrom, dto):
             continue
-        if not advanced_match(m.message or "", terms, mode, excludes, raw):
+        if advanced_match(m.message or "", terms, mode, excludes, raw):
+            records.append(make_record(m, src))   # match_in 默认 self
             continue
-        records.append(make_record(m, src))
+        # 体积/日期过滤在前：被滤掉的候选不进补抓（无 terms 时保持零补抓）
+        if terms:
+            pending_refs.append((m, src))
+
+    # T47：外部文本（reply/album/fwd）纳入匹配——仅当有关键词且存在待补候选
+    truncated = False
+    enrich_batches = enrich_fetched = enrich_cache_hits = 0
+    if pending_refs:
+        extra, st = await _search_ref_matches(
+            client, pending_refs, entity, discuss, pools,
+            terms, mode, excludes, raw)
+        records.extend(extra)
+        truncated = st["truncated"]
+        enrich_batches = st["enrich_batches"]
+        enrich_fetched = st["enrich_fetched"]
+        enrich_cache_hits = st["enrich_cache_hits"]
 
     if sort == "size":
         records.sort(key=lambda r: r["size"], reverse=True)
@@ -566,7 +851,15 @@ async def search_videos(client, entity, p):
             "n_video": n_video, "capped": capped,
             "scan_cap": scan_cap,
             "candidates": len(cand), "mode": mode,
-            "has_comments": scope in ("comments", "both")}
+            "has_comments": scope in ("comments", "both"),
+            # ---- T47 新增（任何路径都带齐，零值也给）----
+            "ref_matched": sum(
+                1 for r in records
+                if r.get("match_in") in ("reply", "album", "fwd")),
+            "truncated": truncated,
+            "enrich_batches": enrich_batches,
+            "enrich_fetched": enrich_fetched,
+            "enrich_cache_hits": enrich_cache_hits}
     return records, meta
 
 
@@ -2860,6 +3153,10 @@ def gather_search_params():
     return params
 
 
+# T47：record.match_in → 结果行来源标记（self/缺省不插标记）
+REF_SOURCE_MARKS = {"reply": "[引用]", "album": "[相册]", "fwd": "[转发]"}
+
+
 async def preview_records(client, entity, title, params, auto_all):
     print(paint(f"\n 频道：{title}，正在搜索最多 {params['limit']} 个视频 …", DIM))
     items, meta = await search_videos(client, entity, params)
@@ -2880,12 +3177,25 @@ async def preview_records(client, entity, title, params, auto_all):
     items = dedup_records(items)
     if len(items) < before_d:
         print(paint(f" 同名同大小去重：{before_d} → {len(items)}（保留最新）", DIM))
+    # T47：外部文本（引用/相册/转发来源）命中汇总与补抓预算提示
+    if meta.get("ref_matched"):
+        print(paint(
+            f" 外部文本命中 {meta['ref_matched']} 条（引用/相册/转发；"
+            f"补抓 {meta.get('enrich_batches', 0)} 批取回 "
+            f"{meta.get('enrich_fetched', 0)} 条，"
+            f"缓存命中 {meta.get('enrich_cache_hits', 0)}）", DIM))
+    if meta.get("truncated"):
+        print(paint(
+            " 外部文本补抓已达批次预算上限，更早消息的引用/相册文本可能未覆盖",
+            YELLOW))
     rows = []
     for it in items:
         m = it["msg"]
         src = paint(it.get("src", ""), MAGENTA)
+        mark = REF_SOURCE_MARKS.get(it.get("match_in") or "", "")
         rows.append(
             paint("#" + str(m.id), CYAN)
+            + (paint(f" {mark}", CYAN) if mark else "")
             + f"  {m.date:%Y-%m-%d}  {human(it['size']):>9}  "
             + src + " " + trunc_width(it["name"], 40)
         )
