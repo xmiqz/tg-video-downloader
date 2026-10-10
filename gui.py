@@ -284,6 +284,8 @@ class Api:
         self.engine = engine
         self.client = None
         self.cfg = {}
+        # 游客（离线受限）模式：纯内存态，严禁写盘；重启进程必然复位为 False
+        self.guest = False
         self._preview = {}      # mid -> record（含活动消息对象）
         # 宿主适配（main 启动时注入；离线/假宿主测试时可为 None）
         self.host = None
@@ -407,6 +409,9 @@ class Api:
         except Exception:
             pass
         self.client = None
+        if self.guest:
+            print("[GUI] guest=False（logout）")
+        self.guest = False
         self._preview = {}
         self._remove_session_files()
         # 清掉已保存手机号，重新登录时从输入手机号开始
@@ -418,12 +423,29 @@ class Api:
         return {"ok": True}
 
     # ---------- 登录 ----------
+    def set_guest(self, on=True):
+        """进入/退出游客（离线受限）模式。
+
+        - 纯内存态，严禁写盘（重启进程必然复位为 False）；
+        - 已登录（client 非 None）时拒绝进入游客模式；
+        - 立即返回（毫秒级），不触网、不碰 EngineLoop。
+        """
+        if not isinstance(on, bool):
+            on = False
+        if self.client is not None:
+            print("[GUI] set_guest 拒绝：已登录账号无需进入游客模式")
+            return {"ok": False, "error": "已登录账号无需进入游客模式"}
+        self.guest = on
+        print(f"[GUI] guest={self.guest}")
+        return {"ok": True, "guest": self.guest}
+
     def login_state(self):
         if self.client is not None:
-            return {"logged_in": True}
+            return {"logged_in": True, "guest": False}
         # 已存在会话则尝试静默连接
         return {"logged_in": False,
-                "has_session": pathlib.Path(core.SESSION_PATH + ".session").exists()}
+                "has_session": pathlib.Path(core.SESSION_PATH + ".session").exists(),
+                "guest": bool(self.guest)}
 
     def connect(self):
         if self.client is not None:
@@ -475,6 +497,9 @@ class Api:
             return {"ok": False, "error": msg}
         self.client = client
         if status == "ok":
+            if self.guest:
+                print("[GUI] guest=False（connect 就绪）")
+            self.guest = False
             return {"ok": True, "stage": "ready"}
         return {"ok": True, "stage": status}
 
@@ -519,6 +544,9 @@ class Api:
         r = self.engine.submit(_do())
         if r.startswith("__err__"):
             return {"ok": False, "error": r[len("__err__"):]}
+        if r == "ready" and self.guest:
+            print("[GUI] guest=False（verify_code 就绪）")
+            self.guest = False
         return {"ok": True, "stage": r}
 
     def verify_password(self, password):
@@ -531,9 +559,15 @@ class Api:
         r = self.engine.submit(_do())
         if r.startswith("__err__"):
             return {"ok": False, "error": r[len("__err__"):]}
+        if r == "ready" and self.guest:
+            print("[GUI] guest=False（verify_password 就绪）")
+            self.guest = False
         return {"ok": True, "stage": r}
 
     def me(self):
+        if self.client is None:
+            print("[GUI] need_login: me")
+            return {"ok": False, "need_login": True}
         async def _do():
             u = await self.client.get_me()
             return {"name": (u.first_name or ""), "username": u.username or "",
@@ -546,6 +580,9 @@ class Api:
     # ---------- 频道预览（高级搜索） ----------
     def preview(self, params):
         """params: 前端组装的高级搜索参数对象"""
+        if self.client is None:
+            print("[GUI] need_login: preview")
+            return {"ok": False, "need_login": True}
         try:
             channel_in = params.get("channel", "")
             channel_name, ref_mid = core.parse_channel_ref(channel_in)
@@ -596,6 +633,9 @@ class Api:
 
     # ---------- 建任务并下载 ----------
     def start_download(self, channel, title, keys, parallel, folder=""):
+        if self.client is None:
+            print("[GUI] need_login: start_download")
+            return {"ok": False, "need_login": True}
         todo = []
         for k in keys:
             src = k.get("src", core.SRC_CHANNEL)
@@ -794,6 +834,9 @@ class Api:
         return {"ok": False, "error": "任务不存在"}
 
     def resume_task(self, task_id, only_failed=False):
+        if self.client is None:
+            print("[GUI] need_login: resume_task")
+            return {"ok": False, "need_login": True}
         for t in core.load_tasks():
             if t["id"] != task_id:
                 continue
@@ -868,6 +911,9 @@ class Api:
 
     def scan_append(self, task_id, params):
         """按高级搜索参数扫描并把新视频追加到已有任务"""
+        if self.client is None:
+            print("[GUI] need_login: scan_append")
+            return {"ok": False, "need_login": True}
         t = self._load_one(task_id)
         if t is None:
             return {"ok": False, "error": "任务不存在"}

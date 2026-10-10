@@ -32,8 +32,9 @@ import tg_video_dl as core
 
 log = logging.getLogger("server_app")
 
-# RPC 方法白名单（38 个，逐字钉死；与 v1.2.6 window.pywebview.api 暴露面一致。
+# RPC 方法白名单（39 个，逐字钉死；与 v1.2.6 window.pywebview.api 暴露面一致。
 # 其中 job_state/jobs_state/job_cancel 为 T45 新增（作业模型基座），
+# set_guest 为 T46 新增（游客/离线受限模式），
 # t45_demo_job 为 T45 测试挂点，仅在 TG_T45_TEST_HOOK=1 时加入有效白名单）
 RPC_METHODS = frozenset({
     "abort_task", "active_states", "choose_folder", "connect", "delete_task",
@@ -44,7 +45,8 @@ RPC_METHODS = frozenset({
     "login_state", "logout", "me", "open_editor", "open_folder",
     "open_item_file", "preview", "remove_items", "resume_task",
     "scan_append", "send_code", "set_appearance", "set_download_root",
-    "set_item", "start_download", "verify_code", "verify_password",
+    "set_guest", "set_item", "start_download", "verify_code",
+    "verify_password",
 })
 
 # T45 测试挂点方法（默认不在有效白名单内；生产路径不得设置门控变量）

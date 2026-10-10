@@ -979,3 +979,51 @@ html[data-theme="light"] .job-bar { background: rgba(20,30,60,.12);
   box-shadow: inset 0 1px 2px rgba(20,30,60,.12); }
 html[data-theme="light"] .job-state.s-running {
   background: rgba(80,110,240,.14); color: #3c56c8; }
+
+/* ============================================================
+   T46 游客模式（离线受限）：登录卡"暂不登录"入口、受控提示位、
+   主界面顶部 guest-bar 提示条。样式复用既有 glass/btn 体系，
+   暗/亮/液态三主题均可读（开始）
+   ============================================================ */
+/* 登录卡受控提示位（"该功能需要登录…"）：与登录错误 login-err 互不残留 */
+#login-notice {
+  color: #ffb84d; font-size: 12px; margin: 8px 0 2px;
+  min-height: 16px; text-align: center; line-height: 1.5;
+}
+/* 暂不登录按钮与登录卡同宽，置于提示位下方 */
+#guest-btn { margin-top: 6px; }
+
+/* 游客态顶栏提示条：主界面可见，点击打开登录卡 */
+.guest-bar {
+  display: flex; align-items: center; justify-content: center;
+  gap: 6px; margin: 0 0 12px; padding: 8px 12px;
+  border-radius: var(--r-lg); cursor: pointer;
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.14), rgba(255,138,151,.12));
+  border: 1px solid rgba(255,184,77,.35);
+  color: #ffc78a; font-size: 12.5px; font-weight: 600;
+  letter-spacing: .3px; user-select: none;
+  transition: border-color .2s var(--ease), background .2s var(--ease);
+}
+.guest-bar:hover {
+  border-color: rgba(255,184,77,.65);
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.22), rgba(255,138,151,.18));
+}
+.guest-bar::before {
+  content: "·"; font-size: 15px; line-height: 1;
+  color: #ffb84d; margin-right: 2px;
+}
+/* 静态亮主题：加深文字与底（复用 light 变量写法） */
+:root[data-theme="light"] .guest-bar {
+  color: #8a5a12; border-color: rgba(180,120,30,.4);
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.22), rgba(255,200,160,.18));
+}
+:root[data-theme="light"] .guest-bar:hover {
+  border-color: rgba(180,120,30,.6);
+}
+:root[data-theme="light"] #login-notice {
+  color: #a86a10;
+}
+/* ===== T46 游客模式（结束）=====

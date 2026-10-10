@@ -55,6 +55,11 @@ const opts = { mode: "all", scope: "channel", sort: "date" };
 let previewData = { items: [], channel: "", title: "" };
 let selected = new Set();
 let taskFilter = "all";
+// T46 游客（离线受限）模式：guestMode 与后端 login_state().guest 保持一致
+let guestMode = false;
+// 受限操作意图队列（FIFO）：{label, run}，run 为无参 async 函数（续路时直接
+// 重新执行对应入口函数，此时 guestMode 已为 false，自然走到真实逻辑）
+const pendingIntents = [];
 
 // ---------- 视图切换 ----------
 function switchView(v) {
@@ -72,16 +77,32 @@ function switchView(v) {
 // 登录
 // ============================================================
 async function bootLogin() {
-  const r = await api().connect();
-  if (r.ok && r.stage === "ready") return afterLogin();
+  // 先显示登录卡（带"暂不登录"入口），connect 在途中用户也可立刻点它进入游客态
   document.getElementById("login").classList.remove("hidden");
+  await tryConnect(false);
+}
+// 与 bootLogin 共享的静默连接逻辑：connect + login_state 判定。
+// silent=true（游客态从 guest-bar 打开登录卡）时，connect 的非 ready 结果
+// 不会把已进入主界面的用户强行锁回卡片——卡片的显隐由调用方/用户控制。
+async function tryConnect(silent) {
+  const r = await api().connect();
+  if (r.ok && r.stage === "ready") {
+    guestMode = false;
+    return afterLogin();
+  }
   const st = await api().login_state();
-  // 后端已确认验证码发出（软成功）时直接进输码步骤，否则按会话状态判断
+  // 后端已确认验证码发出（软成功）时直接进入输码步骤，否则按会话状态判断
   showLoginStep(
     (r.ok && r.stage === "need_code") || (st.has_session && !r.busy)
       ? "code" : "phone");
   if (r.warning) loginErr(r.warning);
   if (!r.ok) loginErr(r.error);
+  return null;
+}
+// 游客态顶栏提示条点击：显示登录卡（phone 步、清提示），并做静默连接尝试
+function openLoginFromGuest() {
+  showLoginCard("");
+  tryConnect(true);
 }
 function showLoginStep(s) {
   ["phone", "code", "pwd"].forEach(x =>
@@ -89,6 +110,98 @@ function showLoginStep(s) {
 }
 const loginBack = () => showLoginStep("phone");
 const loginErr = m => (document.getElementById("login-err").textContent = m || "");
+
+// ---------- T46 游客模式 ----------
+// 受限功能守卫：游客态点击受限入口时→不发任何 RPC、记意图、弹登录卡。
+// 返回 true 表示已拦截（调用方应立即 return）。
+function guardRestricted(label, run) {
+  if (!guestMode) return false;
+  pendingIntents.push({ label, run });
+  showLoginCard("该功能需要登录，登录后将自动继续刚才的操作");
+  return true;
+}
+// 通用兜底：任一 RPC 返回 need_login:true 时同样转弹卡（防漏网入口）。
+function needLogin(resp) {
+  if (resp && resp.need_login) {
+    showLoginCard("该功能需要登录，登录后将自动继续刚才的操作");
+    return true;
+  }
+  return false;
+}
+// 显示登录卡：phone 步起、清错误、可选受控提示（与登录错误文案互不残留）
+function showLoginCard(notice) {
+  document.getElementById("login-phone").value = "";
+  document.getElementById("login-code").value = "";
+  document.getElementById("login-pwd").value = "";
+  showLoginStep("phone");
+  loginErr("");
+  document.getElementById("login-notice").textContent = notice || "";
+  document.getElementById("login").classList.remove("hidden");
+  if (guestMode) startGuestPoll();
+}
+function showGuestBar() { document.getElementById("guest-bar").classList.remove("hidden"); }
+function hideGuestBar() { document.getElementById("guest-bar").classList.add("hidden"); }
+// 登录状态轮询：guest 态（卡片或 guest-bar 可见期间）约 2s 一拍，
+// 发现 logged_in:true && guest:false → 走 afterLogin（含续路）；
+// 发现 guest:false 且未登录（如登出）→ 显卡停轮询。
+let guestPollId = null;
+let guestPollBusy = false;
+function startGuestPoll() {
+  if (guestPollId != null) return;
+  guestPollId = setInterval(guestPollTick, 2000);
+}
+function stopGuestPoll() {
+  if (guestPollId != null) {
+    clearInterval(guestPollId);
+    guestPollId = null;
+  }
+}
+async function guestPollTick() {
+  if (guestPollBusy || document.hidden) return;
+  guestPollBusy = true;
+  try {
+    const st = await api().login_state();
+    if (st && st.logged_in && !st.guest) {
+      stopGuestPoll();
+      await afterLogin();
+      return;
+    }
+    if (st && !st.guest && !st.logged_in) {
+      // 登出或会话被清除：回登录卡并停轮询（不回到游客态）
+      stopGuestPoll();
+      guestMode = false;
+      showLoginCard("");
+      return;
+    }
+  } catch (e) {} finally {
+    guestPollBusy = false;
+  }
+}
+// "暂不登录"按钮：游客态已激活时点击仅收卡回主界面；
+// 未进入游客态时调用后端 set_guest 并切换为游客模式。
+async function doGuest() {
+  if (guestMode) {
+    document.getElementById("login").classList.add("hidden");
+    loginErr("");
+    document.getElementById("login-notice").textContent = "";
+    return;
+  }
+  let r;
+  try {
+    r = await api().set_guest(true);
+  } catch (e) {
+    return loginErr("进入游客模式失败：" + (e && e.message || e));
+  }
+  if (!r || !r.ok) return loginErr((r && r.error) || "进入游客模式失败");
+  guestMode = true;
+  pendingIntents.length = 0;      // 放弃登录：清空受限意图
+  document.getElementById("login").classList.add("hidden");
+  loginErr("");
+  document.getElementById("login-notice").textContent = "";
+  showGuestBar();
+  startGuestPoll();
+  switchView("tasks");            // 停在任务库（离线可浏览）
+}
 
 async function doSendCode() {
   loginErr("");
@@ -113,13 +226,23 @@ async function doVerifyPassword() {
   r.ok ? afterLogin() : loginErr(r.error);
 }
 async function afterLogin() {
+  guestMode = false;
+  hideGuestBar();
+  stopGuestPoll();
   document.getElementById("login").classList.add("hidden");
+  document.getElementById("login-notice").textContent = "";
   const m = await api().me();
   if (m.ok) {
     document.getElementById("me-name").textContent = m.name || "已登录";
     document.getElementById("me-user").textContent =
       m.username ? "@" + m.username : m.phone || "";
     document.getElementById("me-avatar").textContent = (m.name || "?").slice(0, 1);
+  }
+  // T46 续路：按 FIFO 依次执行全部受限意图（此时 guestMode=false 真实执行）
+  const intents = pendingIntents.splice(0);
+  for (const it of intents) {
+    try { await it.run(); }
+    catch (e) { console.debug("[T46] 续路失败：", it.label, e); }
   }
 }
 
@@ -145,6 +268,10 @@ async function doLogout() {
   document.getElementById("me-user").textContent = "";
   document.getElementById("me-avatar").textContent = "·";
   // 显示登录界面（从手机号开始）
+  guestMode = false;
+  hideGuestBar();
+  stopGuestPoll();
+  document.getElementById("login-notice").textContent = "";
   loginErr("");
   document.getElementById("login-phone").value = "";
   document.getElementById("login-code").value = "";
@@ -201,6 +328,7 @@ function collectSearchParams() {
 }
 
 async function doPreview() {
+  if (guardRestricted("新建搜索", () => doPreview())) return;
   const btn = document.getElementById("preview-btn");
   document.getElementById("wizard-err").textContent = "";
   document.getElementById("wizard-note").textContent = "";
@@ -306,6 +434,7 @@ function selectAll(v) {
 }
 
 async function doStart(btn) {
+  if (guardRestricted("开始下载", () => doStart(btn))) return;
   if (!selected.size) return alert("请选择至少一个视频");
   const keys = [...selected].map(k => {
     const [src, mid] = k.split("|");
@@ -550,6 +679,7 @@ function updateCard(card, tid, it, ck) {
 }
 
 async function toggleActiveExpand(k) {
+  if (guardRestricted("取消息原文", () => toggleActiveExpand(k))) return;
   const opening = !expandedActive.has(k);
   opening ? expandedActive.add(k) : expandedActive.delete(k);
   await refreshActive();
@@ -679,6 +809,7 @@ function setTaskFilter(f) {
   renderTasks();
 }
 async function quickResume(id, failed, btn) {
+  if (guardRestricted("继续下载", () => quickResume(id, failed, btn))) return;
   let r;
   try {
     r = await withBusy(btn, failed ? "重试中…" : "继续中…",
@@ -961,6 +1092,7 @@ async function bulkRemove() {
 // ---------- 滑层其它操作 ----------
 function sheetOpenFolder() { api().open_folder(sheet.task.folder); }
 async function sheetResume() {
+  if (guardRestricted("继续下载", () => sheetResume())) return;
   const failedOnly = sheet.counts.pending === 0 && sheet.counts.failed > 0;
   const r = await api().resume_task(sheet.taskId, failedOnly);
   if (r.ok || (r.error || "").includes("已在下载")) {
@@ -1006,6 +1138,7 @@ function buildApSegments() {
 function setAp(field, v) { ap[field] = v; buildApSegments(); }
 
 function openAppend() {
+  if (guardRestricted("搜索并追加", () => openAppend())) return;
   buildApSegments();
   ["ap-keywords", "ap-minmb", "ap-maxmb", "ap-datefrom", "ap-dateto"]
     .forEach(id => (document.getElementById(id).value = ""));
@@ -1028,8 +1161,16 @@ async function runAppend() {
     date_to: document.getElementById("ap-dateto").value || "",
   };
   btn.textContent = "搜索中…"; btn.disabled = true;
-  const r = await api().scan_append(sheet.taskId, params);
+  let r;
+  try {
+    r = await api().scan_append(sheet.taskId, params);
+  } catch (e) {
+    btn.textContent = "搜索并追加"; btn.disabled = false;
+    return (document.getElementById("ap-err").textContent =
+      (e && e.message) || String(e));
+  }
   btn.textContent = "搜索并追加"; btn.disabled = false;
+  if (needLogin(r)) return;   // T46 兜底：漏网入口转为登录弹卡
   if (!r.ok) return (document.getElementById("ap-err").textContent = r.error);
   closeAppend();
   await reloadSheet();
@@ -1045,8 +1186,12 @@ async function loadSettings() {
   document.getElementById("set-root").value = r.download_root;
   const n = document.getElementById("me-name").textContent;
   const u = document.getElementById("me-user").textContent;
-  document.getElementById("set-account").textContent =
-    n === "未登录" ? "未登录" : `${n}${u ? "  " + u : ""}`;
+  // T46 游客态：账号区显示游客模式、隐藏退出登录按钮（对游客无意义）
+  document.getElementById("set-account").textContent = guestMode
+    ? "游客模式（未登录）"
+    : (n === "未登录" ? "未登录" : `${n}${u ? "  " + u : ""}`);
+  document.getElementById("set-logout-btn").style.display =
+    guestMode ? "none" : "";
 }
 async function chooseFolder() {
   const r = await api().choose_folder();
@@ -1322,3 +1467,22 @@ window.addEventListener("pywebviewready", () => {
 // 组件对象也暴露到 window（供后续任务与控制台测试驱动；名字唯一无冲突）
 window.TgJobProgress = TgJobProgress;
 // ===== T45 作业事件总线 / 通用进度组件（结束）=====
+
+// ============================================================
+// ===== T46 游客模式（开始）=====
+// 最小取证探针（仅状态/计数，无敏感信息；风格对齐 T45 __tgJobProbe）
+// 用途：TR-46.2B/46.3 断言 guest 状态机与意图队列行为
+window.__tgGuestProbe = {
+  get guestMode() { return guestMode; },
+  get intentCount() { return pendingIntents.length; },
+  get intents() { return pendingIntents.map(i => i.label); },
+  get guestBarVisible() {
+    const el = document.getElementById("guest-bar");
+    return !!el && !el.classList.contains("hidden");
+  },
+  get loginVisible() {
+    return !document.getElementById("login").classList.contains("hidden");
+  },
+  get pendingFifo() { return pendingIntents.map(i => i.label); },
+};
+// ===== T46 游客模式（结束）=====

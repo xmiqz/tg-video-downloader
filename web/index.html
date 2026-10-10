@@ -58,6 +58,8 @@
       <button class="btn primary block" onclick="doVerifyPassword()">确认</button>
     </div>
     <p id="login-err" class="login-err"></p>
+    <p id="login-notice" class="login-notice"></p>
+    <button class="btn glass-btn block" id="guest-btn" onclick="doGuest()">暂不登录（游客模式）</button>
   </div>
 </div>
 
@@ -96,6 +98,9 @@
   </aside>
 
   <main class="main">
+
+    <!-- T46 游客模式提示条：仅 guest 态显示，点击打开登录卡 -->
+    <div id="guest-bar" class="guest-bar hidden" onclick="openLoginFromGuest()">未登录 · 点此登录</div>
 
     <!-- 下载中 -->
     <section id="view-active" class="view hidden">
@@ -291,7 +296,7 @@
         <label>当前账号</label>
         <div class="account-row">
           <div id="set-account" class="account-info">未登录</div>
-          <button class="btn danger sm" onclick="doLogout()">退出登录</button>
+          <button class="btn danger sm" id="set-logout-btn" onclick="doLogout()">退出登录</button>
         </div>
         <p class="hint">退出后本地登录授权将被删除，重新登录需输入手机号与验证码；任务清单和已下载视频不会被删除。下载进行中无法退出。</p>
       </div>
