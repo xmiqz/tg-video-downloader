@@ -319,6 +319,13 @@ class Api:
                 return
             push(name, params)
         self.jobs = JobRegistry(sink=_job_sink)
+        # T49 download 作业双向映射（纯内存，_dl_lock 保护；绝不向
+        # JobRegistry 12 字段加 task_id 等任何键）：
+        #   _dl_jobs: job_id -> task_id；_dl_tasks: task_id -> job_id。
+        # 生命周期与作业一致：open 成功登记，worker 收口 finally 清除。
+        self._dl_jobs = {}
+        self._dl_tasks = {}
+        self._dl_lock = threading.Lock()
 
     # ---------- 外观模式 ----------
     def get_appearance(self):
@@ -780,6 +787,113 @@ class Api:
             return {"ok": False, "unsupported": True}
         return {"ok": False, "error": "job_not_found"}
 
+    # ---------- T49 download 作业（kind="download"，占位-实例 1:1） ----------
+
+    def _make_dl_phase_cb(self, task_id):
+        """构造 download 作业的 phase_cb（6 参契约 (task_id, phase,
+        detail, index, total, snap)，跑在 engine.loop 线程；闭包状态只被
+        该线程触达）。job_update 计数映射：fetching 用 fetched/fetch_total，
+        终态与 downloading 用 task_finished/task_total，其余阶段不动
+        done/total（flood 倒计时秒不进计数）；节流交给 JobRegistry 既有
+        契约。dl_phase 另算节拍（Api 内每 task 记 last）：阶段突变立即推、
+        flood_wait 每秒必达、其余 ≥0.4s；push_event 为 None 时 no-op；
+        回调异常禁上抛（渲染失败不影响下载）。"""
+        st = {"phase": None, "ts": 0.0}
+
+        def cb(tid, phase, detail, index, total, snap):
+            try:
+                with self._dl_lock:
+                    job_id = self._dl_tasks.get(tid)
+                if job_id is None:
+                    return
+                fields = {"phase": phase, "phase_detail": detail}
+                if phase == "fetching":
+                    fields["done"] = snap.get("fetched", 0)
+                    fields["total"] = snap.get("fetch_total", 0)
+                elif phase in ("downloading", "done", "aborted", "error"):
+                    fields["done"] = snap.get("task_finished", 0)
+                    fields["total"] = snap.get("task_total", 0)
+                self.jobs.update(job_id, **fields)
+                now = time.monotonic()
+                if (phase != st["phase"] or phase == "flood_wait"
+                        or now - st["ts"] >= 0.4):
+                    st["phase"] = phase
+                    st["ts"] = now
+                    push = self.push_event
+                    if push is not None:
+                        push("dl_phase", [{
+                            "task_id": tid,
+                            "phase": phase,
+                            "phase_detail": detail,
+                            "phase_index": int(index or 0),
+                            "phase_total": int(total or 0),
+                        }])
+            except Exception:  # noqa: BLE001 - 回调异常绝不上抛
+                pass
+
+        return cb
+
+    def _dl_worker(self, job_id, cancel_event, task_id, task, sess,
+                   lazy_statuses, do_reconcile):
+        """download 作业 daemon 线程（仿 _search_worker 范式）：run_
+        download_session 提交到 engine.loop，按返回 status 收口
+        done/cancelled/error（错误文案透传）；线程兜底 except 同样
+        error（type+msg 透传，禁裸 print 吞错）；finally 清双向映射
+        （取消 watcher 据此退出）。registry 对已 cancelled 终态的
+        update 静默拒绝——取消竞态由 request_cancel 原子置位兜底。"""
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                core.run_download_session(
+                    self.client, task, sess, gui={},
+                    lazy_statuses=lazy_statuses,
+                    do_reconcile=do_reconcile),
+                self.engine.loop)
+            result = fut.result()
+        except Exception as e:  # noqa: BLE001 - worker 线程兜底
+            _job_log.warning("download worker 异常 job=%s", job_id,
+                             exc_info=True)
+            result = {"status": "error",
+                      "error": f"{type(e).__name__}: {e}"}
+        result = result or {}
+        status = result.get("status", "error")
+        if status == "done":
+            state, phase = "done", "done"
+        elif status == "aborted":
+            state, phase = "cancelled", "aborted"
+        else:
+            state, phase = "error", "error"
+        # 终态细节优先取墓碑快照的 phase_detail（内核拼装的同源文本），
+        # 过期/缺失时退化为 phase_text
+        detail = ""
+        ent = core.SESSION_TOMBSTONES.get(task_id)
+        if isinstance(ent, tuple) and isinstance(ent[0], dict):
+            detail = ent[0].get("phase_detail", "")
+        if not detail:
+            detail = core.phase_text(phase)
+        err = result.get("error", "") if status == "error" else ""
+        self.jobs.update(job_id, state=state, phase=phase,
+                         phase_detail=detail, error=err)
+        with self._dl_lock:
+            self._dl_jobs.pop(job_id, None)
+            self._dl_tasks.pop(task_id, None)
+
+    def _start_dl_cancel_watcher(self, job_id, cancel_event, task_id):
+        """download 作业取消 watcher：cancel_event 置位 → 对 live 会话
+        request_abort()（job_cancel 与 abort_task 等效）；映射消失（worker
+        收口）后退出。search/t45_demo 不挂 watcher（T45/T48 零回归）。"""
+        def _watch():
+            while True:
+                cancel_event.wait(0.5)
+                if job_id not in self._dl_jobs:
+                    return
+                if cancel_event.is_set():
+                    sess = core.ACTIVE_SESSIONS.get(task_id)
+                    if sess is not None:
+                        sess.request_abort()
+
+        threading.Thread(target=_watch, daemon=True,
+                         name="dl-cancel-" + job_id).start()
+
     # ---------- 建任务并下载 ----------
     def start_download(self, channel, title, keys, parallel, folder="",
                        job_id=""):
@@ -830,20 +944,50 @@ class Api:
         first_ids = {it["msg"] for it in first["items"]}
         first_todo = [r for r in todo if r["msg"].id in first_ids]
 
-        def _run_bg():
-            async def _do():
-                await core.execute_downloads(
-                    self.client, first, first_todo,
+        # T49：同步段（选记录/makedirs/save_task 先落盘）全部完成后才
+        # 建 download 作业（占位-实例 1:1）——open 纯内存动作即刻注册，
+        # 点"开始"后轮询立刻可见 preparing。
+        try:
+            planned = core.build_planned(first, first_todo, None)
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        job_id, cancel_event = self.jobs.create("download")
+        self.jobs.update(job_id, force=True, state="running",
+                         phase="preparing",
+                         phase_detail=core.phase_text("preparing"),
+                         total=len(first["items"]))
+        cb = self._make_dl_phase_cb(first["id"])
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                core.open_download_session(
+                    self.client, first, planned,
                     first["params"]["parallel"], gui={},
-                )
-            fut = asyncio.run_coroutine_threadsafe(_do(), self.engine.loop)
-            try:
-                fut.result()
-            except Exception as ex:
-                print("[GUI] 下载异常：", ex)
-
-        threading.Thread(target=_run_bg, daemon=True).start()
-        return {"ok": True, "task_id": first["id"], "split": n_split}
+                    lazy_statuses=None, phase_cb=cb),
+                self.engine.loop)
+            sess = fut.result()
+        except Exception as e:
+            self.jobs.update(job_id, state="error", phase="error",
+                             phase_detail=core.phase_text("error"),
+                             error=f"{type(e).__name__}: {e}")
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        if sess is None:
+            self.jobs.update(job_id, state="error", phase="error",
+                             phase_detail=core.phase_text("error"),
+                             error="该任务已在下载中，请勿重复开始")
+            return {"ok": False, "error": "该任务已在下载中，请勿重复开始"}
+        sess.queue_source = first_todo   # 非 lazy 模式 run 入队用
+        with self._dl_lock:
+            self._dl_jobs[job_id] = first["id"]
+            self._dl_tasks[first["id"]] = job_id
+        threading.Thread(
+            target=self._dl_worker,
+            args=(job_id, cancel_event, first["id"], first, sess,
+                  None, False),
+            daemon=True, name="dl-" + job_id,
+        ).start()
+        self._start_dl_cancel_watcher(job_id, cancel_event, first["id"])
+        return {"ok": True, "task_id": first["id"], "split": n_split,
+                "job_id": job_id}
 
     # ---------- 实时状态 ----------
     def active_states(self):
@@ -998,34 +1142,64 @@ class Api:
         if self.client is None:
             print("[GUI] need_login: resume_task")
             return {"ok": False, "need_login": True}
-        for t in core.load_tasks():
-            if t["id"] != task_id:
-                continue
-            if task_id in core.ACTIVE_SESSIONS:
-                return {"ok": False, "error": "该任务已在下载中，请勿重复开始"}
-            statuses = ("failed",) if only_failed else ("pending", "failed")
-            n = sum(1 for ti in t["items"] if ti["status"] in statuses)
-            if not n:
-                return {"ok": False, "error": "没有需要下载的视频"}
-            parallel = int(t.get("params", {}).get("parallel") or 1)
+        # T49：按 id 直读单个任务（core.load_task），不再 load_tasks()
+        # 全目录解析——多任务目录下那是 preparing 占位 ≤200ms 的主要
+        # 耗时（Defender 扫描下实测 p50 117ms）；语义与逐条过滤一致。
+        t = core.load_task(task_id)
+        if t is None or t.get("id") != task_id:
+            return {"ok": False, "error": "任务不存在"}
+        if task_id in core.ACTIVE_SESSIONS:
+            return {"ok": False, "error": "该任务已在下载中，请勿重复开始"}
+        statuses = ("failed",) if only_failed else ("pending", "failed")
+        n = sum(1 for ti in t["items"] if ti["status"] in statuses)
+        if not n:
+            return {"ok": False, "error": "没有需要下载的视频"}
+        parallel = int(t.get("params", {}).get("parallel") or 1)
 
-            def _run_bg():
-                async def _do():
-                    # 边读边下：立即建立下载会话，消息分批补取，
-                    # 避免大清单在读取阶段长时间无反馈
-                    await core.execute_downloads(
-                        self.client, t, [], parallel, gui={},
-                        lazy_statuses=statuses,
-                    )
-                fut = asyncio.run_coroutine_threadsafe(_do(), self.engine.loop)
-                try:
-                    fut.result()
-                except Exception as ex:
-                    print("[GUI] 续传异常：", ex)
-
-            threading.Thread(target=_run_bg, daemon=True).start()
-            return {"ok": True}
-        return {"ok": False, "error": "任务不存在"}
+        # T49：全部同步校验之后才建 download 作业（占位-实例 1:1；
+        # 游客/无条目/重复/任务不存在均不挂空作业）。open 纯内存动作
+        # 即刻注册 ACTIVE_SESSIONS（preparing 立即可轮询可见）。
+        try:
+            planned = core.build_planned(t, [], statuses)
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        job_id, cancel_event = self.jobs.create("download")
+        self.jobs.update(job_id, force=True, state="running",
+                         phase="preparing",
+                         phase_detail=core.phase_text("preparing"),
+                         total=n)
+        cb = self._make_dl_phase_cb(task_id)
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                core.open_download_session(
+                    self.client, t, planned, parallel, gui={},
+                    lazy_statuses=statuses, phase_cb=cb),
+                self.engine.loop)
+            sess = fut.result()
+        except Exception as e:
+            self.jobs.update(job_id, state="error", phase="error",
+                             phase_detail=core.phase_text("error"),
+                             error=f"{type(e).__name__}: {e}")
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        if sess is None:
+            # open 重复守卫命中（同步检查与 open 之间的竞态窗口）
+            self.jobs.update(job_id, state="error", phase="error",
+                             phase_detail=core.phase_text("error"),
+                             error="该任务已在下载中，请勿重复开始")
+            return {"ok": False,
+                    "error": "该任务已在下载中，请勿重复开始"}
+        with self._dl_lock:
+            self._dl_jobs[job_id] = task_id
+            self._dl_tasks[task_id] = job_id
+        # 边读边下：会话已建立，消息分批补取（大清单读取阶段有反馈）
+        threading.Thread(
+            target=self._dl_worker,
+            args=(job_id, cancel_event, task_id, t, sess,
+                  statuses, False),
+            daemon=True, name="dl-" + job_id,
+        ).start()
+        self._start_dl_cancel_watcher(job_id, cancel_event, task_id)
+        return {"ok": True, "job_id": job_id}
 
     # ---------- 任务编辑 ----------
     def _load_one(self, task_id):

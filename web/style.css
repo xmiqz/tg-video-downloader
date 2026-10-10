@@ -1082,3 +1082,116 @@ html[data-theme="light"] .ref-tag {
   color: #5b3fc7; background: rgba(120, 90, 255, .12);
   border-color: rgba(120, 90, 255, .2);
 }
+
+/* ============================================================
+   T49 下载全阶段进度（仅尾部追加段；前 46539 字节基线零改动）
+   - .dl-phase：下载中视图组头阶段位（dot + 文本）；data-phase 取
+     英文枚举仅作属性键，文本全部来自后端 phase_text 同源产物，
+     前端不拼第二份中文文案
+   - .task-phase：任务库卡片阶段位（终态条 3s 由 JS 清除后重渲染）
+   - .job-card[data-phase]：通用作业卡按阶段挂左边线弱强调
+   - .fetch-dot：读取清单横幅脉冲点（fetch-banner 结构化后新增）
+   微动效周期全部 >=0.8s；prefers-reduced-motion 时全部停用
+   ============================================================ */
+.dl-phase {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12px; font-weight: 600; color: var(--ink-dim);
+  max-width: 44%; overflow: hidden; white-space: nowrap;
+  text-overflow: ellipsis; flex-shrink: 0;
+}
+.dl-phase-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  background: var(--brand-2);
+  animation: tg49-phase-pulse 1.6s ease-in-out infinite;
+}
+.dl-phase-text { min-width: 0; }
+
+/* 进行中阶段：点脉冲 + 阶段色文本 */
+.dl-phase[data-phase="fetching"] { color: #6ea8fe; }
+.dl-phase[data-phase="fetching"] .dl-phase-dot {
+  background: #6ea8fe; animation-duration: 1.2s;
+}
+.dl-phase[data-phase="downloading"] { color: var(--ok); }
+.dl-phase[data-phase="downloading"] .dl-phase-dot {
+  background: var(--ok); animation-duration: .9s;
+}
+.dl-phase[data-phase="refreshing"] { color: var(--warn); }
+.dl-phase[data-phase="refreshing"] .dl-phase-dot {
+  background: var(--warn); animation-duration: 1.2s;
+}
+.dl-phase[data-phase="flood_wait"] { color: var(--warn); }
+.dl-phase[data-phase="flood_wait"] .dl-phase-dot {
+  background: var(--warn); animation-duration: 2s;
+}
+/* 终态：点熄灭静态，不再动效 */
+.dl-phase[data-phase="done"] { color: var(--ok); }
+.dl-phase[data-phase="done"] .dl-phase-dot {
+  background: var(--ok); animation: none; opacity: .55;
+}
+.dl-phase[data-phase="aborted"] { color: var(--ink-mute); }
+.dl-phase[data-phase="aborted"] .dl-phase-dot {
+  background: var(--ink-mute); animation: none; opacity: .55;
+}
+.dl-phase[data-phase="error"] { color: var(--danger); }
+.dl-phase[data-phase="error"] .dl-phase-dot {
+  background: var(--danger); animation: none; opacity: .55;
+}
+
+@keyframes tg49-phase-pulse {
+  0%, 100% { opacity: .35; transform: scale(.8); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+/* 任务库卡片阶段位：细窄条，与组头同源配色 */
+.task-phase {
+  font-size: 11px; font-weight: 600; line-height: 1;
+  padding: 4px 9px; border-radius: 999px; width: fit-content;
+  max-width: 100%; overflow: hidden; white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-dim);
+  background: rgba(255, 255, 255, .08);
+  border: 1px solid rgba(255, 255, 255, .14);
+  margin-bottom: 8px;
+}
+.task-phase[data-phase="fetching"] { color: #6ea8fe; }
+.task-phase[data-phase="downloading"] { color: var(--ok); }
+.task-phase[data-phase="flood_wait"],
+.task-phase[data-phase="refreshing"] { color: var(--warn); }
+.task-phase[data-phase="done"] { color: var(--ok); }
+.task-phase[data-phase="aborted"] { color: var(--ink-mute); }
+.task-phase[data-phase="error"] { color: var(--danger); }
+html[data-theme="light"] .task-phase {
+  background: rgba(20, 30, 60, .07);
+  border-color: rgba(20, 30, 60, .12);
+}
+
+/* 通用作业卡阶段强调：左边线随阶段换色（保留既有软阴影，弱强调不闪烁） */
+.job-card[data-phase="fetching"] {
+  box-shadow: var(--soft-shadow), inset 3px 0 0 #6ea8fe;
+}
+.job-card[data-phase="downloading"] {
+  box-shadow: var(--soft-shadow), inset 3px 0 0 var(--ok);
+}
+.job-card[data-phase="flood_wait"],
+.job-card[data-phase="refreshing"] {
+  box-shadow: var(--soft-shadow), inset 3px 0 0 var(--warn);
+}
+.job-card[data-phase="error"] {
+  box-shadow: var(--soft-shadow), inset 3px 0 0 var(--danger);
+}
+.job-card[data-phase="done"] {
+  box-shadow: var(--soft-shadow), inset 3px 0 0 var(--ok);
+}
+
+/* 读取清单横幅脉冲点 */
+.fetch-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: #6ea8fe; margin-right: 8px; flex-shrink: 0;
+  vertical-align: 1px;
+  animation: tg49-phase-pulse 1.2s ease-in-out infinite;
+}
+
+/* 减少动效：阶段点/横幅点全部停用动画（既有全局降级之外的显式兜底） */
+@media (prefers-reduced-motion: reduce) {
+  .dl-phase-dot, .fetch-dot { animation: none; }
+}

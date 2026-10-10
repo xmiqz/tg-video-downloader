@@ -283,6 +283,10 @@ async function doLogout() {
   previewData = { items: [], channel: "", title: "" };
   selected = new Set();
   gotoStep(1);
+  // T49：清空下载阶段位缓存与终态清除计时器（logout 前已无活动下载）
+  for (const t of taskPhaseTimers.values()) clearTimeout(t);
+  taskPhaseTimers.clear();
+  dlPhaseByTask.clear();
   // 重置侧边栏账号信息
   document.getElementById("me-name").textContent = "未登录";
   document.getElementById("me-user").textContent = "";
@@ -717,7 +721,6 @@ async function refreshActive() {
 
   // ---- 跨任务聚合总览 ----
   let totBytes = 0, totSize = 0, speed = 0;
-  let fTasks = 0, fDone = 0, fTotal = 0, fNote = "";
   const cc = { done: 0, skip: 0, fail: 0, active: 0, paused: 0 };
   for (const s of states) {
     totBytes += s.total_bytes || 0;
@@ -728,18 +731,17 @@ async function refreshActive() {
     cc.fail += s.counts.fail || 0;
     cc.active += s.counts.active || 0;
     cc.paused += s.counts.paused || 0;
-    if (s.fetching) {
-      fTasks++;
-      fDone += s.fetched || 0;
-      fTotal += s.fetch_total || 0;
-      if (s.fetch_note) fNote = s.fetch_note;
-    }
   }
+  // T49：fetching 阶段同源展示——文案一律来自后端 phase_text 产物
+  // （s.phase_detail），旧硬编码句式已删除，前端不保留第二份中文。
+  const fetchDetails = [...new Set(
+    states.filter(s => s.phase === "fetching")
+          .map(s => s.phase_detail || "").filter(Boolean))];
   const fb = document.getElementById("active-fetch");
-  fb.classList.toggle("hidden", fTasks === 0);
-  if (fTasks) {
-    fb.textContent = "正在分批从服务器核对视频信息：" + fDone + "/" + fTotal +
-      (fNote ? "（" + fNote + "）" : "");
+  fb.classList.toggle("hidden", fetchDetails.length === 0);
+  if (fetchDetails.length) {
+    const ftxt = fb.querySelector(".fetch-text");
+    if (ftxt) ftxt.textContent = fetchDetails.join("；");
   }
   const pct = totSize ? Math.round(totBytes * 100 / totSize) : 0;
   document.getElementById("ov-fill").style.width = pct + "%";
@@ -814,6 +816,74 @@ function setText(root, sel, txt) {
   if (el) el.textContent = txt;
 }
 
+// ---------- T49 下载阶段位（组头 / 任务库卡片 / dl_phase 事件） ----------
+// 最新阶段缓存：task_id -> {phase, detail}（dl_phase 事件更新，
+// renderTasks 重建后据此恢复在库卡片的阶段位）
+const dlPhaseByTask = new Map();
+// 终态条 3s 清除计时器：task_id -> timeout id（防重入）
+const taskPhaseTimers = new Map();
+
+function updateGroupPhase(g, phase, detail) {
+  const el = g.querySelector(".dl-phase");
+  if (!el) return;
+  if (el.dataset.phase !== phase) el.dataset.phase = phase;
+  const txt = el.querySelector(".dl-phase-text");
+  if (txt && txt.textContent !== detail) txt.textContent = detail;
+}
+
+function updateTaskPhase(tc, phase, detail) {
+  let el = tc.querySelector(".task-phase");
+  if (!el) return;   // 模板缺位（异常 DOM）时静默跳过
+  if (!phase) { el.classList.add("hidden"); return; }
+  el.classList.remove("hidden");
+  if (el.dataset.phase !== phase) el.dataset.phase = phase;
+  if (el.textContent !== detail) el.textContent = detail;
+  const tid = tc.dataset.tid;
+  const term = phase === "done" || phase === "aborted" || phase === "error";
+  if (term && tid && !taskPhaseTimers.has(tid)) {
+    taskPhaseTimers.set(tid, setTimeout(async () => {
+      taskPhaseTimers.delete(tid);
+      try { await renderTasks(); } catch (e) {}
+    }, 3000));
+  }
+}
+
+// bridge.js 白名单转发的 tg:dl_phase（detail = params[0]，payload 钉死：
+// {task_id, phase, phase_detail, phase_index, phase_total}）。
+// 同文不重写 DOM：文本相同不触碰节点，与 1s 轮询互不打架。
+function onDlPhase(detail) {
+  if (!detail || typeof detail.task_id !== "string") return;
+  const p = detail.phase || "";
+  const d = detail.phase_detail || "";
+  dlPhaseByTask.set(detail.task_id, { phase: p, detail: d });
+  let g = document.querySelector(
+    `#active-list .dl-group[data-gid="${qAttr(detail.task_id)}"]`);
+  // T49：会话早期阶段（preparing/disk_check 数百 ms 即过）常在第一次
+  // active_states 轮询建组之前到达——组未建则先落骨架组，保证组头从
+  // 首帧起同源显示全部阶段；标题/计数由后续轮询 syncActiveList 补全，
+  // 终态帧不建组（墓碑快照轮询自会建组显示）。
+  if (!g && p && !["done", "aborted", "error"].includes(p)) {
+    g = document.createElement("div");
+    g.className = "dl-group";
+    g.dataset.gid = detail.task_id;
+    g.innerHTML = `
+        <div class="dl-group-head">
+          <div class="dl-group-title">
+            <span class="dl-group-name"></span>
+            <span class="dl-group-stat"></span>
+          </div>
+          <span class="dl-phase" data-phase=""><span class="dl-phase-dot"></span><span class="dl-phase-text"></span></span>
+          <button class="btn danger sm" onclick="abortGroup('${esc(detail.task_id)}',this)">中止任务</button>
+        </div>
+        <div class="dl-group-body"></div>`;
+    document.getElementById("active-list").appendChild(g);
+  }
+  if (g) updateGroupPhase(g, p, d);
+  const tc = document.querySelector(
+    `#task-list .task-card[data-tid="${qAttr(detail.task_id)}"]`);
+  if (tc) updateTaskPhase(tc, p, d);
+}
+
 function syncActiveList(states) {
   const list = document.getElementById("active-list");
   const liveGroups = new Set();
@@ -830,6 +900,7 @@ function syncActiveList(states) {
             <span class="dl-group-name"></span>
             <span class="dl-group-stat"></span>
           </div>
+          <span class="dl-phase" data-phase=""><span class="dl-phase-dot"></span><span class="dl-phase-text"></span></span>
           <button class="btn danger sm" onclick="abortGroup('${esc(s.task_id)}',this)">中止任务</button>
         </div>
         <div class="dl-group-body"></div>`;
@@ -838,6 +909,8 @@ function syncActiveList(states) {
     g.querySelector(".dl-group-name").textContent = s.title || "任务";
     g.querySelector(".dl-group-stat").textContent =
       `${s.task_finished}/${s.task_total} 完成`;
+    // T49：组头阶段位同源更新（终态墓碑窗口内即"完成/已中止/失败 · detail"）
+    updateGroupPhase(g, s.phase || "", s.phase_detail || "");
     syncCards(g.querySelector(".dl-group-body"), s);
   }
   for (const oldG of Array.from(list.children)) {
@@ -1018,7 +1091,8 @@ async function renderTasks() {
     if (t.failed) tags.push(`<span class="mini-tag fail">失败 ${t.failed}</span>`);
     if (t.skipped) tags.push(`<span class="mini-tag">跳过 ${t.skipped}</span>`);
     return `
-      <div class="task-card" onclick="openSheet('${esc(t.id)}')">
+      <div class="task-card" data-tid="${esc(t.id)}" onclick="openSheet('${esc(t.id)}')">
+        <div class="task-phase hidden" data-phase=""></div>
         <h3>${esc(t.channel_title)}</h3>
         <div class="task-channel">@${esc(t.channel)}</div>
         <div class="tag-row">${tags.join("") || '<span class="mini-tag">全部完成</span>'}</div>
@@ -1031,6 +1105,14 @@ async function renderTasks() {
         </div>
       </div>`;
   }).join("");
+  // T49：重建后恢复仍在进行中的阶段位（终态不复活——滑层/切视图零残留）
+  document.querySelectorAll("#task-list .task-card").forEach(tc => {
+    const ph = dlPhaseByTask.get(tc.dataset.tid);
+    if (ph && ph.phase && ph.phase !== "done"
+        && ph.phase !== "aborted" && ph.phase !== "error") {
+      updateTaskPhase(tc, ph.phase, ph.detail);
+    }
+  });
 }
 function setTaskFilter(f) {
   taskFilter = f;
@@ -1324,7 +1406,21 @@ function sheetOpenFolder() { api().open_folder(sheet.task.folder); }
 async function sheetResume() {
   if (guardRestricted("继续下载", () => sheetResume())) return;
   const failedOnly = sheet.counts.pending === 0 && sheet.counts.failed > 0;
-  const r = await api().resume_task(sheet.taskId, failedOnly);
+  // T49 防重：点击后立即禁用到 RPC 返回（双击不再触发第二个下载作业）
+  const btn = document.getElementById("sheet-resume");
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "继续中…";
+  let r;
+  try {
+    r = await api().resume_task(sheet.taskId, failedOnly);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = old;
+    return;
+  }
+  btn.disabled = false;
+  btn.textContent = old;
   if (r.ok || (r.error || "").includes("已在下载")) {
     closeSheetNoRefresh();
     switchView("active");
@@ -1590,12 +1686,18 @@ const TgJobProgress = (() => {
     let card = host.querySelector(`[data-job-id="${qAttr(id)}"]`);
     if (!card) card = buildCard(id);
 
+    // T49：download 作业走通用卡——卡片根挂 data-phase（英文枚举仅作
+    // CSS/data 属性键）供微动效与各阶段配色；.ph 留空（中文细节由
+    // 后端 phase_text 产物经 .pd 同源直显，前端不拼第二份文案）
+    card.dataset.phase = job.kind === "download" ? (job.phase || "") : "";
+
     const state = JOB_STATE_LABEL[job.state] ? job.state : "queued";
     setText(card, ".job-kind", job.kind || "");
     const st = card.querySelector(".job-state");
     st.textContent = JOB_STATE_LABEL[state];
     st.className = "job-state s-" + state;
-    setText(card, ".ph", job.phase || "");
+    setText(card, ".ph",
+      job.kind === "download" ? "" : (job.phase || ""));
     setText(card, ".pd", job.phase_detail || "");
 
     const pct = pctOf(job);
@@ -1703,6 +1805,8 @@ window.addEventListener("pywebviewready", () => {
   TgJobProgress.mount();
   // T48：全局只挂一次 search_items 订阅（帧按 job_id 路由，见 onSearchItems）
   TgBus.on("search_items", onSearchItems);
+  // T49：全局只挂一次 dl_phase 订阅（帧按 task_id 路由，见 onDlPhase）
+  TgBus.on("dl_phase", onDlPhase);
 });
 // 组件对象也暴露到 window（供后续任务与控制台测试驱动；名字唯一无冲突）
 window.TgJobProgress = TgJobProgress;

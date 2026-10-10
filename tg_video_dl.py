@@ -21,6 +21,7 @@ Telegram 频道视频下载器（交互选择版）
 """
 import asyncio
 import bisect
+import collections
 import ctypes
 import difflib
 import glob
@@ -43,7 +44,7 @@ except Exception:
 
 from telethon import TelegramClient
 from telethon.tl.types import DocumentAttributeVideo, DocumentAttributeFilename
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, FileReferenceExpiredError
 
 # 程序所在目录：打包后是 exe 目录，开发态是脚本目录
 if getattr(sys, "frozen", False):
@@ -1471,6 +1472,69 @@ def wrap_text(s, width, prefix=""):
     return out or [""]
 
 
+# ---------------- 下载全阶段状态机（T49；内存态，绝不进任务 JSON） ----------------
+
+# T49：下载全阶段（内存态，不进任务 JSON）。枚举字符串为跨语言契约，禁改。
+PHASE_PREPARING = "preparing"
+PHASE_DISK_CHECK = "disk_check"
+PHASE_FETCHING = "fetching"
+PHASE_REFRESHING = "refreshing"
+PHASE_DOWNLOADING = "downloading"
+PHASE_FLOOD_WAIT = "flood_wait"
+PHASE_RECONCILING = "reconciling"
+PHASE_DONE = "done"
+PHASE_ABORTED = "aborted"
+PHASE_ERROR = "error"
+
+DOWNLOAD_PHASES = (
+    PHASE_PREPARING, PHASE_DISK_CHECK, PHASE_FETCHING,
+    PHASE_REFRESHING, PHASE_DOWNLOADING, PHASE_FLOOD_WAIT,
+    PHASE_RECONCILING,
+)
+PHASE_TERMINAL = (PHASE_DONE, PHASE_ABORTED, PHASE_ERROR)
+PHASE_LABELS = {
+    "preparing": "准备", "disk_check": "磁盘检查", "fetching": "读取清单",
+    "refreshing": "刷新引用", "downloading": "下载中",
+    "flood_wait": "限速等待", "reconciling": "对账",
+    "done": "完成", "aborted": "已中止", "error": "失败",
+}
+
+
+def phase_text(phase, detail=""):
+    """唯一中文拼装函数：短名 + 可选细节。GUI/WS/TUI 全部消费其产物。"""
+    return PHASE_LABELS[phase] + ((" · " + detail) if detail else "")
+
+
+# 合法阶段转移表（§3.1）：任意非终态可进 aborted；worker/feeder 致命
+# 错误进 error；flood_wait 自 fetching/downloading 进、leave 回原阶段；
+# refreshing 仅自 downloading 进、leave 回 downloading。
+_PHASE_NEXT = {
+    "preparing": frozenset({"disk_check", "error", "aborted"}),
+    # done 仅是"零记录/空计划的正常收尾"边：fetching 一批记录都没入队
+    # （全部条目已删除）或空 planned 直接结束；不得再放宽其它边。
+    "disk_check": frozenset(
+        {"reconciling", "fetching", "downloading", "done", "error", "aborted"}),
+    "reconciling": frozenset(
+        {"fetching", "downloading", "error", "aborted"}),
+    "fetching": frozenset(
+        {"downloading", "flood_wait", "done", "error", "aborted"}),
+    "downloading": frozenset(
+        {"refreshing", "flood_wait", "done", "error", "aborted"}),
+    "refreshing": frozenset({"downloading", "error", "aborted"}),
+    "flood_wait": frozenset({"fetching", "downloading", "error", "aborted"}),
+    "done": frozenset(),
+    "aborted": frozenset(),
+    "error": frozenset(),
+}
+
+
+def phase_transition_ok(old, new):
+    """阶段转移是否合法（TR-49.1 状态机校验表同源）。"""
+    if old in PHASE_TERMINAL:
+        return False
+    return new in _PHASE_NEXT.get(old, frozenset())
+
+
 class Monitor:
     """统一收集各视频字节进度、速度、状态，并按简洁/详细两种模式渲染。
 
@@ -1515,6 +1579,17 @@ class Monitor:
         self.fetch_total = len(planned)
         self.fetching = False
         self.fetch_note = ""
+        # T49 阶段状态机（内存态；详见模块级 PHASE_* 契约）
+        self.phase = "preparing"
+        self.phase_detail = phase_text("preparing")
+        self.phase_index = 0
+        self.phase_total = 0
+        self.phase_entered = time.monotonic()
+        self.phase_cb = None          # 4 参回调 (phase, text, index, total)
+        self.flood_probe = None       # enter_flood 等待期的中止探测（run 侧注入）
+        self._phase_before_flood = None
+        self._last_fetch_ts = time.monotonic()   # 最后一批消息到达时刻
+        self._refresh_note = ""       # refreshing 期间的条目标注（#mid）
 
     async def fill(self, rec):
         """记录从服务器取到后，补充占位条目的展示信息。"""
@@ -1532,8 +1607,129 @@ class Monitor:
         async with self.lock:
             self.fetched, self.fetch_total = done, total
             self.fetching = fetching
+            if fetching:
+                self._last_fetch_ts = time.monotonic()
             if note:
                 self.fetch_note = note
+
+    # ---------- T49 阶段 API（均持锁改字段、锁外发回调；回调异常只记不抛） ----------
+
+    def _fire_phase_cb(self, phase, text, index, total):
+        cb = self.phase_cb
+        if cb is None:
+            return
+        try:
+            cb(phase, text, index, total)
+        except Exception:
+            pass    # 回调异常绝不上抛（GUI/TUI 渲染失败不影响下载）
+
+    async def set_phase(self, phase, detail="", index=None, total=None):
+        """切换阶段。未知阶段是编程错误（AssertionError）；非法转移拒绝并
+        保持原阶段（打印技术日志）；终态幂等不可再变。detail 为裸细节，
+        phase_detail 存 phase_text 拼装产物（全链同源文案）。"""
+        if phase not in PHASE_LABELS:
+            raise AssertionError(f"未知下载阶段：{phase!r}")
+        async with self.lock:
+            old = self.phase
+            if old == phase and not detail:
+                # 同阶段重申（open 的 preparing 首帧）：仍发一次通知
+                self._fire_phase_cb(phase, self.phase_detail,
+                                    self.phase_index, self.phase_total)
+                return
+            if old in PHASE_TERMINAL:
+                return                      # 终态不可再变（幂等）
+            if not phase_transition_ok(old, phase):
+                print(f"[!] 忽略非法阶段转移 {old} -> {phase}")
+                return
+            self.phase = phase
+            self.phase_detail = phase_text(phase, detail)
+            if index is not None:
+                self.phase_index = index
+            if total is not None:
+                self.phase_total = total
+            self.phase_entered = time.monotonic()
+            if phase == "refreshing":
+                self._refresh_note = detail
+            text = self.phase_detail
+            index_ = self.phase_index
+            total_ = self.phase_total
+        self._fire_phase_cb(phase, text, index_, total_)
+
+    async def tick_phase(self, detail=None, index=None, total=None):
+        """停留期心跳：不换阶段、不重置 phase_entered；仅更新细节/计数。"""
+        async with self.lock:
+            if self.phase in PHASE_TERMINAL:
+                return
+            if detail is not None:
+                self.phase_detail = phase_text(self.phase, detail)
+            if index is not None:
+                self.phase_index = index
+            if total is not None:
+                self.phase_total = total
+            text = self.phase_detail
+            index_ = self.phase_index
+            total_ = self.phase_total
+            phase = self.phase
+        self._fire_phase_cb(phase, text, index_, total_)
+
+    async def enter_flood(self, seconds, where):
+        """服务器限速等待：切 flood_wait 并每秒倒计时；等待可被打断——
+        feeder 路径依赖任务 cancel（CancelledError 上抛），download 路径
+        每轮探测进入时捕获的本路 flood_probe（返回控制异常类即抛出，
+        沿用 P/R/S 语义；捕获而非每轮读槽：并行期他路 worker 的
+        装卸不再串槽）。正常醒后由调用方调 leave_flood() 回原阶段。"""
+        async with self.lock:
+            self._phase_before_flood = self.phase
+            self.phase = "flood_wait"
+            self.phase_detail = phase_text("flood_wait", f"等待 {seconds}s")
+            self.phase_total = seconds
+            self.phase_index = seconds
+            self.phase_entered = time.monotonic()
+            text = self.phase_detail
+            index_ = self.phase_index
+            total_ = self.phase_total
+            probe = self.flood_probe      # 进入时捕获本路探测（T49 缺口 C）
+        self._fire_phase_cb("flood_wait", text, index_, total_)
+        remaining = int(seconds)
+        try:
+            while remaining > 0:
+                await asyncio.sleep(min(1.0, remaining))
+                remaining -= 1
+                if probe is not None:
+                    tripped = probe()
+                    if tripped is not None:
+                        raise tripped  # PauseFile/RemoveFile/SkipFile/CancelledError
+                if remaining > 0:
+                    await self.tick_phase(detail=f"等待 {remaining}s",
+                                          index=remaining, total=seconds)
+            # 归零：最后一帧倒计时为 0
+            await self.tick_phase(detail="等待 0s", index=0, total=seconds)
+        except BaseException:
+            # 等待被打断（探测命中 P/R/S/abort，或任务被 cancel）：先把
+            # 阶段还原到进入 flood 前的阶段再上抛——控制语义不变，且终态
+            # 收口不会从 flood_wait 走出非法转移。
+            back = self._phase_before_flood
+            if back and back not in PHASE_TERMINAL:
+                try:
+                    await self.leave_flood()
+                except Exception:
+                    pass
+            raise
+
+    async def leave_flood(self):
+        """FloodWait 正常醒后回原阶段（非法路径保持不动）。"""
+        async with self.lock:
+            back = self._phase_before_flood
+            self._phase_before_flood = None
+            if not back or not phase_transition_ok(self.phase, back):
+                return
+            self.phase = back
+            self.phase_detail = PHASE_LABELS[back]
+            self.phase_entered = time.monotonic()
+            text = self.phase_detail
+            index_ = self.phase_index
+            total_ = self.phase_total
+        self._fire_phase_cb(back, text, index_, total_)
 
     def snapshot_json(self):
         """当前状态的可序列化快照（GUI 轮询/推送用）"""
@@ -1551,6 +1747,11 @@ class Monitor:
             "fetched": self.fetched,
             "fetch_total": self.fetch_total,
             "fetch_note": self.fetch_note,
+            # T49 纯增 4 键（旧消费方零破坏；绝不进任务 JSON）
+            "phase": self.phase,
+            "phase_detail": self.phase_detail,
+            "phase_index": self.phase_index,
+            "phase_total": self.phase_total,
             "counts": {"done": snap["done"], "fail": snap["fail"],
                        "skip": snap["skip"], "paused": snap["paused"],
                        "active": len(snap["active"])},
@@ -1764,6 +1965,10 @@ class Monitor:
                 f" {self.title}   模式:{mode}  已用 {human_secs(el)}", w
             ),
             trunc_width(
+                f" 阶段：{self.phase_detail}  （{human_secs(now - self.phase_entered)}）",
+                w
+            ),
+            trunc_width(
                 f" 并发 {self.parallel} 路 | 进行中 {len(snap['active'])} | "
                 f"完成 {snap['done']} 失败 {snap['fail']} 跳过 {snap['skip']} "
                 f"暂停 {snap['paused']}",
@@ -1774,7 +1979,8 @@ class Monitor:
         footer = [
             "-" * w,
             trunc_width(
-                f" 总进度 {snap['total_bytes']/(snap['total_tot'] or 1)*100:5.1f}%  "
+                f" [{PHASE_LABELS.get(self.phase, self.phase)}] "
+                f"总进度 {snap['total_bytes']/(snap['total_tot'] or 1)*100:5.1f}%  "
                 f"{human(snap['total_bytes'])}/{human(snap['total_tot'])}", w
             ),
             trunc_width(
@@ -1973,6 +2179,48 @@ async def simple_download(client, item, target, ctl, state=None):
     await asyncio.wait_for(pump(), timeout=1800)
 
 
+async def refresh_record(client, sess, item):
+    """file_reference 过期刷新：按条目来源重取该条消息并**原地**更新
+    item/rec 的 msg/doc/size（sess.records 与队列中的是同一对象引用），
+    任务清单持久条目 size 同步（make_task_item 字段集不变，无 phase 键）。
+    消息已删除/无文档按确定性错误抛 RuntimeError。返回新 msg。"""
+    task = sess.task
+    src = item.get("src", SRC_CHANNEL)
+    key = (src, item["msg"].id)
+    ent = sess.entities.get(src)
+    if ent is None:
+        chan = await client.get_entity(task["channel"])
+        if src == SRC_CHANNEL:
+            ent = chan
+        else:
+            ent = await get_discuss_entity(client, chan)
+            if ent is None:
+                raise RuntimeError("评论组不可用，无法刷新引用")
+        sess.entities[src] = ent
+    m = await client.get_messages(ent, ids=item["msg"].id)
+    if isinstance(m, list):
+        m = m[0] if m else None
+    if m is None or not getattr(m, "document", None):
+        raise RuntimeError(f"#{item['msg'].id} 消息已删除或无文档")
+    new_size = getattr(m.document, "size", 0) or item["size"]
+    item["msg"] = m
+    item["doc"] = m.document
+    item["size"] = new_size
+    rec = sess.records.get(key)
+    if rec is not None and rec is not item:
+        rec["msg"] = m
+        rec["doc"] = m.document
+        rec["size"] = new_size
+    mon = getattr(sess, "mon", None)
+    if mon is not None:
+        await mon.fill(item)
+    ti = find_item(task, key)
+    if ti is not None and new_size and ti.get("size") != new_size:
+        ti["size"] = new_size
+        save_task(task)
+    return m
+
+
 async def download_one(client, item, target, ctl, state=None):
     """返回 ok / skipped / skip-exists / paused / removed / ('fail', reason)"""
     size = item["size"]
@@ -2029,10 +2277,55 @@ async def download_one(client, item, target, ctl, state=None):
                 except OSError:
                     pass
             return "skipped"
+        except FileReferenceExpiredError:
+            # 文件引用过期（T49）：刷新后重试，不计入 3/6/12 退避次数；
+            # 刷新失败回 downloading 并按普通异常分类退避（文案透传）。
+            sess = (state or {}).get("session")
+            if mon:
+                await mon.set_phase("refreshing", f"#{item['msg'].id}")
+            try:
+                if sess is None:
+                    raise RuntimeError("会话缺失，无法刷新文件引用")
+                await refresh_record(client, sess, item)
+            except Exception as rexc:
+                if mon:
+                    await mon.set_phase(
+                        "downloading",
+                        f"引用刷新失败 {type(rexc).__name__}")
+                raise
+            if mon:
+                await mon.set_phase("downloading", "引用已刷新")
         except FloodWaitError as e:
             if mon:
                 await mon.error(key, f"限速等待 {e.seconds}s")
-            await asyncio.sleep(e.seconds + 1)
+            if mon:
+                # T49 缺口 C 收口：等待期探测命中的控制异常（P/R/S）在
+                # enter_flood 内上抛，不会落进本 try 的兄弟 except——
+                # 必须在此按顶层同语义分类，否则会被 worker 误判为致命
+                # 错误（限速等待中按键会把整个任务打成 error）。
+                # CancelledError（会话 abort）不在此捕获，穿出由 schedule
+                # 收场（现行取消语义）。
+                try:
+                    await mon.enter_flood(e.seconds, "downloading")
+                except PauseFile:
+                    if os.path.exists(target) and (
+                            not size or os.path.getsize(target) != size):
+                        try:
+                            os.remove(target)
+                        except OSError:
+                            pass
+                    return "paused"
+                except (RemoveFile, SkipFile) as ce:
+                    for p in glob.glob(target + ".dl*"):
+                        try:
+                            os.remove(p)
+                        except OSError:
+                            pass
+                    return "removed" if isinstance(ce, RemoveFile) \
+                        else "skipped"
+                await mon.leave_flood()
+            else:
+                await asyncio.sleep(e.seconds + 1)
         except Exception as e:
             if attempt == RETRIES - 1:
                 reason = f"{type(e).__name__}: {str(e)[:100]}"
@@ -2072,7 +2365,16 @@ def save_task(task):
     tmp = str(path) + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(task, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    # Windows：目标文件被并发读（server 轮询/任务库渲染正打开同一 json）
+    # 时 os.replace 报拒绝访问；短退避重试即可恢复，用尽仍失败才上抛。
+    for _try in range(12):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if _try == 11:
+                raise
+            time.sleep(0.025)
 
 
 def load_tasks():
@@ -2089,6 +2391,25 @@ def load_tasks():
             pass
     out.sort(key=lambda t: t.get("id", ""), reverse=True)
     return out
+
+
+def load_task(task_id):
+    """按 id 直读单个任务清单（T49 热路径）：语义等同
+    load_tasks() 后按 id 取那一条，但避开"每点一次继续就全目录解析
+    所有任务 JSON"——300 条任务单文件约 66KB，Windows Defender
+    实时扫描下全目录扫描实测 p50 117ms/p90 140ms，会把 preparing
+    占位推出 ≤200ms 预算。坏文件/不存在返回 None（与 load_tasks
+    跳过坏文件一致）；basename 约束防 id 穿越目录。"""
+    if not task_id or pathlib.Path(task_id).name != str(task_id):
+        return None
+    path = TASK_ROOT / f"{task_id}.json"
+    try:
+        t = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if t.get("id") and isinstance(t.get("items"), list):
+        return t
+    return None
 
 
 def delete_task(task):
@@ -2487,36 +2808,111 @@ class DownloadSession:
 # 全部活动会话：task_id -> DownloadSession（不同任务独立，可并行）
 ACTIVE_SESSIONS = {}
 
+# T49 终态墓碑：task_id -> (终态快照 dict, monotonic 时刻)。
+# 会话结束后 3 秒内轮询（active_states）仍可见终态快照，前端能展示
+# "完成/已中止/失败"；open 同 id 新会话时无条件清除（中止后立即可再继续）。
+# 墓碑是只读快照，不参与控制（abort/item_action 仍只认 live 会话）。
+SESSION_TOMBSTONES = {}
+SESSION_TOMBSTONE_TTL = 3.0
+
 
 def active_states():
-    return [s.state() for s in ACTIVE_SESSIONS.values()]
+    """live 会话快照 + 未过期墓碑快照；同 task_id 以 live 为准。"""
+    now = time.monotonic()
+    for tid in [k for k, (_st, ts) in SESSION_TOMBSTONES.items()
+                if now - ts > SESSION_TOMBSTONE_TTL]:
+        SESSION_TOMBSTONES.pop(tid, None)
+    out = [s.state() for s in ACTIVE_SESSIONS.values()]
+    for tid, (st, _ts) in SESSION_TOMBSTONES.items():
+        if tid not in ACTIVE_SESSIONS:
+            out.append(st)
+    return out
 
 
 def any_active():
-    return bool(ACTIVE_SESSIONS)
+    return bool(ACTIVE_SESSIONS)     # 只数 live（退出提示语义不变）
 
 
 def _rec_key(it):
     return (it.get("src", SRC_CHANNEL), it["msg"].id)
 
 
-async def execute_downloads(client, task, todo, parallel, gui=None,
-                           lazy_statuses=None):
-    """下载 todo（含消息对象的记录），每完成一个就把状态写回任务清单。
+def build_planned(task, todo, lazy_statuses):
+    """占位计划（全部待处理条目）纯函数，无 IO：Monitor 与磁盘估算都
+    基于它，不依赖真实 Message 对象。lazy_statuses 非空从任务清单算
+    （零网络），否则从 todo（记录已在内存）算。"""
+    if lazy_statuses is not None:
+        return [{
+            "mid": ti["msg"], "src": ti.get("src", SRC_CHANNEL),
+            "size": ti["size"], "name": ti["name"],
+            "date": ti.get("date", ""),
+        } for ti in task["items"] if ti["status"] in lazy_statuses]
+    return [{
+        "mid": it["msg"].id, "src": it.get("src", SRC_CHANNEL),
+        "size": it["size"], "name": it["name"],
+        "date": (f"{it['msg'].date:%Y-%m-%d}" if it["msg"].date else ""),
+    } for it in todo]
 
-    - 已完成/已存在的成品：download_one 内部按大小跳过，不重下
-    - 下到一半的：.dl + .partN.done 分片级续传，只下没下完的分片
-    - 暂停：立即停在断点并释放槽位，队列里下一个视频马上开始，可随时恢复
-    - 关机/强杀：清单里仍为 pending 的，重启继续即可
-    gui 非空：GUI 模式（无控制台按键/无交互输入），控制走 DownloadSession。
-    lazy_statuses 非空：边读边下模式（todo 可为空），按状态筛选清单，
-    消息分批从服务器拉取，取到即排队开下，不再一次性等完全部消息。
-    """
+
+async def open_download_session(client, task, planned, parallel, *, gui=None,
+                                lazy_statuses=None, phase_cb=None):
+    """纯内存打开下载会话（T49）：构造 Monitor/DownloadSession 并以
+    preparing 阶段注册进 ACTIVE_SESSIONS——不做任何磁盘/网络/阻塞
+    调用，GUI 点"继续"后轮询立刻可见 preparing（≤200ms 预算的关键）。
+
+    - task_id 已有 live 会话：打印既有提示并返回 None（调用方收口）。
+    - 同 id 墓碑无条件清除后重建（中止后可立即再继续，不等 TTL）。
+    - phase_cb：6 参契约 (task_id, phase, detail, index, total, snap)，
+      内部包装成 Monitor 的 4 参 phase_cb；回调异常只记不抛。
+    返回 sess（已置 preparing 并注册）。"""
     if task["id"] in ACTIVE_SESSIONS:
         print("[!] 该任务已有下载会话，忽略重复启动")
-        return
+        return None
+    SESSION_TOMBSTONES.pop(task["id"], None)
+    loop = asyncio.get_running_loop()
+    mon = Monitor(
+        planned, parallel,
+        task.get("channel_title", task.get("channel", "")), False,
+    )
+    sess = DownloadSession(task, mon, loop)
+    sess.resume_q = collections.deque()
+    sess.wake = asyncio.Event()
+    sess.entities = {}            # src -> entity（file_reference 刷新缓存）
+    sess.fatal_error = ""         # worker/feeder 致命错误槽（首条不覆盖）
+    if phase_cb is not None:
+        def _notify(phase, text, index, total, _cb=phase_cb, _s=sess):
+            try:
+                _cb(_s.task_id, phase, text, index, total, _s.state())
+            except Exception:
+                pass
+        mon.phase_cb = _notify
+    await mon.set_phase("preparing")
+    ACTIVE_SESSIONS[task["id"]] = sess
+    return sess
 
+
+async def _close_session(task_id, phase, detail, error=""):
+    """终态收口：终态 set_phase -> 快照入墓碑 -> 摘除 live 会话。"""
+    sess = ACTIVE_SESSIONS.get(task_id)
+    if sess is None:
+        return
+    await sess.mon.set_phase(phase, detail if detail else error)
+    st = sess.state()
+    ACTIVE_SESSIONS.pop(task_id, None)
+    SESSION_TOMBSTONES[task_id] = (st, time.monotonic())
+
+
+async def run_download_session(client, task, sess, *, gui=None,
+                               lazy_statuses=None, do_reconcile=False):
+    """执行已 open 的下载会话（T49）。返回
+    {"status": "done"|"aborted"|"error", "error": str, "counters": {...}}。
+    阶段时序：preparing(open 已置) -> disk_check -> (reconciling) ->
+    fetching(lazy) -> downloading <=> flood_wait/refreshing -> 终态墓碑。"""
+    import collections
+    mon = sess.mon
     folder = pathlib.Path(task["folder"])
+    planned_n = len(mon.entries)
+    counters = {"ok": 0, "skipped": 0, "exists": 0, "fail": 0}
 
     def persist(key, status, error=None):
         ti = find_item(task, key)
@@ -2529,86 +2925,109 @@ async def execute_downloads(client, task, todo, parallel, gui=None,
             ti.pop("error", None)
         save_task(task)
 
-    # 占位计划（全部待处理条目）：Monitor 与磁盘估算都基于它，
-    # 不依赖真实 Message 对象
-    if lazy_statuses is not None:
-        planned = [{
-            "mid": ti["msg"], "src": ti.get("src", SRC_CHANNEL),
-            "size": ti["size"], "name": ti["name"],
-            "date": ti.get("date", ""),
-        } for ti in task["items"] if ti["status"] in lazy_statuses]
-    else:
-        planned = [{
-            "mid": it["msg"].id, "src": it.get("src", SRC_CHANNEL),
-            "size": it["size"], "name": it["name"],
-            "date": (f"{it['msg'].date:%Y-%m-%d}" if it["msg"].date else ""),
-        } for it in todo]
+    # ---- b. TUI 按键/显示任务（照现状创建：keys.start() 延后到磁盘
+    #      y/N 询问之后——msvcrt 与 input 同抢控制台输入会把用户的
+    #      应答字符吞掉导致误判取消，现状语义必须保留） ----
+    vt = False if gui is not None else enable_vt()
+    mon.vt = vt
+    keys = KeyWatch()
 
-    print(f"\n本次处理 {len(planned)} 个；保存目录：{folder}")
-
-    # 磁盘空间检查（按待下视频总大小粗估，含已部分下载的，偏保守）
-    need = sum(p["size"] for p in planned)
+    # ---- c. disk_check ----
+    need = sum(e["total"] for e in mon.entries)
     free = shutil.disk_usage(str(folder)).free
+    await mon.set_phase(
+        "disk_check", f"需要约 {human(need)}，剩余 {human(free)}",
+        index=0, total=planned_n)
+    print(f"\n本次处理 {planned_n} 个；保存目录：{folder}")
     if need > free:
         if gui is not None:
-            print("[GUI] 磁盘空间不足，未开始下载")
-            return
+            # GUI：不询问，直接终态失败（错误文案透传，不再静默 return）
+            err = f"磁盘空间不足：需要约 {human(need)}，仅剩 {human(free)}"
+            await _close_session(task["id"], "error", err)
+            print(f"[GUI] 下载结束：error 磁盘空间不足 aborted=False")
+            return {"status": "error", "error": err, "counters": counters}
         print(f"!! 磁盘空间不足：需要约 {human(need)}，仅剩 {human(free)}")
         if input("仍要开始下载吗？（y=继续，其他=取消）：").strip().lower() != "y":
             print("已取消")
-            return
+            await _close_session(task["id"], "aborted", "已取消")
+            return {"status": "aborted", "error": "", "counters": counters}
 
-    vt = False if gui is not None else enable_vt()
-    keys = KeyWatch()
+    # ---- d. reconciling（仅显式 do_reconcile=True；GUI 永不传，
+    #      TUI 生产入口也不传，对账时机仍是 task_menu 入口） ----
+    if do_reconcile:
+        changed = reconcile_task(task)
+        if changed > 0:
+            save_task(task)
+            await mon.set_phase("reconciling", f"重置 {changed} 条缺失记录")
+
+    # 磁盘检查的交互输入结束后再启动按键监听（现状语义）
     if gui is None:
         keys.start()
-    mon = Monitor(
-        planned, parallel,
-        task.get("channel_title", task.get("channel", "")), vt
-    )
-
-    import collections
-    counters = {"ok": 0, "skipped": 0, "exists": 0, "fail": 0}
-
-    loop = asyncio.get_running_loop()
-    sess = DownloadSession(task, mon, loop)
-    sess.resume_q = collections.deque()
-    sess.wake = asyncio.Event()
-    ACTIVE_SESSIONS[task["id"]] = sess
 
     feeder_task = None
     feeder_done = lazy_statuses is None
 
+    # ---- e. fetching（边读边下） / f. downloading（非 lazy 直接入队） ----
     if lazy_statuses is None:
-        # 常规模式：记录已在内存，直接全部入队
+        # 常规模式：记录已在内存（调用方经 sess.queue_source 传入），直接全部入队
+        todo = getattr(sess, "queue_source", None) or []
         sess.records = {_rec_key(it): it for it in todo}
         sess.queue = collections.deque(todo)
+
         async def _prefill():
             for it in todo:
                 await mon.fill(it)
         await _prefill()
+        # T49 缺口 A：非 lazy 全程此前停在 disk_check，终态 done 会被转移表
+        # 拒绝；_prefill 后立即切 downloading（disk_check→downloading 合法），
+        # 空清单时也给出明确细节。
+        await mon.set_phase(
+            "downloading", "" if todo else "没有可下载条目")
     else:
         # 边读边下：后台分批拉取，取到一批补占位信息并立即入队
         mon.fetching = True
+        await mon.set_phase("fetching", "", index=0, total=mon.fetch_total)
+
+        async def _tick_fetch(done, total):
+            # 执行时再查：FloodWait 分支先调 _progress 再 enter_flood，
+            # 排队时 phase 仍是 fetching；flood 期间组头归 enter_flood
+            # 倒计时独占，跳过本帧批进度 tick——否则首帧"等待 Ns"会在
+            # 下一轮事件循环被"已取 N 条"覆盖（倒计时 2s→1s 首跳丢失）。
+            if mon.phase != "flood_wait":
+                await mon.tick_phase(detail=f"已取 {done}/{total} 条",
+                                     index=done, total=total)
 
         def _progress(done, total, note=None):
             asyncio.ensure_future(
                 mon.set_fetch(done, total, note or "", fetching=True))
+            asyncio.ensure_future(_tick_fetch(done, total))
             if gui is None and note:
                 print("  " + note)
 
         async def _feed():
             nonlocal feeder_done
+            first_batch = True
             try:
                 async for rec in pull_records(
-                    client, task, lazy_statuses, progress=_progress
+                    client, task, lazy_statuses, progress=_progress,
+                    mon=mon,
                 ):
                     await mon.fill(rec)
                     sess.records[_rec_key(rec)] = rec
                     sess.queue.append(rec)
                     sess.wake.set()
+                    if first_batch:
+                        first_batch = False
+                        await mon.set_phase(
+                            "downloading",
+                            f"已取 {mon.fetched} 条，开始下载")
+            except asyncio.CancelledError:
+                raise
             except Exception as ex:
-                print(f"[!] 读取消息信息失败：{type(ex).__name__}: {ex}")
+                sess.fatal_error = (sess.fatal_error or
+                                    f"读取消息信息失败："
+                                    f"{type(ex).__name__}: {ex}")
+                print(f"[!] {sess.fatal_error}")
             finally:
                 feeder_done = True
                 await mon.set_fetch(mon.fetched, mon.fetch_total,
@@ -2649,13 +3068,27 @@ async def execute_downloads(client, task, todo, parallel, gui=None,
 
             ctl = ItemCtl(key)
             sess.ctls[key] = ctl
+            # flood_wait 等待期中止探测（T49 缺口 C）：本 worker 只安装
+            # 探本条 ctl 的闭包（会话 abort 视作等效取消，CancelledError
+            # 穿出 worker 由 schedule 收场）；download_one 结束后恢复进入
+            # 前的槽值——后起的 worker 不再覆盖他路探测（enter_flood 在
+            # 进入时捕获本路探测，捕获与还原顺序无关）。
+            saved_probe = mon.flood_probe
+            mon.flood_probe = (
+                lambda ctl=ctl, sess=sess:
+                ctl.tripped()
+                or (asyncio.CancelledError if sess.abort.is_set() else None)
+            )
             # 记录实际走的下载路径，暂停后恢复才能决定是否保留字节
             it["_mode"] = "parallel" if it["size"] > 4 * 1024 * 1024 \
                 else "simple"
-            r = await download_one(
-                client, it, str(folder / it["name"]), ctl,
-                state={"monitor": mon},
-            )
+            try:
+                r = await download_one(
+                    client, it, str(folder / it["name"]), ctl,
+                    state={"monitor": mon, "session": sess},
+                )
+            finally:
+                mon.flood_probe = saved_probe
 
             err = None
             if isinstance(r, tuple):
@@ -2678,13 +3111,16 @@ async def execute_downloads(client, task, todo, parallel, gui=None,
         except asyncio.CancelledError:
             raise
         except Exception as ex:
-            print(f"[!] worker 异常：{type(ex).__name__}: {ex}")
+            msg = f"worker 异常：{type(ex).__name__}: {ex}"
+            print(f"[!] {msg}")
+            if not sess.fatal_error:
+                sess.fatal_error = msg      # 致命错误槽：首条不覆盖
         finally:
             sess.ctls.pop(key, None)
             sem.release()
             sess.wake.set()
 
-    sem = asyncio.Semaphore(parallel)
+    sem = asyncio.Semaphore(mon.parallel)   # 并发路数以 Monitor 为单一来源
 
     async def schedule():
         while True:
@@ -2752,9 +3188,38 @@ async def execute_downloads(client, task, todo, parallel, gui=None,
         None if gui is not None
         else asyncio.create_task(mon.display_loop(keys))
     )
+
+    # T49 阶段心跳：0.5s 节拍；fetching 每满 1s tick（距上一批 >2s 追加
+    # 等待文案）、refreshing 停留 >1s 追加已用秒数；downloading/disk_check/
+    # preparing 不强制（TR-49.1 分类断言）；flood_wait 由 enter_flood 倒计时。
+    async def phase_heartbeat():
+        last_tick = time.monotonic()
+        while True:
+            await asyncio.sleep(0.5)
+            ph = mon.phase
+            if ph in PHASE_TERMINAL:
+                return
+            now = time.monotonic()
+            if ph == "fetching":
+                if now - last_tick >= 1.0:
+                    last_tick = now
+                    idle = now - mon._last_fetch_ts
+                    d = f"已取 {mon.fetched}/{mon.fetch_total} 条"
+                    if idle > 2.0:
+                        d += f" · 等待服务器 {int(idle)}s"
+                    await mon.tick_phase(detail=d, index=mon.fetched,
+                                         total=mon.fetch_total)
+            elif ph == "refreshing":
+                if now - mon.phase_entered > 1.0:
+                    await mon.tick_phase(
+                        detail=(f"{mon._refresh_note} · "
+                                f"已用 {int(now - mon.phase_entered)}s"))
+    heartbeat = asyncio.create_task(phase_heartbeat())
+
     try:
         await schedule()
     finally:
+        heartbeat.cancel()
         keys.stop()
         if translate is not None:
             translate.cancel()
@@ -2762,14 +3227,23 @@ async def execute_downloads(client, task, todo, parallel, gui=None,
             await asyncio.sleep(0.5)   # 让面板定格在最终状态
             display.cancel()
 
-    ACTIVE_SESSIONS.pop(task["id"], None)
+    # ---- i. 收尾判定 + 终态墓碑 ----
+    if sess.abort.is_set():
+        status, detail = "aborted", "未完成视频可随时继续"
+    elif sess.fatal_error:
+        status, detail = "error", sess.fatal_error
+    else:
+        status, detail = "done", ""
+    await _close_session(task["id"], status, detail)
 
     if gui is not None:
         # GUI 模式：仅打印技术日志，界面自行刷新任务状态
         c = task_counts(task)
         print(f"[GUI] 下载结束：{c['finished']}/{c['total']}，"
-              f"aborted={sess.abort.is_set()}")
-        return
+              f"status={status} aborted={sess.abort.is_set()}")
+        return {"status": status,
+                "error": (sess.fatal_error if status == "error" else ""),
+                "counters": counters}
 
     # 收尾：清掉面板，打印纯文本汇总
     if vt:
@@ -2789,13 +3263,67 @@ async def execute_downloads(client, task, todo, parallel, gui=None,
         bits.append(f"失败 {c['failed']}")
     if sess.abort.is_set():
         bits.append("已中止（未完成视频可随时继续）")
+    if status == "error":
+        # 错误文案醒目（RED；管道下 USE_COLOR=False 时退化为纯文本）
+        bits.append(paint(f"发生错误：{sess.fatal_error}", RED))
     tail = "，" + "，".join(bits) if bits else ""
     print(f"任务总进度：{c['finished']}/{c['total']} 完成{tail}")
     print(f"保存位置：{folder}")
     print("=" * 50)
+    return {"status": status,
+            "error": (sess.fatal_error if status == "error" else ""),
+            "counters": counters}
 
 
-async def pull_records(client, task, statuses, progress=None):
+def _tui_phase_cb():
+    """TUI 默认阶段回调（§3.8）：进入每阶段 print 一行（paint 着色，
+    文案即 phase_text 产物，与 GUI/WS 全链同源）；flood_wait 倒计时
+    每秒一行递减。GUI 模式不安装（无控制台输出面板）。
+    签名为 open_download_session 的 6 参 phase_cb 契约（snap 不消费）。"""
+    last = [None]
+
+    def cb(task_id, phase, detail, index, total, snap=None):
+        if phase != last[0] or phase == "flood_wait":
+            last[0] = phase
+            print(paint(f"〔{detail}〕", CYAN))
+
+    return cb
+
+
+async def execute_downloads(client, task, todo, parallel, gui=None,
+                            lazy_statuses=None):
+    """下载 todo（含消息对象的记录），每完成一个就把状态写回任务清单。
+
+    T49 起为薄包装：build_planned -> open_download_session ->
+    run_download_session（同一下载内核，GUI/TUI 无第二套循环）。
+    返回 {"status": "done"|"aborted"|"error", "error": str,
+    "counters": {...}}；重复启动返回 aborted 等价语义（TUI 行为不变）。
+
+    - 已完成/已存在的成品：download_one 内部按大小跳过，不重下
+    - 下到一半的：.dl + .partN.done 分片级续传，只下没下完的分片
+    - 暂停：立即停在断点并释放槽位，队列里下一个视频马上开始，可随时恢复
+    - 关机/强杀：清单里仍为 pending 的，重启继续即可
+    gui 非空：GUI 模式（无控制台按键/无交互输入），控制走 DownloadSession。
+    lazy_statuses 非空：边读边下模式（todo 可为空），按状态筛选清单，
+    消息分批从服务器拉取，取到即排队开下，不再一次性等完全部消息。
+    """
+    planned = build_planned(task, todo, lazy_statuses)
+    phase_cb = _tui_phase_cb() if gui is None else None
+    sess = await open_download_session(
+        client, task, planned, parallel, gui=gui,
+        lazy_statuses=lazy_statuses, phase_cb=phase_cb,
+    )
+    if sess is None:
+        return {"status": "aborted",
+                "error": "该任务已有下载会话，忽略重复启动",
+                "counters": {}}
+    sess.queue_source = todo        # 非 lazy 模式的内存记录（run 入队用）
+    return await run_download_session(
+        client, task, sess, gui=gui, lazy_statuses=lazy_statuses,
+    )
+
+
+async def pull_records(client, task, statuses, progress=None, mon=None):
     """续传/重试专用的分批拉取生成器：按清单消息ID逐批从服务器取消息，
     每取完一批就 yield 该批记录（保持清单顺序），供"边读边下"使用——
     不必等全部消息取完才开始下载（大清单在网络抖动/限流时可达十几分钟）。
@@ -2803,6 +3331,8 @@ async def pull_records(client, task, statuses, progress=None):
     - 服务器上已删除/不可访问的条目标记 failed，不出现在结果里
     - 单批失败自动重试（连接错误退避；FloodWait 按服务器要求等待）
     progress(done, total, note=None)：每批结束回调（TUI/GUI 展示进度）
+    mon：T49 传入时 FloodWait 走 mon.enter_flood（阶段可见+倒计时+
+    取消跟随 feeder 任务）；缺省保持旧行为（纯 sleep）。
     """
     entity = await client.get_entity(task["channel"])
     wanted = [ti for ti in task["items"] if ti["status"] in statuses]
@@ -2827,7 +3357,11 @@ async def pull_records(client, task, statuses, progress=None):
                     if progress:
                         progress(0, len(wanted),
                                  f"服务器限流，等待 {e.seconds}s …")
-                    await asyncio.sleep(e.seconds + 1)
+                    if mon is not None:
+                        await mon.enter_flood(e.seconds, "fetching")
+                        await mon.leave_flood()
+                    else:
+                        await asyncio.sleep(e.seconds + 1)
                 except Exception:
                     if attempt == 3:
                         raise
@@ -3107,8 +3641,10 @@ async def resume_flow(client, task, statuses):
 
     print(f"\n开始下载：共 {n_sel} 个视频，将分批从服务器核对信息，"
           f"读到即下 …")
-    await execute_downloads(client, task, [], parallel,
-                           lazy_statuses=statuses)
+    result = await execute_downloads(client, task, [], parallel,
+                                     lazy_statuses=statuses)
+    if isinstance(result, dict) and result.get("status") == "error":
+        print(paint(f" 下载失败：{result.get('error', '')}", RED))
     pause()
 
 
@@ -3746,7 +4282,9 @@ async def new_task_flow(client, args=None):
     first = tasks[0]
     first_ids = {it["msg"] for it in first["items"]}
     first_todo = [r for r in todo if r["msg"].id in first_ids]
-    await execute_downloads(client, first, first_todo, parallel)
+    result = await execute_downloads(client, first, first_todo, parallel)
+    if isinstance(result, dict) and result.get("status") == "error":
+        print(paint(f" 下载失败：{result.get('error', '')}", RED))
     if not args:
         pause()
 
