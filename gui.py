@@ -12,6 +12,7 @@ import base64
 import ctypes
 import io
 import json
+import logging
 import os
 import pathlib
 import queue
@@ -19,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 
 import host
 
@@ -64,6 +66,219 @@ class EngineLoop:
         return fut.result()
 
 
+# ============================================================
+# T45 作业模型（JobRegistry）：进程内内存作业表，不持久化。
+#
+# 契约（钉死，下游任务 T46+ 不得改）：
+#   job 字段集 {job_id, kind, state, phase, phase_detail, done, total,
+#     bytes_done, bytes_total, error, created_ts, updated_ts}；
+#   state 枚举 queued|running|done|error|cancelled，终态不可变；
+#   job_update 事件 payload 即完整 job 对象（根即 job，不再包 data）；
+#   节流：state 突变必发；running 常态更新间隔 >=0.30s，尾帧 <=0.60s 必达。
+# 线程安全：EngineLoop 线程、uvicorn to_thread 工作线程、作业 daemon
+# 线程都会访问，内部一把锁保护全部状态。
+# ============================================================
+_job_log = logging.getLogger("gui.jobs")
+
+
+class JobRegistry:
+    """线程安全的作业注册表：创建/更新/取消/快照，并按节流规则外发 job_update。"""
+
+    STATES = frozenset({"queued", "running", "done", "error", "cancelled"})
+    TERMINAL = frozenset({"done", "error", "cancelled"})
+    # 合法流转：queued->running->终态、queued/running->cancelled；其余拒绝
+    _TRANSITIONS = {
+        "queued": frozenset({"running", "cancelled"}),
+        "running": frozenset({"done", "error", "cancelled"}),
+        "done": frozenset(),
+        "error": frozenset(),
+        "cancelled": frozenset(),
+    }
+    # update() 允许变更的字段（其余字段一律拒绝合并）
+    _MUTABLE = frozenset({
+        "state", "phase", "phase_detail", "done", "total",
+        "bytes_done", "bytes_total", "error",
+    })
+    THROTTLE_SECS = 0.30      # running 常态更新最小发送间隔
+
+    def __init__(self, sink=None):
+        # sink(name:str, params:list) -> None；None 时推送为 no-op。
+        # sink 允许延迟绑定（闭包运行时读取），适配“先建 Api、后注入 push_event”
+        # 的启动顺序。
+        self._sink = sink
+        self._lock = threading.Lock()
+        self._jobs = {}        # job_id -> job dict（12 字段齐全）
+        self._events = {}      # job_id -> threading.Event（取消信号）
+        self._cancelable = {}  # job_id -> bool
+        self._last_emit = {}   # job_id -> float（上次 job_update 发送时刻）
+        self._timers = {}      # job_id -> threading.Timer（节流尾帧）
+        self._emit_errors = 0  # sink 异常计数（绝不向上抛）
+
+    # ---------- 创建 / 更新 / 取消 ----------
+    def create(self, kind, cancelable=True):
+        """新建 queued 作业并入表，立即强制外发首帧 job_update。
+        返回 (job_id, cancel_event)。"""
+        job_id = "j_" + uuid.uuid4().hex[:16]
+        now = time.time()
+        job = {
+            "job_id": job_id,
+            "kind": str(kind),
+            "state": "queued",
+            "phase": "",
+            "phase_detail": "",
+            "done": 0,
+            "total": 0,
+            "bytes_done": 0,
+            "bytes_total": 0,
+            "error": "",
+            "created_ts": now,
+            "updated_ts": now,
+        }
+        ev = threading.Event()
+        with self._lock:
+            self._jobs[job_id] = job
+            self._events[job_id] = ev
+            self._cancelable[job_id] = bool(cancelable)
+            self._last_emit[job_id] = now
+            payload = dict(job)
+        self._emit(payload)
+        return job_id, ev
+
+    def update(self, job_id, force=False, **fields):
+        """合并允许变更的字段并按节流规则外发。
+        未知 job / 终态 job / 非法流转：静默忽略并返回 False，不抛异常。"""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return False
+            if job["state"] in self.TERMINAL:
+                return False   # 终态不可变
+            bad = [k for k in fields if k not in self._MUTABLE]
+            if bad:
+                _job_log.warning("job %s update 忽略非法字段：%s", job_id, bad)
+            new_state = fields.get("state")
+            if new_state is not None:
+                if new_state not in self.STATES:
+                    _job_log.warning("job %s 未知 state：%r", job_id, new_state)
+                    return False
+                if (new_state != job["state"]
+                        and new_state not in self._TRANSITIONS[job["state"]]):
+                    _job_log.warning(
+                        "job %s 非法流转 %s -> %s，已忽略",
+                        job_id, job["state"], new_state)
+                    return False
+            old_state = job["state"]
+            for k, v in fields.items():
+                if k in self._MUTABLE:
+                    job[k] = v
+            # updated_ts 强制严格递增：worker 末 tick 与终态 update 可能仅隔
+            # 数微秒，float 墙钟在 epoch 量级精度 ~0.5μs，两帧可能同值——若
+            # 相等，前端按契约“同等更新不重写”会把终态帧丢掉。单调递增
+            # 保证每个突变帧都可被 updated_ts 区分（最多领先真实墙钟 1ms）。
+            now = time.time()
+            if now <= job["updated_ts"]:
+                now = job["updated_ts"] + 0.001
+            job["updated_ts"] = now
+            state_changed = (new_state is not None and new_state != old_state)
+            payload = None
+            if state_changed or force:
+                # 突变必发；终态/新帧直发时取消待发尾帧
+                self._cancel_tail_locked(job_id)
+                self._last_emit[job_id] = now
+                payload = dict(job)
+            else:
+                elapsed = now - self._last_emit.get(job_id, 0.0)
+                if elapsed >= self.THROTTLE_SECS:
+                    self._cancel_tail_locked(job_id)
+                    self._last_emit[job_id] = now
+                    payload = dict(job)
+                else:
+                    # 节流：安排尾帧，距上次发送满节流窗口即发最新值
+                    self._schedule_tail_locked(job_id,
+                                               self.THROTTLE_SECS - elapsed)
+        if payload is not None:
+            self._emit(payload)
+        return True
+
+    def request_cancel(self, job_id):
+        """返回 "ok" | "unsupported" | "not_found"。
+        取消成功：置 cancel_event、原子改 state=cancelled 并立即强制外发。"""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return "not_found"
+            if (not self._cancelable.get(job_id, False)
+                    or job["state"] in self.TERMINAL):
+                return "unsupported"
+            ev = self._events.get(job_id)
+            if ev is not None:
+                ev.set()
+            job["state"] = "cancelled"
+            now = time.time()
+            if now <= job["updated_ts"]:
+                now = job["updated_ts"] + 0.001   # 同 update：严格单调递增
+            job["updated_ts"] = now
+            self._cancel_tail_locked(job_id)
+            self._last_emit[job_id] = now
+            payload = dict(job)
+        self._emit(payload)
+        return "ok"
+
+    # ---------- 快照 ----------
+    def snapshot(self, job_id):
+        """单作业完整字段 dict 拷贝；未知 id 返回 None。"""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            return dict(job) if job is not None else None
+
+    def snapshots(self):
+        """全部作业的全量快照列表（重连/刷新用，顺序稳定）。"""
+        with self._lock:
+            return [dict(j) for j in self._jobs.values()]
+
+    # ---------- 内部：节流尾帧 / 事件外发 ----------
+    def _cancel_tail_locked(self, job_id):
+        t = self._timers.pop(job_id, None)
+        if t is not None:
+            t.cancel()
+
+    def _schedule_tail_locked(self, job_id, delay):
+        self._cancel_tail_locked(job_id)
+        t = threading.Timer(max(0.0, delay), self._tail_fire, args=(job_id,))
+        t.daemon = True
+        self._timers[job_id] = t
+        t.start()
+
+    def _tail_fire(self, job_id):
+        # 尾帧：节流窗口期满后发送最新值；终态已直发则丢弃。
+        # 竞态保护：距上次发送不足节流窗口时重排而不是早发。
+        with self._lock:
+            self._timers.pop(job_id, None)
+            job = self._jobs.get(job_id)
+            if job is None or job["state"] in self.TERMINAL:
+                return
+            elapsed = time.time() - self._last_emit.get(job_id, 0.0)
+            if elapsed < self.THROTTLE_SECS:
+                self._schedule_tail_locked(job_id,
+                                           self.THROTTLE_SECS - elapsed)
+                return
+            self._last_emit[job_id] = time.time()
+            payload = dict(job)
+        self._emit(payload)
+
+    def _emit(self, payload):
+        """统一外发 job_update：params=[job dict 拷贝]；sink 异常全部吞掉。"""
+        sink = self._sink
+        if sink is None:
+            return
+        try:
+            sink("job_update", [payload])
+        except Exception:  # noqa: BLE001 - sink 异常绝不杀死作业线程
+            self._emit_errors += 1
+            _job_log.warning("job_update 外发失败（累计 %d 次）",
+                             self._emit_errors, exc_info=True)
+
+
 class Api:
     def __init__(self, engine):
         self.engine = engine
@@ -80,6 +295,14 @@ class Api:
         # 实时取光相关（仅 Windows 液态玻璃模式使用）
         self.capture = None
         self._drv = None
+        # T45 作业注册表：sink 闭包延迟读 self.push_event（main 在 L1175 附近
+        # 才注入；注入前推送为 no-op 不报错，注入后自动生效，零额外接线）
+        def _job_sink(name, params):
+            push = self.push_event
+            if push is None:
+                return
+            push(name, params)
+        self.jobs = JobRegistry(sink=_job_sink)
 
     # ---------- 外观模式 ----------
     def get_appearance(self):
@@ -427,6 +650,74 @@ class Api:
 
     def is_active(self):
         return core.any_active()
+
+    # ---------- T45 作业模型（job_state / jobs_state / job_cancel + 测试挂点） ----------
+    def job_state(self, job_id):
+        """单作业快照；未知 id -> {"ok":false,"error":"job_not_found"}。"""
+        job = self.jobs.snapshot(job_id)
+        if job is None:
+            return {"ok": False, "error": "job_not_found"}
+        return {"ok": True, "job": job}
+
+    def jobs_state(self):
+        """全部作业全量快照（重连/刷新补全用）。"""
+        return {"ok": True, "jobs": self.jobs.snapshots()}
+
+    def job_cancel(self, job_id):
+        """取消作业：可取消且非终态 -> ok；否则 unsupported；未知 -> not_found。"""
+        r = self.jobs.request_cancel(job_id)
+        if r == "ok":
+            return {"ok": True}
+        if r == "unsupported":
+            return {"ok": False, "unsupported": True}
+        return {"ok": False, "error": "job_not_found"}
+
+    # ---------- T45 测试挂点（env 门控：TG_T45_TEST_HOOK=1 才进有效白名单） ----------
+    def t45_demo_job(self, duration_ms=3000, steps=10, cancelable=True,
+                     fail=False):
+        """演示作业：立即建 queued job 并起 daemon 线程按 tick 推进，
+        RPC 立即返回 {"ok":true,"job_id":...}（ACK<=300ms）。"""
+        if (isinstance(duration_ms, bool) or not isinstance(duration_ms, int)
+                or not 200 <= duration_ms <= 30000):
+            return {"ok": False, "error": "duration_ms 必须为 200..30000 的整数"}
+        if (isinstance(steps, bool) or not isinstance(steps, int)
+                or not 1 <= steps <= 100):
+            return {"ok": False, "error": "steps 必须为 1..100 的整数"}
+        if not isinstance(cancelable, bool) or not isinstance(fail, bool):
+            return {"ok": False, "error": "cancelable/fail 必须为布尔值"}
+        job_id, cancel_event = self.jobs.create("t45_demo",
+                                                cancelable=cancelable)
+        threading.Thread(
+            target=self._t45_demo_worker,
+            args=(job_id, cancel_event, duration_ms, steps, fail),
+            daemon=True, name="t45-demo-" + job_id,
+        ).start()
+        return {"ok": True, "job_id": job_id}
+
+    def _t45_demo_worker(self, job_id, cancel_event, duration_ms, steps, fail):
+        try:
+            interval = (duration_ms / 1000.0) / steps
+            self.jobs.update(job_id, state="running", phase="t45_demo",
+                             phase_detail="演示作业运行中",
+                             total=steps, bytes_total=steps * 1048576)
+            for i in range(steps):
+                time.sleep(interval)
+                if cancel_event.is_set():
+                    return   # cancelled 终态已由 request_cancel 直发，不得覆写
+                done_n = i + 1
+                if fail and i == steps - 1:
+                    self.jobs.update(
+                        job_id, done=done_n, bytes_done=done_n * 1048576,
+                        state="error", phase="t45_demo",
+                        phase_detail="模拟失败",
+                        error="t45_demo deliberate failure")
+                    return
+                self.jobs.update(job_id, done=done_n,
+                                 bytes_done=done_n * 1048576)
+            self.jobs.update(job_id, state="done", phase="t45_demo",
+                             phase_detail="演示作业完成")
+        except Exception:  # noqa: BLE001 - 测试挂点线程绝不允许带崩进程
+            _job_log.warning("t45_demo worker 异常", exc_info=True)
 
     def get_item_text(self, task_id, src, mid):
         """按需取单条消息原文（轮询快照为省流量不再携带 text）。"""

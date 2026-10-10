@@ -1102,3 +1102,223 @@ window.addEventListener("pywebviewready", async () => {
   await bootAppearance();
   bootLogin();
 });
+
+// ============================================================
+// ===== T45 作业事件总线 / 通用进度组件（开始）=====
+// 契约（钉死）：
+//   - bridge.js 把 job_update/search_items/dl_phase/acct_hint 转发为
+//     window 上的 tg:<name> CustomEvent（detail = payload）；
+//     job_update 的 payload 即完整 job 对象（根即 job）。
+//   - 事件与 HTTP 快照（jobs_state）按 job_id 同键去重：
+//     updated_ts 单调比较合并，旧/同等更新不重渲染、计数不翻倍。
+//   - 既有 active_states()/is_active() setTimeout 轮询保留为降级通道
+//     （上方原逻辑零改动）；本组件的 HTTP 同步独立运行，互不打架。
+//   - 测试探针 window.__tgJobProbe（仅计数/时间戳，无敏感信息；
+//     随 t45_demo_job 测试挂点一并保留，默认不影响生产，待组长裁决）。
+// ============================================================
+const TgBus = (() => {
+  // 包装映射保证 on/off 对称；listener 收到的 detail 即 payload
+  const wrap = new WeakMap();
+  const bus = {
+    on(name, fn) {
+      const w = (ev) => fn(ev.detail);
+      wrap.set(fn, w);
+      window.addEventListener("tg:" + name, w);
+    },
+    off(name, fn) {
+      const w = wrap.get(fn);
+      if (w) window.removeEventListener("tg:" + name, w);
+    },
+    emit(name, detail) {
+      window.dispatchEvent(new CustomEvent("tg:" + name, { detail }));
+    },
+  };
+  return bus;
+})();
+// 契约（钉死）：全局 window.TgBus（顶层 const 不挂 window，需显式暴露）
+window.TgBus = TgBus;
+
+const JOB_STATE_LABEL = {
+  queued: "排队中", running: "进行中", done: "已完成",
+  error: "失败", cancelled: "已取消",
+};
+const JOB_TERMINAL = new Set(["done", "error", "cancelled"]);
+
+const TgJobProgress = (() => {
+  let host = null;
+  let syncBusy = false;
+  let demoTried = false;
+  let dropped = 0;
+  const seen = new Map();         // job_id -> updated_ts（去重键，移除后保留，
+                                  // 迟到旧事件按 updated_ts 规则丢弃、不复活）
+  const renderCount = new Map();  // job_id -> 实际渲染次数
+  const hiddenCancel = new Set(); // job_cancel 返回 unsupported 后永久隐藏按钮
+  const pendingCancel = new Set();// 取消请求在途（防重复点击）
+
+  // 最小取证探针（测试专用，随挂点保留待组长裁决）
+  const probe = {
+    jobs: seen,
+    get drops() { return dropped; },
+    renders: renderCount,
+  };
+  window.__tgJobProbe = probe;
+
+  function pctOf(job) {
+    const t = Number(job.total) || 0, d = Number(job.done) || 0;
+    if (t > 0) return Math.max(0, Math.min(100, d * 100 / t));
+    const bt = Number(job.bytes_total) || 0, bd = Number(job.bytes_done) || 0;
+    if (bt > 0) return Math.max(0, Math.min(100, bd * 100 / bt));
+    return null;                    // 双未知 -> 不定进度
+  }
+
+  function buildCard(id) {
+    const card = document.createElement("div");
+    card.className = "job-card";
+    card.dataset.jobId = id;
+    card.innerHTML = `
+      <div class="job-head">
+        <span class="job-kind"></span>
+        <span class="job-state"></span>
+        <button class="job-cancel-btn" type="button">取消</button>
+      </div>
+      <div class="job-phase"><span class="ph"></span><span class="pd"></span></div>
+      <div class="job-bar"><div class="job-fill"></div></div>
+      <div class="job-count"><span class="c-items"></span><span class="c-bytes"></span></div>
+      <div class="job-err hidden"></div>`;
+    card.querySelector(".job-cancel-btn").addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      onCancel(id, ev.currentTarget);
+    });
+    host.appendChild(card);
+    return card;
+  }
+
+  function renderJob(job) {
+    if (!job || typeof job.job_id !== "string") return false;
+    const id = job.job_id;
+    const ts = Number(job.updated_ts) || 0;
+    const prev = seen.get(id);
+    if (prev !== undefined) {
+      if (ts < prev) { dropped++; return false; }  // 迟到旧事件：丢弃不回退
+      if (ts === prev) return false;               // 同值：不重复渲染
+    }
+    seen.set(id, ts);
+
+    let card = host.querySelector(`[data-job-id="${qAttr(id)}"]`);
+    if (!card) card = buildCard(id);
+
+    const state = JOB_STATE_LABEL[job.state] ? job.state : "queued";
+    setText(card, ".job-kind", job.kind || "");
+    const st = card.querySelector(".job-state");
+    st.textContent = JOB_STATE_LABEL[state];
+    st.className = "job-state s-" + state;
+    setText(card, ".ph", job.phase || "");
+    setText(card, ".pd", job.phase_detail || "");
+
+    const pct = pctOf(job);
+    const fill = card.querySelector(".job-fill");
+    if (pct === null) {
+      fill.className = "job-fill indet";
+      fill.style.width = "";
+    } else {
+      fill.className = "job-fill" +
+        (state === "done" ? " f-done" : state === "error" ? " f-error"
+          : state === "cancelled" ? " f-cancelled" : "");
+      fill.style.width = pct.toFixed(1) + "%";
+    }
+    const t = Number(job.total) || 0, d = Number(job.done) || 0;
+    const bt = Number(job.bytes_total) || 0, bd = Number(job.bytes_done) || 0;
+    setText(card, ".c-items", t > 0 ? `${d}/${t}` : "");
+    setText(card, ".c-bytes", bt > 0 ? `${human(bd)} / ${human(bt)}` : "");
+
+    const errEl = card.querySelector(".job-err");
+    if (job.error) {
+      errEl.classList.remove("hidden");
+      errEl.textContent = job.error;
+    } else {
+      errEl.classList.add("hidden");
+    }
+
+    // 取消按钮：仅 queued/running 显示；unsupported 后永久隐藏；在途禁用
+    const btn = card.querySelector(".job-cancel-btn");
+    const showBtn = (state === "queued" || state === "running")
+      && !hiddenCancel.has(id);
+    btn.style.display = showBtn ? "" : "none";
+    btn.disabled = pendingCancel.has(id);
+
+    // 终态卡片保留 4 秒后淡出移除
+    if (JOB_TERMINAL.has(state) && !card.dataset.fade) {
+      card.dataset.fade = "1";
+      setTimeout(() => {
+        card.classList.add("out");
+        setTimeout(() => card.remove(), 500);
+      }, 4000);
+    }
+    renderCount.set(id, (renderCount.get(id) || 0) + 1);
+    return true;
+  }
+
+  async function onCancel(id, btn) {
+    if (pendingCancel.has(id)) return;
+    pendingCancel.add(id);
+    btn.disabled = true;
+    try {
+      const r = await api().job_cancel(id);
+      if (r && r.unsupported) {
+        hiddenCancel.add(id);     // 该作业卡片永久隐藏取消按钮
+        btn.style.display = "none";
+      }
+      // ok：等待 job_update 事件把卡片置为 cancelled
+    } catch (e) {
+      console.debug("[T45] job_cancel 调用失败：", e);
+    } finally {
+      pendingCancel.delete(id);
+    }
+  }
+
+  async function sync() {
+    if (syncBusy) return;
+    syncBusy = true;
+    try {
+      const r = await api().jobs_state();
+      if (r && r.ok && Array.isArray(r.jobs)) {
+        r.jobs.forEach(renderJob);
+        maybeAutoDemo();
+      }
+    } catch (e) {
+      console.debug("[T45] jobs_state 同步失败（HTTP 降级通道不受影响）：", e);
+    } finally {
+      syncBusy = false;
+    }
+  }
+
+  function maybeAutoDemo() {
+    if (demoTried) return;
+    demoTried = true;   // 只判断一次；失败也仅 console.debug（门控默认关闭）
+    if (!/[#&]t45demo=1/.test(location.hash)) return;
+    api().t45_demo_job(8000, 20, true)
+      .then(r => { if (!r || !r.ok) console.debug("[T45] 演示作业未启动：", r); })
+      .catch(e => console.debug("[T45] 演示作业启动失败（测试门控未开启？）：", e));
+  }
+
+  function mount() {
+    host = document.getElementById("job-progress-host");
+    if (!host) return;
+    TgBus.on("job_update", renderJob);
+    sync();                                   // 挂载即拉一次快照
+    setInterval(sync, 5000);                  // 之后每 5 秒轻量同步
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) sync();           // 回前台立即补一次
+    });
+  }
+
+  return { mount, sync, render: renderJob };
+})();
+
+// T45 启动接线：新增独立 pywebviewready 监听（与上方既有启动监听互不干扰）
+window.addEventListener("pywebviewready", () => {
+  TgJobProgress.mount();
+});
+// 组件对象也暴露到 window（供后续任务与控制台测试驱动；名字唯一无冲突）
+window.TgJobProgress = TgJobProgress;
+// ===== T45 作业事件总线 / 通用进度组件（结束）=====

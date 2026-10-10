@@ -91,6 +91,16 @@ function boot() {
     },
   };
 
+  // T45：job_update/search_items/dl_phase/acct_hint 统一转发为
+  // window 上的 tg:<name> CustomEvent（detail = params[0]），
+  // 由 app.js 事件总线订阅；job_update 的 payload 即完整 job 对象。
+  ["job_update","search_items","dl_phase","acct_hint"].forEach(function (name) {
+    EVENT_WHITELIST[name] = function (params) {
+      window.dispatchEvent(
+        new CustomEvent("tg:" + name, { detail: params[0] }));
+    };
+  });
+
   function dispatchEvent(msg) {
     if (!msg || typeof msg.event !== "string") return;
     const handler = EVENT_WHITELIST[msg.event];

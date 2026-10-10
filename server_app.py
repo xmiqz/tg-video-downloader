@@ -14,6 +14,7 @@
 import asyncio
 import contextlib
 import logging
+import os
 import secrets
 import socket
 import threading
@@ -31,17 +32,23 @@ import tg_video_dl as core
 
 log = logging.getLogger("server_app")
 
-# RPC 方法白名单（35 个，逐字钉死；与 v1.2.6 window.pywebview.api 暴露面一致）
+# RPC 方法白名单（38 个，逐字钉死；与 v1.2.6 window.pywebview.api 暴露面一致。
+# 其中 job_state/jobs_state/job_cancel 为 T45 新增（作业模型基座），
+# t45_demo_job 为 T45 测试挂点，仅在 TG_T45_TEST_HOOK=1 时加入有效白名单）
 RPC_METHODS = frozenset({
     "abort_task", "active_states", "choose_folder", "connect", "delete_task",
     "edit_task", "editor_data", "editor_remove", "editor_save",
     "editor_set_status", "get_appearance", "get_item_text", "get_settings",
-    "get_task", "is_active", "item_action", "items_file_info", "list_tasks",
+    "get_task", "is_active", "item_action", "items_file_info", "job_cancel",
+    "job_state", "jobs_state", "list_tasks",
     "login_state", "logout", "me", "open_editor", "open_folder",
     "open_item_file", "preview", "remove_items", "resume_task",
     "scan_append", "send_code", "set_appearance", "set_download_root",
     "set_item", "start_download", "verify_code", "verify_password",
 })
+
+# T45 测试挂点方法（默认不在有效白名单内；生产路径不得设置门控变量）
+_T45_TEST_METHODS = frozenset({"t45_demo_job"})
 
 AUTH_TIMEOUT_SECS = 10.0       # WS 首条认证消息等待上限
 STARTUP_TIMEOUT_SECS = 15.0
@@ -192,6 +199,14 @@ def start(data_dir=None):
 
     token = secrets.token_urlsafe(24)
 
+    # T45 测试挂点门控：仅当进程启动时 TG_T45_TEST_HOOK 精确等于 "1"
+    # 才把 t45_demo_job 加入有效白名单；默认（未设置/其他值）关闭。
+    # 有效集合只在启动时计算一次，与 /rpc 网关共用。
+    if os.environ.get("TG_T45_TEST_HOOK") == "1":
+        effective_methods = RPC_METHODS | _T45_TEST_METHODS
+    else:
+        effective_methods = RPC_METHODS
+
     # 预绑定 127.0.0.1:0 的监听套接字，实际端口由系统分配
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
@@ -236,7 +251,7 @@ def start(data_dir=None):
         if not isinstance(params, list):
             return JSONResponse(
                 {"ok": False, "error": "params 必须是数组"}, status_code=400)
-        if method.startswith("_") or method not in RPC_METHODS:
+        if method.startswith("_") or method not in effective_methods:
             return JSONResponse(
                 {"ok": False, "error": f"未知方法：{method}"}, status_code=400)
 
