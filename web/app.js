@@ -61,6 +61,23 @@ let guestMode = false;
 // 重新执行对应入口函数，此时 guestMode 已为 false，自然走到真实逻辑）
 const pendingIntents = [];
 
+// ============================================================
+// T48 大频道流式搜索（preview 作业式 + search_items 增量渲染）
+// ============================================================
+// 唯一在途搜索作业（帧按 job_id 路由，非当前作业的帧一律忽略）
+let searchJob = null;        // {job_id, streaming}
+let arrivedKeys = new Set(); // 已到达 (src|mid) 键，跨帧去重（防重复行）
+let searchCancelBusy = false;
+// phase 中文映射：与 TUI（tg_video_dl.py SEARCH_PHASE_TEXT）同源同文
+const SEARCH_PHASE_TEXT = {
+  server_search: "服务端搜索",
+  local_scan: "本地翻页扫描",
+  enrich: "引用内容补全",
+  filter: "结果整理",
+};
+// 引用来源标签：与 TUI REF_SOURCE_MARKS 同文
+const REF_SOURCE_LABEL = { reply: "[引用]", album: "[相册]", fwd: "[转发]" };
+
 // ---------- 视图切换 ----------
 function switchView(v) {
   currentView = v;
@@ -259,7 +276,10 @@ async function doLogout() {
   // 收起可能打开的滑层/弹层
   closeSheetNoRefresh();
   closeAppend();
-  // 重置预览与向导
+  // 重置预览与向导（T48：同时取消在途搜索作业并清空流式态）
+  cancelSearchJobQuietly();
+  searchJob = null;
+  arrivedKeys = new Set();
   previewData = { items: [], channel: "", title: "" };
   selected = new Set();
   gotoStep(1);
@@ -334,28 +354,29 @@ async function doPreview() {
   document.getElementById("wizard-note").textContent = "";
   const params = collectSearchParams();
   if (!params.channel) return (document.getElementById("wizard-err").textContent = "请输入频道");
+  // T48：再次点开始搜索时，对旧 job_id 先取消，防后台空跑
+  await cancelSearchJobQuietly();
   document.getElementById("wizard-note").textContent =
     "正在扫描频道历史消息，频道消息较多时可能需要等待几十秒…";
   let r;
   try {
     r = await withBusy(btn, "搜索中…", () => api().preview(params));
   } catch (e) { return; }
-  if (!r.ok) {
-    document.getElementById("wizard-note").textContent = "";
-    return (document.getElementById("wizard-err").textContent = r.error);
-  }
-  previewData = r;
-  selected = new Set(r.items.map(it => keyOf(it.src, it.mid)));
+  document.getElementById("wizard-note").textContent = "";
+  if (needLogin(r)) return;   // T46：need_login:true 转弹登录卡
+  if (!r.ok) return (document.getElementById("wizard-err").textContent = r.error || "搜索失败");
+  // T48 ACK {"ok":true,"job_id":...}：立即进入步骤 2，初始化流式态
+  previewData = {
+    items: [], channel: params.channel, title: params.channel,
+    meta: {}, job_id: r.job_id,
+  };
+  selected = new Set();
+  arrivedKeys = new Set();
+  searchJob = { job_id: r.job_id, streaming: true };
   document.getElementById("video-search").value = "";
-  renderPreview();
+  resetSearchProgress();
   gotoStep(2);
-  const bits = [];
-  if (r.meta.n_small) bits.push(`${r.meta.n_small} 个小于下限`);
-  if (r.meta.n_large) bits.push(`${r.meta.n_large} 个大于上限`);
-  if (r.meta.capped)
-    bits.push(`消息过多，仅扫描了最近 ${r.meta.scan_cap} 条`);
-  document.getElementById("wizard-note").textContent = bits.length
-    ? `已按条件过滤：${bits.join("，")}` : "";
+  renderPreview();
 }
 
 function previewEmptyHint(meta) {
@@ -374,6 +395,17 @@ function previewEmptyHint(meta) {
 function renderPreview() {
   const listEl = document.getElementById("preview-list");
   const q = document.getElementById("video-search").value.trim().toLowerCase();
+  // T48 流式等待态：作业已 ACK 但首批结果未到——显示等待而非"没有可选择的视频"
+  if (!previewData.items.length && searchJob && searchJob.streaming) {
+    listEl.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-ico">⌛</div>
+        <h3>正在搜索频道历史消息…</h3>
+        <p>结果会随着扫描推进持续追加，已到达的条目可立即勾选。</p>
+      </div>`;
+    document.getElementById("sel-count").textContent = 0;
+    return;
+  }
   // 搜索完成但一条结果都没有：给出具体原因，而不是空白卡住
   if (!previewData.items.length) {
     listEl.innerHTML = `
@@ -398,27 +430,20 @@ function renderPreview() {
     document.getElementById("sel-count").textContent = selected.size;
     return;
   }
-  listEl.innerHTML = rows.map(it => {
-    const k = keyOf(it.src, it.mid);
-    const on = selected.has(k);
-    return `
-      <div class="video-row ${on ? "sel" : ""}" onclick="toggleVideo('${esc(k)}')">
-        <div class="cbox">${on ? "✓" : ""}</div>
-        <div class="video-info">
-          <div class="video-name">${esc(it.name)}</div>
-          <div class="video-sub">${esc(it.date)} · ${esc((it.text || "").slice(0, 70))}</div>
-        </div>
-        <div class="video-size">
-          <span>${human(it.size)}</span>
-          <span class="src-tag">${esc(it.src)}</span>
-        </div>
-      </div>`;
-  }).join("");
+  listEl.innerHTML = rows.map(it => previewRowHtml(it)).join("");
   document.getElementById("sel-count").textContent = selected.size;
 }
 function toggleVideo(k) {
   selected.has(k) ? selected.delete(k) : selected.add(k);
-  renderPreview();
+  // T48：流式追加期间做行内更新（不全量重绘），保持滚动位置与增量行
+  const row = document.querySelector(
+    `#preview-list .video-row[data-key="${qAttr(k)}"]`);
+  if (row) {
+    const on = selected.has(k);
+    row.classList.toggle("sel", on);
+    row.querySelector(".cbox").textContent = on ? "✓" : "";
+  }
+  document.getElementById("sel-count").textContent = selected.size;
 }
 function clearPreviewSearch() {
   document.getElementById("video-search").value = "";
@@ -435,6 +460,7 @@ function selectAll(v) {
 
 async function doStart(btn) {
   if (guardRestricted("开始下载", () => doStart(btn))) return;
+  // 只提交"已到达且勾选"的条目（selected 只能从已到达行勾选/全选产生）
   if (!selected.size) return alert("请选择至少一个视频");
   const keys = [...selected].map(k => {
     const [src, mid] = k.split("|");
@@ -444,10 +470,214 @@ async function doStart(btn) {
   let r;
   try {
     r = await withBusy(btn, "准备下载…", () =>
-      api().start_download(previewData.channel, previewData.title, keys, parallel));
+      api().start_download(previewData.channel, previewData.title, keys,
+                           parallel, "", previewData.job_id || ""));
   } catch (e) { return; }
   if (!r.ok) return alert(r.error);
   switchView("active");
+}
+
+// ============================================================
+// T48 流式搜索：进度区 / search_items 增量渲染 / 取消 / 终态收敛
+// ============================================================
+function resetSearchProgress() {
+  const box = document.getElementById("search-progress");
+  box.classList.remove("hidden");
+  document.getElementById("search-progress-fill").className = "job-fill indet";
+  document.getElementById("search-phase-text").textContent = "正在搜索…";
+  document.getElementById("search-counts").textContent = "已扫描 0 条 · 已匹配 0 条";
+  const note = document.getElementById("search-note");
+  note.textContent = "";
+  note.classList.remove("warn", "error");
+  const btn = document.getElementById("search-cancel-btn");
+  btn.disabled = false;
+  btn.classList.remove("hidden");
+}
+
+function hideSearchCancelBtn() {
+  const btn = document.getElementById("search-cancel-btn");
+  btn.disabled = true;
+  btn.classList.add("hidden");
+}
+
+function previewRowHtml(it) {
+  const k = keyOf(it.src, it.mid);
+  const on = selected.has(k);
+  const mark = (it.match_in && it.match_in !== "self")
+    ? `<span class="ref-tag">${esc(REF_SOURCE_LABEL[it.match_in] || it.match_in)}</span>` : "";
+  // ref_text：title 属性全文悬浮 + 行内单行截断展示
+  const refAttr = it.ref_text ? ` title="${esc(it.ref_text)}"` : "";
+  const refInline = it.ref_text
+    ? ` <span class="ref-inline">${esc(it.ref_text.slice(0, 60))}</span>` : "";
+  return `
+    <div class="video-row ${on ? "sel" : ""}" data-key="${esc(k)}" onclick="toggleVideo('${esc(k)}')">
+      <div class="cbox">${on ? "✓" : ""}</div>
+      <div class="video-info">
+        <div class="video-name">${mark}${esc(it.name)}</div>
+        <div class="video-sub"${refAttr}>${esc(it.date)} · ${esc((it.text || "").slice(0, 70))}${refInline}</div>
+      </div>
+      <div class="video-size">
+        <span>${human(it.size)}</span>
+        <span class="src-tag">${esc(it.src)}</span>
+      </div>
+    </div>`;
+}
+
+function appendPreviewRow(it) {
+  const listEl = document.getElementById("preview-list");
+  // 首批到达时清掉等待态占位
+  const empty = listEl.querySelector(".empty-state");
+  if (empty) empty.remove();
+  listEl.insertAdjacentHTML("beforeend", previewRowHtml(it));
+}
+
+// bridge.js 白名单转发的 tg:search_items（detail = params[0]）。
+// 增量帧只 append 新行（按 key 去重），绝不 innerHTML 全量重绘；
+// 终帧（final:true）以 data.items 做权威收敛（防极限边界错位）。
+function onSearchItems(detail) {
+  if (!detail || typeof detail.job_id !== "string") return;
+  if (!searchJob || detail.job_id !== searchJob.job_id) return; // 非当前作业忽略
+  const data = detail.data || {};
+  const items = Array.isArray(data.items) ? data.items : [];
+  if (data.final === true) { finalizeSearch(data); return; }
+  let fresh = [];
+  for (const it of items) {
+    const k = keyOf(it.src, it.mid);
+    if (arrivedKeys.has(k)) continue;
+    arrivedKeys.add(k);
+    previewData.items.push(it);
+    fresh.push(it);
+  }
+  if (fresh.length && searchJob.streaming) {
+    for (const it of fresh) appendPreviewRow(it);
+    document.getElementById("sel-count").textContent = selected.size;
+  }
+}
+
+function finalizeSearch(data) {
+  const items = Array.isArray(data.items) ? data.items : [];
+  // 权威收敛：按终帧 items 的顺序/集合重建
+  previewData.items = items;
+  arrivedKeys = new Set(items.map(it => keyOf(it.src, it.mid)));
+  const meta = data.meta || {};
+  previewData.meta = meta;
+  if (meta.title) previewData.title = meta.title;
+  searchJob.streaming = false;
+  finishSearchProgress(meta);
+  renderPreview();
+}
+
+function finishSearchProgress(meta) {
+  document.getElementById("search-progress-fill").className = "job-fill f-done";
+  const bits = [];
+  if (meta.n_small) bits.push(`${meta.n_small} 个小于下限`);
+  if (meta.n_large) bits.push(`${meta.n_large} 个大于上限`);
+  if (meta.ref_matched) bits.push(`外部文本命中 ${meta.ref_matched} 条`);
+  if (meta.capped) bits.push(`消息过多，仅扫描了最近 ${meta.scan_cap} 条`);
+  document.getElementById("search-phase-text").textContent =
+    `搜索完成 · 共 ${previewData.items.length} 条`;
+  document.getElementById("search-counts").textContent = bits.join("，");
+  const note = document.getElementById("search-note");
+  note.classList.remove("error");
+  // truncated/capped 黄行（文案同 TUI 口径）
+  if (meta.truncated) {
+    note.textContent = "外部文本补抓已达批次预算上限，更早消息的引用/相册文本可能未覆盖";
+    note.classList.add("warn");
+  } else if (meta.capped) {
+    note.textContent = "本地扫描已达上限，更早的结果未覆盖：加关键词可走服务端搜索";
+    note.classList.add("warn");
+  } else {
+    note.textContent = "";
+    note.classList.remove("warn");
+  }
+  hideSearchCancelBtn();
+}
+
+// search 作业的 job_update（含 jobs_state 快照恢复路径）：
+// running 推进度区文案/计数；cancelled/error/done 收敛终态。
+function onSearchJobUpdate(job) {
+  if (!job || typeof job.job_id !== "string") return;
+  // 断线重连恢复（reload/重开页面后 jobs_state 快照发现仍在途的搜索作业）：
+  // 重建流式态，进度区恢复阶段/计数显示与取消按钮；已到达条目页面级
+  // 不可恢复（jobs_state 只恢复计数，终帧全量 items 兜底收敛）
+  if (!searchJob && job.kind === "search"
+      && (job.state === "running" || job.state === "queued")) {
+    previewData = { items: [], channel: "", title: "", meta: {},
+                    job_id: job.job_id };
+    selected = new Set();
+    arrivedKeys = new Set();
+    searchJob = { job_id: job.job_id, streaming: true };
+    resetSearchProgress();
+    gotoStep(2);
+    renderPreview();
+  }
+  if (!searchJob || job.job_id !== searchJob.job_id) return;
+  const box = document.getElementById("search-progress");
+  if (job.state === "running" || job.state === "queued") {
+    if (!searchJob.streaming) return;
+    if (box.classList.contains("hidden")) box.classList.remove("hidden");
+    const phaseZh = SEARCH_PHASE_TEXT[job.phase] || job.phase || "";
+    document.getElementById("search-phase-text").textContent =
+      "正在搜索…" + phaseZh + (job.phase_detail ? " · " + job.phase_detail : "");
+    document.getElementById("search-progress-fill").className = "job-fill indet";
+    return;
+  }
+  if (job.state === "cancelled") {
+    searchJob.streaming = false;
+    document.getElementById("search-progress-fill").className = "job-fill f-cancelled";
+    document.getElementById("search-phase-text").textContent = "已停止搜索";
+    document.getElementById("search-counts").textContent =
+      `已到达 ${previewData.items.length} 条仍可勾选下载`;
+    hideSearchCancelBtn();
+    return;
+  }
+  if (job.state === "error") {
+    searchJob.streaming = false;
+    document.getElementById("search-progress-fill").className = "job-fill f-error";
+    document.getElementById("search-phase-text").textContent = "搜索失败";
+    document.getElementById("search-counts").textContent = "";
+    const note = document.getElementById("search-note");
+    note.classList.remove("warn");
+    note.classList.add("error");
+    note.textContent = job.error || "搜索失败";
+    hideSearchCancelBtn();
+    return;
+  }
+  if (job.state === "done" && searchJob.streaming) {
+    // 终帧丢失的兜底（WS 抖动）：按已到达内容收敛显示
+    searchJob.streaming = false;
+    finishSearchProgress(previewData.meta || {});
+  }
+}
+
+async function cancelSearch() {
+  if (!searchJob || !searchJob.job_id || !searchJob.streaming) return;
+  if (searchCancelBusy) return;   // 在途防重复点
+  searchCancelBusy = true;
+  const btn = document.getElementById("search-cancel-btn");
+  btn.disabled = true;
+  try {
+    await api().preview_cancel(searchJob.job_id);
+    // 终态由 cancelled job_update 渲染
+  } catch (e) {
+    console.debug("[T48] preview_cancel 调用失败：", e);
+    btn.disabled = false;
+  } finally {
+    searchCancelBusy = false;
+  }
+}
+
+async function cancelSearchJobQuietly() {
+  if (searchJob && searchJob.job_id && searchJob.streaming) {
+    try { await api().preview_cancel(searchJob.job_id); } catch (e) {}
+    searchJob.streaming = false;
+  }
+}
+
+// 上一步：先取消旧作业防后台空跑，再回条件页
+async function backToStep1() {
+  await cancelSearchJobQuietly();
+  gotoStep(1);
 }
 
 // ============================================================
@@ -1349,6 +1579,14 @@ const TgJobProgress = (() => {
     }
     seen.set(id, ts);
 
+    // T48：search 作业早退——不渲染通用悬浮卡（新建页进度区承接，
+    // 避免双卡）；事件/快照转交进度区恢复（断线重连补计数与终态）。
+    // t45_demo 等其它 kind 行为不变（T45 回归）。
+    if (job.kind === "search") {
+      onSearchJobUpdate(job);
+      return false;
+    }
+
     let card = host.querySelector(`[data-job-id="${qAttr(id)}"]`);
     if (!card) card = buildCard(id);
 
@@ -1463,6 +1701,8 @@ const TgJobProgress = (() => {
 // T45 启动接线：新增独立 pywebviewready 监听（与上方既有启动监听互不干扰）
 window.addEventListener("pywebviewready", () => {
   TgJobProgress.mount();
+  // T48：全局只挂一次 search_items 订阅（帧按 job_id 路由，见 onSearchItems）
+  TgBus.on("search_items", onSearchItems);
 });
 // 组件对象也暴露到 window（供后续任务与控制台测试驱动；名字唯一无冲突）
 window.TgJobProgress = TgJobProgress;

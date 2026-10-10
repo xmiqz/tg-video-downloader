@@ -269,6 +269,16 @@
       </div>
 
       <div id="wizard-2" class="wizard-panel hidden">
+        <!-- T48 流式搜索进度区：不定进度动效 + 阶段/计数文案 + 取消按钮 + 终态提示 -->
+        <div id="search-progress" class="search-progress hidden">
+          <div class="search-progress-head">
+            <div class="search-progress-bar"><div class="job-fill indet" id="search-progress-fill"></div></div>
+            <button class="btn glass-btn sm" id="search-cancel-btn" onclick="cancelSearch()">停止搜索</button>
+          </div>
+          <div id="search-phase-text" class="search-phase-text"></div>
+          <div id="search-counts" class="search-counts"></div>
+          <div id="search-note" class="search-note"></div>
+        </div>
         <div class="sel-toolbar">
           <div class="search-box">
             <span class="search-ico">⌕</span>
@@ -281,7 +291,7 @@
         </div>
         <div id="preview-list" class="video-list"></div>
         <div class="wizard-actions between">
-          <button class="btn glass-btn" onclick="gotoStep(1)">上一步</button>
+          <button class="btn glass-btn" onclick="backToStep1()">上一步</button>
           <div class="start-box">
             <button class="btn primary" onclick="doStart(this)">开始下载 (<span id="sel-count">0</span>)</button>
           </div>

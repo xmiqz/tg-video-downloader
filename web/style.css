@@ -1027,3 +1027,58 @@ html[data-theme="light"] .job-state.s-running {
   color: #a86a10;
 }
 /* ===== T46 游客模式（结束）=====
+
+/* ============================================================
+   T48 大频道流式搜索（新增页进度区 / 引用来源标签）——仅尾部追加
+   （文件历史字节零改动；复用 .job-fill.indet 不定进度视觉语言与
+   既有 --ink-mute/--warn/--danger token，不新增滤镜面）
+   ============================================================ */
+.search-progress {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 12px 14px; margin-bottom: 12px;
+  background: var(--glass-bg-soft);
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--r-md);
+}
+.search-progress-head {
+  display: flex; align-items: center; gap: 12px;
+}
+.search-progress-bar {
+  position: relative; flex: 1; height: 6px;
+  background: rgba(7, 9, 20, .55); border-radius: 6px; overflow: hidden;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, .5);
+}
+.search-phase-text {
+  font-size: 12.5px; color: var(--ink); font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.search-counts {
+  font-size: 11.5px; color: var(--ink-mute);
+  font-variant-numeric: tabular-nums;
+}
+.search-note { font-size: 11.5px; color: var(--ink-mute); word-break: break-word; }
+.search-note.warn { color: var(--warn); }
+.search-note.error { color: var(--danger); }
+html[data-theme="light"] .search-progress-bar {
+  background: rgba(20, 30, 60, .12);
+  box-shadow: inset 0 1px 2px rgba(20, 30, 60, .12);
+}
+/* 引用来源小标签：与 .src-tag 同族视觉，紫系区分外部来源（self 不显示） */
+.ref-tag {
+  display: inline-block; margin-right: 6px;
+  font-size: 10px; padding: 2px 7px; border-radius: 6px;
+  color: #cdb9ff; background: rgba(154, 107, 255, .16);
+  border: 1px solid rgba(154, 107, 255, .25);
+  vertical-align: 1px;
+}
+/* ref_text 行内单行截断展示（title 属性承载全文悬浮） */
+.ref-inline {
+  display: inline-block; max-width: 340px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  vertical-align: bottom; color: var(--ink-mute);
+}
+html[data-theme="light"] .ref-tag {
+  color: #5b3fc7; background: rgba(120, 90, 255, .12);
+  border-color: rgba(120, 90, 255, .2);
+}

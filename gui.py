@@ -80,6 +80,15 @@ class EngineLoop:
 # ============================================================
 _job_log = logging.getLogger("gui.jobs")
 
+# T48 search_items WS 节流阈值（gui 层钉死；JobRegistry 的 0.30s/0.60s
+# job_update 节流契约零改动）：
+#   首帧：累计 ≥40 条 或 作业启动后 ≥2.0s 且至少 1 条，先到即发；
+#   追加帧：距上一帧 ≥0.5s 或 自上帧新增 ≥40 条。
+SEARCH_WS_FIRST_ITEMS = 40
+SEARCH_WS_FIRST_SECS = 2.0
+SEARCH_WS_INTERVAL = 0.5
+SEARCH_WS_DELTA_ITEMS = 40
+
 
 class JobRegistry:
     """线程安全的作业注册表：创建/更新/取消/快照，并按节流规则外发 job_update。"""
@@ -287,6 +296,11 @@ class Api:
         # 游客（离线受限）模式：纯内存态，严禁写盘；重启进程必然复位为 False
         self.guest = False
         self._preview = {}      # mid -> record（含活动消息对象）
+        # T48 搜索作业存储：job_id -> {(src, mid): record}。worker 线程写、
+        # start_download 读——并发由 _preview_lock 保护（帧边界小锁）。
+        # 作业 cancelled 后已到达部分仍可用其建任务（任务书 3.2）。
+        self._search_previews = {}
+        self._preview_lock = threading.Lock()
         # 宿主适配（main 启动时注入；离线/假宿主测试时可为 None）
         self.host = None
         # 进程内 HTTP/WS 连接信息（main 启动时从 server_app 句柄注入）
@@ -413,6 +427,8 @@ class Api:
             print("[GUI] guest=False（logout）")
         self.guest = False
         self._preview = {}
+        # T48：同时清空搜索作业存储（内存态；作业表自身不持久化）
+        self._search_previews = {}
         self._remove_session_files()
         # 清掉已保存手机号，重新登录时从输入手机号开始
         self.cfg.pop("phone", None)
@@ -577,9 +593,14 @@ class Api:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    # ---------- 频道预览（高级搜索） ----------
+    # ---------- 频道预览（高级搜索；T48 改为 300ms ACK 作业式） ----------
     def preview(self, params):
-        """params: 前端组装的高级搜索参数对象"""
+        """params: 前端组装的高级搜索参数对象。
+
+        T48 起立即返回 {"ok": true, "job_id": ...}（ACK 前不触网），
+        后台 daemon 线程消费 core.search_videos_stream 并经 WS 推
+        search_items 增量帧 + job_update；done 由终帧（final:true）
+        权威收敛。"""
         if self.client is None:
             print("[GUI] need_login: preview")
             return {"ok": False, "need_login": True}
@@ -588,58 +609,198 @@ class Api:
             channel_name, ref_mid = core.parse_channel_ref(channel_in)
         except Exception as e:
             return {"ok": False, "error": str(e)}
+        job_id, cancel_event = self.jobs.create("search")
+        threading.Thread(
+            target=self._search_worker,
+            args=(job_id, cancel_event, channel_name, ref_mid, dict(params)),
+            daemon=True, name="search-" + job_id,
+        ).start()
+        return {"ok": True, "job_id": job_id}
 
-        async def _do():
-            entity = await self.client.get_entity(channel_name)
-            title = getattr(entity, "title", None) or channel_name
-            p = dict(params)
-            p.pop("channel", None)
-            records, meta = await core.search_videos(self.client, entity, p)
-            # 链接里带了具体消息 id（t.me/频道/4 或裸写 频道/4）：
-            # 精准补抓该消息，不受扫描条数上限与体积/日期筛选限制。
-            if ref_mid is not None:
-                have = {(r.get("src", core.SRC_CHANNEL), r["msg"].id)
-                        for r in records}
-                if (core.SRC_CHANNEL, ref_mid) not in have:
-                    try:
-                        pm = await self.client.get_messages(entity, ids=ref_mid)
-                    except Exception:
-                        pm = None
-                    if pm is not None and core.is_video_message(pm):
-                        records.insert(0, core.make_record(pm, core.SRC_CHANNEL))
-                        meta["permalink"] = True
-            # 用 (来源, mid) 做键，支持评论区
-            self._preview = {
-                (r.get("src", core.SRC_CHANNEL), r["msg"].id): r
-                for r in records
-            }
-            items = [{
-                "mid": r["msg"].id,
-                "src": r.get("src", core.SRC_CHANNEL),
-                "name": r["name"],
-                "size": r["size"],
-                "date": (f"{r['msg'].date:%Y-%m-%d}" if r["msg"].date else ""),
-                "text": r["text"],
-            } for r in records]
-            return {
-                "ok": True, "channel": channel_name, "title": title,
-                "meta": meta, "items": items,
-            }
+    @staticmethod
+    def _search_item_of(r):
+        """record → 前端 item 序列化：T47 6 键纯增 match_in/ref_text 2 键
+        （.get 取值，缺省 "self"/None 与 record 一致），无其它形变。"""
+        return {
+            "mid": r["msg"].id,
+            "src": r.get("src", core.SRC_CHANNEL),
+            "name": r["name"],
+            "size": r["size"],
+            "date": (f"{r['msg'].date:%Y-%m-%d}" if r["msg"].date else ""),
+            "text": r["text"],
+            "match_in": r.get("match_in", "self"),
+            "ref_text": r.get("ref_text"),
+        }
 
+    def _search_push(self, job_id, data):
+        """经既有线程安全 hub 扇出一帧 search_items（包络钉死：
+        params[0] = {"job_id", "data": {...}}）。"""
+        push = self.push_event
+        if push is not None:
+            push("search_items", [{"job_id": job_id, "data": data}])
+
+    def _search_worker(self, job_id, cancel_event, channel_name, ref_mid,
+                       params):
+        """搜索作业 daemon 线程（仿 t45_demo 范式）：协程提交到
+        engine.loop 消费 stream；任何异常兜底为作业 error，绝不带崩进程
+        （cancelled 终态已由 request_cancel 原子置位并直发，registry 对
+        终态 update 静默拒绝，兜底只对未终态生效）。"""
         try:
-            return self.engine.submit(_do())
-        except Exception as e:
-            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            fut = asyncio.run_coroutine_threadsafe(
+                self._search_coro(job_id, cancel_event, channel_name,
+                                  ref_mid, params),
+                self.engine.loop)
+            fut.result()
+        except Exception as e:  # noqa: BLE001 - worker 线程兜底
+            _job_log.warning("search worker 异常 job=%s", job_id,
+                              exc_info=True)
+            self.jobs.update(job_id, state="error",
+                             error=f"{type(e).__name__}: {e}")
+
+    async def _search_coro(self, job_id, cancel_event, channel_name,
+                           ref_mid, params):
+        """搜索作业协程（跑在 engine.loop）：消费 stream、按节流推
+        search_items、终帧收敛，然后置 done。作业存储每帧并入
+        _search_previews（cancelled 后已到达部分仍可建任务）。"""
+        p = dict(params)
+        p.pop("channel", None)
+        job0 = self.jobs.snapshot(job_id) or {}
+        t0 = float(job0.get("created_ts", time.time()))
+        items_seq = []       # 已到达序列化 item（按到达序，键唯一）
+        pushed_n = 0         # 已 WS 下发条数（items_seq 前缀长度）
+        last_push = 0.0
+        first_sent = False
+
+        def _absorb(recs):
+            """items 帧落地：并入作业存储与遗留全局映射（增量刷新，
+            锁只包临界区，内存操作极短）。"""
+            fresh = []
+            with self._preview_lock:
+                store = self._search_previews.setdefault(job_id, {})
+                for r in recs:
+                    key = (r.get("src", core.SRC_CHANNEL), r["msg"].id)
+                    if key in store:
+                        continue
+                    store[key] = r
+                    self._preview[key] = r
+                    fresh.append(r)
+            for r in fresh:
+                items_seq.append(self._search_item_of(r))
+            return len(fresh)
+
+        def _maybe_push():
+            """WS 节流：首帧（≥40 条或启动 ≥2.0s 且 ≥1 条）先到即发；
+            其后追加帧满足距上一帧 ≥0.5s 或新增 ≥40 条。"""
+            nonlocal pushed_n, last_push, first_sent
+            n = len(items_seq)
+            if n <= pushed_n:
+                return
+            now = time.time()
+            if not first_sent:
+                if ((n - pushed_n) >= SEARCH_WS_FIRST_ITEMS
+                        or (now - t0 >= SEARCH_WS_FIRST_SECS)):
+                    self._search_push(
+                        job_id, {"items": items_seq[:n]})
+                    pushed_n, last_push, first_sent = n, now, True
+                return
+            if ((now - last_push) >= SEARCH_WS_INTERVAL
+                    or (n - pushed_n) >= SEARCH_WS_DELTA_ITEMS):
+                self._search_push(job_id, {"items": items_seq[pushed_n:n]})
+                pushed_n, last_push = n, now
+
+        self.jobs.update(job_id, state="running", phase="server_search",
+                         phase_detail="搜索作业启动", total=0)
+        entity = await self.client.get_entity(channel_name)
+        async for ev in core.search_videos_stream(self.client, entity, p,
+                                                  cancel=cancel_event):
+            kind = ev["kind"]
+            if kind == "progress":
+                detail = (f"已扫描 {ev['scanned']} 条"
+                          f" · 已匹配 {ev['matched']} 条")
+                if ev.get("earliest"):
+                    detail += f" · 最早 {ev['earliest']}"
+                self.jobs.update(job_id, phase=ev["phase"],
+                                 phase_detail=detail,
+                                 done=len(items_seq), total=0)
+            elif kind == "items":
+                _absorb(ev["items"])
+                _maybe_push()
+            elif kind == "done":
+                if cancel_event.is_set():
+                    return   # 取消竞态：终态已由 registry 直发，不再收敛
+                records, meta = ev["records"], ev["meta"]
+                title = getattr(entity, "title", None) or channel_name
+                # gui 层附加键（与 permalink 同性质，内核 meta 不产）：
+                # 旧 preview 响应承载的 title 改经终帧 meta 下发
+                meta["title"] = title
+                # permalink（T47 原样保留）：链接里带具体消息 id 时精准
+                # 补抓并插入首行，不受扫描上限与体积/日期筛选限制
+                if ref_mid is not None:
+                    have = {(r.get("src", core.SRC_CHANNEL), r["msg"].id)
+                            for r in records}
+                    if (core.SRC_CHANNEL, ref_mid) not in have:
+                        try:
+                            pm = await self.client.get_messages(
+                                entity, ids=ref_mid)
+                        except Exception:
+                            pm = None
+                        if pm is not None and core.is_video_message(pm):
+                            records.insert(
+                                0, core.make_record(pm, core.SRC_CHANNEL))
+                            meta["permalink"] = True
+                # 终态存储：final 全量（含 permalink 首行）替换两个映射
+                final_store = {
+                    (r.get("src", core.SRC_CHANNEL), r["msg"].id): r
+                    for r in records}
+                final_items = [self._search_item_of(r) for r in records]
+                with self._preview_lock:
+                    self._search_previews[job_id] = final_store
+                    self._preview = dict(final_store)
+                # 终帧必须先于 done 突变的 job_update（同一协程内顺序调用）
+                self._search_push(
+                    job_id, {"items": final_items, "meta": meta,
+                             "final": True})
+                self.jobs.update(job_id, state="done", phase="filter",
+                                 phase_detail=f"共 {len(records)} 条",
+                                 done=len(records), total=len(records))
+
+    def preview_cancel(self, job_id):
+        """取消搜索作业（T48 新 RPC）。返回体与 job_cancel 同构：
+        成功 {"ok":true}；未知 id job_not_found；不可取消/已终态 unsupported。
+
+        游客态豁免论证（不设 need_login 闸门）：本方法只读写进程内
+        JobRegistry 内存（request_cancel 置位取消令牌 + 改 state），
+        不触网、不碰磁盘、不访问 client、幂等；作业表不区分登录态，
+        游客态调用与登录态完全同构，且取消一个不存在的或已终态的
+        作业只会得到 job_not_found/unsupported，无任何副作用。"""
+        r = self.jobs.request_cancel(job_id)
+        if r == "ok":
+            return {"ok": True}
+        if r == "unsupported":
+            return {"ok": False, "unsupported": True}
+        return {"ok": False, "error": "job_not_found"}
 
     # ---------- 建任务并下载 ----------
-    def start_download(self, channel, title, keys, parallel, folder=""):
+    def start_download(self, channel, title, keys, parallel, folder="",
+                       job_id=""):
+        """T48：job_id 非空 → 从 _search_previews[job_id] 取记录（作业已
+        cancelled 也允许用其已到达部分建任务）；job_id 空/缺失 → 走遗留
+        全局 _preview（兼容窗口，至少保留一个版本）。其余逻辑逐行不变。"""
         if self.client is None:
             print("[GUI] need_login: start_download")
             return {"ok": False, "need_login": True}
+        pool_map = {}
+        if job_id:
+            with self._preview_lock:
+                pool_map = dict(self._search_previews.get(job_id) or {})
+        if not pool_map:
+            # 兼容窗口：job_id 空/缺失（或作业映射缺失）走遗留全局映射
+            with self._preview_lock:
+                pool_map = dict(self._preview)
         todo = []
         for k in keys:
             src = k.get("src", core.SRC_CHANNEL)
-            rec = self._preview.get((src, int(k["mid"])))
+            rec = pool_map.get((src, int(k["mid"])))
             if rec is not None:
                 todo.append(rec)
         if not todo:
