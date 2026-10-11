@@ -220,11 +220,23 @@ async function doGuest() {
   switchView("tasks");            // 停在任务库（离线可浏览）
 }
 
+// T53b P1-4：登录三步提交即禁用+忙态文案（防重复发码/重复校验）；
+// RPC 返回（成功/失败/异常）后按分支恢复——成功切步/进入主界面由
+// 界面切换自然承接；错误后恢复可重试；网络异常不再产生未捕获
+// rejection（loginErr 内联展示）。按钮经容器选择器定位（index.html
+// 零改，onclick 不传参）。
 async function doSendCode() {
   loginErr("");
   const phone = document.getElementById("login-phone").value.trim();
   if (!phone) return loginErr("请输入手机号");
-  const r = await api().send_code(phone);
+  const btn = document.querySelector("#login-step-phone button.btn.primary");
+  let r;
+  try {
+    r = await withBusy(btn, "发送中…", () => api().send_code(phone));
+  } catch (e) {
+    if (isBusyReject(e)) return;
+    return loginErr("发送验证码失败：" + ((e && e.message) || e));
+  }
   if (r.ok) {
     showLoginStep("code");
     if (r.warning) loginErr(r.warning);
@@ -232,14 +244,30 @@ async function doSendCode() {
 }
 async function doVerifyCode() {
   loginErr("");
-  const r = await api().verify_code(document.getElementById("login-code").value.trim());
+  const btn = document.querySelector("#login-step-code button.btn.primary");
+  let r;
+  try {
+    r = await withBusy(btn, "验证中…",
+      () => api().verify_code(document.getElementById("login-code").value.trim()));
+  } catch (e) {
+    if (isBusyReject(e)) return;
+    return loginErr("验证码校验失败：" + ((e && e.message) || e));
+  }
   if (r.ok && r.stage === "ready") afterLogin();
   else if (r.ok && r.stage === "need_password") showLoginStep("pwd");
   else loginErr(r.error);
 }
 async function doVerifyPassword() {
   loginErr("");
-  const r = await api().verify_password(document.getElementById("login-pwd").value);
+  const btn = document.querySelector("#login-step-pwd button.btn.primary");
+  let r;
+  try {
+    r = await withBusy(btn, "确认中…",
+      () => api().verify_password(document.getElementById("login-pwd").value));
+  } catch (e) {
+    if (isBusyReject(e)) return;
+    return loginErr("两步验证失败：" + ((e && e.message) || e));
+  }
   r.ok ? afterLogin() : loginErr(r.error);
 }
 async function afterLogin() {
@@ -248,12 +276,30 @@ async function afterLogin() {
   stopGuestPoll();
   document.getElementById("login").classList.add("hidden");
   document.getElementById("login-notice").textContent = "";
-  const m = await api().me();
-  if (m.ok) {
-    document.getElementById("me-name").textContent = m.name || "已登录";
-    document.getElementById("me-user").textContent =
-      m.username ? "@" + m.username : m.phone || "";
-    document.getElementById("me-avatar").textContent = (m.name || "?").slice(0, 1);
+  // T53b P1-2：me() 失败不再静默空白/未捕获 rejection——异常与
+  // !ok 都给可见错误反馈；侧栏置"已登录"保底（资料缺失但状态真实）
+  let m = null;
+  try {
+    m = await api().me();
+  } catch (e) {
+    document.getElementById("me-name").textContent = "已登录";
+    document.getElementById("me-user").textContent = "";
+    document.getElementById("me-avatar").textContent = "·";
+    showErr("获取账号资料失败（已登录，稍后可重启应用重试）", e);
+  }
+  if (m) {
+    if (m.ok) {
+      document.getElementById("me-name").textContent = m.name || "已登录";
+      document.getElementById("me-user").textContent =
+        m.username ? "@" + m.username : m.phone || "";
+      document.getElementById("me-avatar").textContent = (m.name || "?").slice(0, 1);
+    } else {
+      document.getElementById("me-name").textContent = "已登录";
+      document.getElementById("me-user").textContent = "";
+      document.getElementById("me-avatar").textContent = "·";
+      showErr("获取账号资料失败（已登录，稍后可重启应用重试）",
+              m.error || "未能获取账号信息");
+    }
   }
   // T46 续路：按 FIFO 依次执行全部受限意图（此时 guestMode=false 真实执行）
   const intents = pendingIntents.splice(0);
@@ -1021,11 +1067,19 @@ function activeSelClear() {
   refreshActive();
 }
 
+// T53b P1-2：条目操作失败可见（!ok / 网络异常走统一错误反馈）；
+// P1-3 既有 withBusy 防重保持——双击第二拍的"操作进行中"照旧静默。
 async function activeItem(tid, src, mid, action, btn) {
+  let r;
   try {
-    await withBusy(btn, null,
+    r = await withBusy(btn, null,
       () => api().item_action(tid, action, [{ src, mid }]));
-  } catch (e) { return; }
+  } catch (e) {
+    if (isBusyReject(e)) return;
+    return showErr("条目操作失败", e);
+  }
+  if (!r || !r.ok)
+    showErr("条目操作失败", (r && r.error) || "操作未生效");
   setTimeout(refreshActive, 250);
 }
 
@@ -1042,12 +1096,26 @@ async function activeBulk(action, btn) {
     (byTask[tid] ||= []).push({ src, mid: Number(mid) });
   }
   const labels = { resume: "开始中…", pause: "暂停中…", skip: "跳过中…", remove: "移除中…" };
+  const fails = [];   // T53b P1-2：逐任务组失败聚合可见（一组失败不中断其余组）
   try {
     await withBusy(btn, labels[action] || "处理中…", async () => {
-      for (const [tid, ks] of Object.entries(byTask))
-        await api().item_action(tid, action, ks);
+      for (const [tid, ks] of Object.entries(byTask)) {
+        let r;
+        try {
+          r = await api().item_action(tid, action, ks);
+        } catch (e) {
+          fails.push(`${tid}: ${errDetail(e)}`);
+          continue;
+        }
+        if (!r || !r.ok)
+          fails.push(`${tid}: ${(r && r.error) || "操作未生效"}`);
+      }
     });
-  } catch (e) { return; }
+  } catch (e) {
+    if (isBusyReject(e)) return;
+    return showErr("批量操作失败", e);
+  }
+  if (fails.length) showErr("批量操作部分失败", fails.join("\n"));
   activeSel.clear();
   setTimeout(refreshActive, 250);
 }
@@ -1055,27 +1123,42 @@ async function activeBulk(action, btn) {
 async function abortGroup(tid, btn) {
   if (!confirm("中止该任务的全部下载？\n未完成视频状态保留，可随时继续。"))
     return;
+  let r;
   try {
-    await withBusy(btn, "正在中止…", () => api().abort_task(tid));
-  } catch (e) { return; }
+    r = await withBusy(btn, "正在中止…", () => api().abort_task(tid));
+  } catch (e) {
+    if (isBusyReject(e)) return;
+    return showErr("中止任务失败", e);
+  }
+  if (!r || !r.ok)
+    showErr("中止任务失败", (r && r.error) || "操作未生效");
   setTimeout(refreshActive, 400);
 }
 
 // 常驻轮询（防重叠：上一轮跑完再排下一轮；后端偶发慢响应时
 // 多个 refreshActive 不会堆积，杜绝桥调用雪崩）
 let activePollBusy = false;
+// T53b P1-6：is_active + 当前视图刷新的一拍（轮询体/回前台补拉共用；
+// activePollBusy 防重入——补拉进行中轮询拍与再次 visibilitychange 均跳过）
+async function activePollOnce() {
+  const running = await api().is_active();
+  document.getElementById("nav-dot").classList.toggle("on", running);
+  if (currentView === "active") await refreshActive();
+  return running;
+}
 async function activePollTick() {
   let delay = 1000;
-  if (!activePollBusy) {
+  // T53b P1-6：页面隐藏拍直接跳过且不发 is_active/refreshActive 请求
+  // （写法照搬 guestPollTick 的 document.hidden 门控）；setTimeout 链
+  // 保持——回前台经 visibilitychange 立即补拉一次，随后自然恢复拍频。
+  if (!document.hidden && !activePollBusy) {
     activePollBusy = true;
     try {
-      const running = await api().is_active();
-      document.getElementById("nav-dot").classList.toggle("on", running);
-      if (currentView === "active") await refreshActive();
+      const running = await activePollOnce();
       // 无下载且停留在其他页面时退避到 4 秒：空闲期不再每秒做一次
       // JS↔Python 桥往返持续唤醒 CPU（省电、降发热）；开始下载后前端
       // 会主动切到下载页并立即刷新，不依赖这个轮询。
-      else if (!running) delay = 4000;
+      if (!running) delay = 4000;
     } catch (e) {} finally {
       activePollBusy = false;
     }
@@ -1083,12 +1166,41 @@ async function activePollTick() {
   setTimeout(activePollTick, delay);
 }
 activePollTick();
+// T53b P1-6：回前台立即补拉一次（先例：TgJobProgress mount 的
+// visibilitychange → sync；防止隐藏期间错过的状态到恢复可见后还
+// 要再等最长一个退避周期才刷新）
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden || activePollBusy) return;
+  activePollBusy = true;
+  activePollOnce()
+    .catch(() => {})
+    .finally(() => { activePollBusy = false; });
+});
 
 // ============================================================
 // 任务库
 // ============================================================
+// T53b P1-2：任务库是主视图——list_tasks 异常/形状异常不再静默
+// 白屏：错误 Toast + 列表区内联错误位（复用现有 .empty-state 类 +
+// var(--danger) 内联强调；index.html/style.css 零改）
+function showTaskListError(v) {
+  showErr("任务列表加载失败", v);
+  document.getElementById("task-empty").classList.add("hidden");
+  document.getElementById("task-list").innerHTML =
+    `<div class="empty-state">` +
+    `<h3 style="color:var(--danger)">任务列表加载失败</h3>` +
+    `<p>请检查应用后重试；上方错误提示可展开查看详情。</p>` +
+    `<button class="btn glass-btn" onclick="renderTasks()">重试</button></div>`;
+}
+
 async function renderTasks() {
-  const tasks = await api().list_tasks();
+  let tasks;
+  try {
+    tasks = await api().list_tasks();
+  } catch (e) {
+    return showTaskListError(e);
+  }
+  if (!Array.isArray(tasks)) return showTaskListError("返回数据异常");
   const q = document.getElementById("task-search").value.trim().toLowerCase();
   let rows = tasks.filter(t =>
     !q || (t.channel_title + t.channel).toLowerCase().includes(q));
@@ -1154,11 +1266,18 @@ async function quickResume(id, failed, btn) {
   if (r.ok || (r.error || "").includes("已在下载")) switchView("active");
   else alert(r.error);
 }
+// T53b P1-2/P1-3：confirm 流程与 withBusy 防重保持；删除失败
+// （!ok / 网络异常）可见，成功后 renderTasks 自带失败保护
 async function quickDelete(id, btn) {
   if (!confirm("删除任务记录？已下载视频不会被删除。")) return;
+  let r;
   try {
-    await withBusy(btn, "删除中…", () => api().delete_task(id));
-  } catch (e) { return; }
+    r = await withBusy(btn, "删除中…", () => api().delete_task(id));
+  } catch (e) {
+    if (isBusyReject(e)) return;
+    return showErr("删除任务失败", e);
+  }
+  if (!r || !r.ok) return showErr("删除任务失败", (r && r.error) || "删除未生效");
   renderTasks();
 }
 
@@ -1171,23 +1290,44 @@ const sheet = {
   sel: new Set(), expanded: new Set(), files: {},
 };
 
+// T53b P1-2：get_task 失败不再静默 return（打开无反馈）；
+// P1-7：文件信息同 reloadSheet 口径——get_task 已含则复用（不再
+// 固定追加 items_file_info），未携带才 fallback（旧后端兼容）。
 async function openSheet(taskId) {
-  const r = await api().get_task(taskId);
-  if (!r.ok) return;
+  let r;
+  try {
+    r = await api().get_task(taskId);
+  } catch (e) {
+    return showErr("打开任务详情失败", e);
+  }
+  if (!r || !r.ok)
+    return showErr("打开任务详情失败", (r && r.error) || "任务读取失败");
   sheet.taskId = taskId;
   sheet.task = r.task;
   sheet.counts = r.counts;
   sheet.filter = "all"; sheet.q = ""; sheet.edit = false;
   sheet.sel = new Set(); sheet.expanded = new Set();
+  sheet.files = {};   // 切换任务先清旧文件状态（防上个任务的标记残留）
   toggleEdit(false, true);
   renderSheet();
   document.getElementById("sheet-mask").classList.remove("hidden");
   document.getElementById("sheet").classList.remove("hidden");
   requestAnimationFrame(() =>
     document.getElementById("sheet").classList.add("show"));
-  // 批量文件状态
-  const fr = await api().items_file_info(taskId);
-  if (fr.ok) sheet.files = fr.items;
+  // 批量文件状态：get_task 已含则复用；未携带 fallback（失败可见，
+  // 渲染继续——详情不因文件状态缺失而白屏）
+  const files = extractTaskFiles(r);
+  if (files) sheet.files = files;
+  else {
+    let fr = null;
+    try {
+      fr = await api().items_file_info(taskId);
+    } catch (e) {
+      showErr("读取条目文件状态失败", e);
+    }
+    if (fr && fr.ok) sheet.files = fr.items;
+    else if (fr) showErr("读取条目文件状态失败", fr.error || "读取失败");
+  }
   renderDetailItems();
   startSheetPoll();
 }
@@ -1300,16 +1440,17 @@ function renderDetailItems() {
     const checkbox = sheet.edit
       ? `<span class="mini-cbox" onclick="toggleEditSel('${esc(k)}')">${ck ? "✓" : ""}</span>`
       : "";
-    // 浏览态操作
+    // 浏览态操作（T53b P1-3：onclick 传 this——被点按钮可做忙态；
+    // 写法参照 activeItemButtons 的传参先例）
     let acts = "";
     if (!sheet.edit) {
       if (f.exists)
-        acts += `<button class="mini-action" title="播放/打开文件" onclick="dPlay('${esc(src)}',${ti.msg})">▶</button>`;
+        acts += `<button class="mini-action" title="播放/打开文件" onclick="dPlay('${esc(src)}',${ti.msg},this)">▶</button>`;
       if (["pending", "failed"].includes(ti.status))
-        acts += `<button class="mini-action" title="标记重新下载" onclick="dStatus('${esc(src)}',${ti.msg},'pending')">↻</button>`;
+        acts += `<button class="mini-action" title="标记重新下载" onclick="dStatus('${esc(src)}',${ti.msg},'pending',this)">↻</button>`;
       if (ti.status !== "skipped")
-        acts += `<button class="mini-action" title="标记跳过" onclick="dStatus('${esc(src)}',${ti.msg},'skipped')">⤼</button>`;
-      acts += `<button class="mini-action danger" title="从任务移除" onclick="dRemove('${esc(src)}',${ti.msg})">✕</button>`;
+        acts += `<button class="mini-action" title="标记跳过" onclick="dStatus('${esc(src)}',${ti.msg},'skipped',this)">⤼</button>`;
+      acts += `<button class="mini-action danger" title="从任务移除" onclick="dRemove('${esc(src)}',${ti.msg},this)">✕</button>`;
     }
     return `
       <div class="ditem ${ck ? "checked" : ""} ${ex ? "expanded" : ""}">
@@ -1339,24 +1480,99 @@ function toggleDetailExpand(k) {
   renderDetailItems();
 }
 
-// 浏览态单条目操作
-async function dPlay(src, mid) {
-  await api().open_item_file(sheet.taskId, src, mid);
+// 浏览态单条目操作（T53b P1-2/P1-3：返回检查 + 忙态 + 失败可见；
+// onclick 已传 this 做 withBusy 忙态，函数级幂等锁兜底——拿不到
+// 按钮的入口同样双击只发一次 RPC）
+let dPlayBusy = false;
+async function dPlay(src, mid, btn) {
+  if (dPlayBusy) return;
+  dPlayBusy = true;
+  let r;
+  try {
+    r = await withBusy(btn, null,
+      () => api().open_item_file(sheet.taskId, src, mid));
+  } catch (e) {
+    if (!isBusyReject(e)) showErr("打开文件失败", e);
+    return;
+  } finally {
+    dPlayBusy = false;
+  }
+  if (!r || !r.ok)
+    showErr("打开文件失败", (r && r.error) || "文件不存在或无法打开");
 }
-async function dStatus(src, mid, status) {
-  await api().set_item(sheet.taskId, src, mid, status);
+let dStatusBusy = false;
+async function dStatus(src, mid, status, btn) {
+  if (dStatusBusy) return;
+  dStatusBusy = true;
+  let r;
+  try {
+    r = await withBusy(btn, null,
+      () => api().set_item(sheet.taskId, src, mid, status));
+  } catch (e) {
+    if (!isBusyReject(e)) showErr("标记条目状态失败", e);
+    return;
+  } finally {
+    dStatusBusy = false;
+  }
+  if (!r || !r.ok) {
+    showErr("标记条目状态失败", (r && r.error) || "操作未生效");
+    return;
+  }
   await reloadSheet();
 }
-async function dRemove(src, mid) {
+let dRemoveBusy = false;
+async function dRemove(src, mid, btn) {
   if (!confirm("从任务移除该条目？本地文件不会删除。")) return;
-  await api().remove_items(sheet.taskId, [{ src, mid }]);
+  if (dRemoveBusy) return;
+  dRemoveBusy = true;
+  let r;
+  try {
+    r = await withBusy(btn, null,
+      () => api().remove_items(sheet.taskId, [{ src, mid }]));
+  } catch (e) {
+    if (!isBusyReject(e)) showErr("移除条目失败", e);
+    return;
+  } finally {
+    dRemoveBusy = false;
+  }
+  if (!r || !r.ok) {
+    showErr("移除条目失败", (r && r.error) || "操作未生效");
+    return;
+  }
   await reloadSheet();
 }
+// T53b P1-7：去掉 get_task + items_file_info 固定双拉——先拉
+// get_task；返回已含条目文件信息（C 包单读化后可能携带，字段兼容
+// 见 extractTaskFiles）则复用；未携带才 fallback items_file_info。
+// P1-2：两响应失败均可见反馈（渲染用旧数据继续，不白屏）。
 async function reloadSheet() {
-  const r = await api().get_task(sheet.taskId);
-  if (r.ok) { sheet.task = r.task; sheet.counts = r.counts; }
-  const fr = await api().items_file_info(sheet.taskId);
-  if (fr.ok) sheet.files = fr.items;
+  let r;
+  try {
+    r = await api().get_task(sheet.taskId);
+  } catch (e) {
+    showErr("刷新任务详情失败", e);
+    renderSheet(); renderDetailItems();
+    return;
+  }
+  if (!r || !r.ok) {
+    showErr("刷新任务详情失败", (r && r.error) || "任务读取失败");
+    renderSheet(); renderDetailItems();
+    return;
+  }
+  sheet.task = r.task;
+  sheet.counts = r.counts;
+  const files = extractTaskFiles(r);
+  if (files) sheet.files = files;
+  else {
+    let fr = null;
+    try {
+      fr = await api().items_file_info(sheet.taskId);
+    } catch (e) {
+      showErr("读取条目文件状态失败", e);
+    }
+    if (fr && fr.ok) sheet.files = fr.items;
+    else if (fr) showErr("读取条目文件状态失败", fr.error || "读取失败");
+  }
   renderSheet(); renderDetailItems();
 }
 
@@ -1379,9 +1595,25 @@ function fillEditForm() {
   document.getElementById("ed-parallel").value =
     t.params && t.params.parallel ? t.params.parallel : 1;
 }
+// T53b P1-2/P1-3：选目录（滑层编辑/设置页两入口共用一把锁——
+// 同一时间只允许一个目录对话框在途）；失败可见；仅成功选定（ok
+// 且 path 非空）才回填，用户取消对话框保持现状静默。
+let folderPickBusy = false;
 async function editChooseFolder() {
-  const r = await api().choose_folder();
-  if (r.ok && r.path) document.getElementById("ed-folder").value = r.path;
+  if (folderPickBusy) return;
+  folderPickBusy = true;
+  let r;
+  try {
+    r = await api().choose_folder();
+  } catch (e) {
+    showErr("选择目录失败", e);
+    return;
+  } finally {
+    folderPickBusy = false;
+  }
+  if (!r || !r.ok)
+    return showErr("选择目录失败", (r && r.error) || "未能选择目录");
+  if (r.path) document.getElementById("ed-folder").value = r.path;
 }
 async function saveEditTask() {
   // T50：保存按钮全程状态机——点击即锁；瞬时完成/失败/need_login 恢复；
@@ -1442,21 +1674,78 @@ function bulkKeys() {
     return { src, mid: Number(mid) };
   });
 }
+// T53b P1-7：批量标记改接后端既有批量接口 editor_set_status
+// (task_id, keys, status)（set_items_status 批量一次写盘）——旧实现
+// 逐条 set_item ×N 次 RPC，现一次批量操作恰 1 次 RPC。
+// P1-2/P1-3：失败可见 + 函数级锁防重（按钮在 index.html，
+// onclick 不传参，拿不到 btn 由幂等锁兜底：双击只发一次）。
+let bulkStatusBusy = false;
 async function bulkStatus(status) {
-  for (const k of bulkKeys())
-    await api().set_item(sheet.taskId, k.src, k.mid, status);
+  const keys = bulkKeys();
+  if (!keys.length) return;
+  if (bulkStatusBusy) return;
+  bulkStatusBusy = true;
+  let r;
+  try {
+    r = await api().editor_set_status(sheet.taskId, keys, status);
+  } catch (e) {
+    showErr("批量标记失败", e);
+    return;
+  } finally {
+    bulkStatusBusy = false;
+  }
+  if (!r || !r.ok) {
+    showErr("批量标记失败", (r && r.error) || "操作未生效");
+    return;
+  }
   sheet.sel.clear();
+  renderBulkBar();
   await reloadSheet();
 }
+// T53b P1-2/P1-3：保持单次 remove_items（该 RPC 本就批量）；
+// 失败可见 + 函数级锁防重。
+let bulkRemoveBusy = false;
 async function bulkRemove() {
   if (!confirm("从任务移除选中条目？本地文件不会删除。")) return;
-  await api().remove_items(sheet.taskId, bulkKeys());
+  if (bulkRemoveBusy) return;
+  bulkRemoveBusy = true;
+  let r;
+  try {
+    r = await api().remove_items(sheet.taskId, bulkKeys());
+  } catch (e) {
+    showErr("批量移除失败", e);
+    return;
+  } finally {
+    bulkRemoveBusy = false;
+  }
+  if (!r || !r.ok) {
+    showErr("批量移除失败", (r && r.error) || "操作未生效");
+    return;
+  }
   sheet.sel.clear();
+  renderBulkBar();
   await reloadSheet();
 }
 
 // ---------- 滑层其它操作 ----------
-function sheetOpenFolder() { api().open_folder(sheet.task.folder); }
+// T53b P1-2/P1-3：打开目录 fire-and-forget 改为等待返回 + 失败可见
+// + 函数级锁防重
+let sheetFolderBusy = false;
+async function sheetOpenFolder() {
+  if (sheetFolderBusy) return;
+  sheetFolderBusy = true;
+  let r;
+  try {
+    r = await api().open_folder(sheet.task && sheet.task.folder);
+  } catch (e) {
+    showErr("打开目录失败", e);
+    return;
+  } finally {
+    sheetFolderBusy = false;
+  }
+  if (!r || !r.ok)
+    showErr("打开目录失败", (r && r.error) || "目录不存在或无法打开");
+}
 async function sheetResume() {
   if (guardRestricted("继续下载", () => sheetResume())) return;
   const failedOnly = sheet.counts.pending === 0 && sheet.counts.failed > 0;
@@ -1486,9 +1775,26 @@ function closeSheetNoRefresh() {
   document.getElementById("sheet-mask").classList.add("hidden");
   setTimeout(() => document.getElementById("sheet").classList.add("hidden"), 450);
 }
+// T53b P1-2/P1-3：删除滑层任务——confirm 流程保持；失败可见
+// + 函数级锁防重；仅真正成功才关滑层回任务库
+let sheetDeleteBusy = false;
 async function sheetDelete() {
   if (!confirm("删除整个任务记录？已下载视频不会删除。")) return;
-  await api().delete_task(sheet.taskId);
+  if (sheetDeleteBusy) return;
+  sheetDeleteBusy = true;
+  let r;
+  try {
+    r = await api().delete_task(sheet.taskId);
+  } catch (e) {
+    showErr("删除任务失败", e);
+    return;
+  } finally {
+    sheetDeleteBusy = false;
+  }
+  if (!r || !r.ok) {
+    showErr("删除任务失败", (r && r.error) || "删除未生效");
+    return;
+  }
   closeSheet();
 }
 
@@ -1569,13 +1875,63 @@ async function loadSettings() {
   // 桩模式 t52demo=1 读 window.__tgAcctProbe，不发任何 HTTP。
   TgAccounts.refresh();
 }
+// T53b P1-2/P1-3：设置页选目录与滑层 editChooseFolder 共用锁
+// （同一时间只允许一个目录对话框）；失败可见；用户取消保持静默。
 async function chooseFolder() {
-  const r = await api().choose_folder();
-  if (r.ok && r.path) document.getElementById("set-root").value = r.path;
+  if (folderPickBusy) return;
+  folderPickBusy = true;
+  let r;
+  try {
+    r = await api().choose_folder();
+  } catch (e) {
+    showErr("选择目录失败", e);
+    return;
+  } finally {
+    folderPickBusy = false;
+  }
+  if (!r || !r.ok)
+    return showErr("选择目录失败", (r && r.error) || "未能选择目录");
+  if (r.path) document.getElementById("set-root").value = r.path;
 }
-function openRoot() { api().open_folder(document.getElementById("set-root").value); }
+// T53b P1-2/P1-3：打开下载目录 fire-and-forget 改等待返回 + 失败
+// 可见 + 函数级锁防重
+let openRootBusy = false;
+async function openRoot() {
+  if (openRootBusy) return;
+  openRootBusy = true;
+  let r;
+  try {
+    r = await api().open_folder(document.getElementById("set-root").value);
+  } catch (e) {
+    showErr("打开目录失败", e);
+    return;
+  } finally {
+    openRootBusy = false;
+  }
+  if (!r || !r.ok)
+    showErr("打开目录失败", (r && r.error) || "目录不存在或无法打开");
+}
+// T53b P1-2/P1-3：删掉无条件 alert("已保存")——仅真正成功才给
+// 成功提示（沿用现有 alert 同族样式），失败走统一错误反馈；
+// 函数级锁防重（双击只发一次 RPC）。
+let saveRootBusy = false;
 async function saveRoot() {
-  await api().set_download_root(document.getElementById("set-root").value);
+  if (saveRootBusy) return;
+  saveRootBusy = true;
+  let r;
+  try {
+    r = await api().set_download_root(
+      document.getElementById("set-root").value);
+  } catch (e) {
+    showErr("保存下载目录失败", e);
+    return;
+  } finally {
+    saveRootBusy = false;
+  }
+  if (!r || !r.ok) {
+    showErr("保存下载目录失败", (r && r.error) || "保存未生效");
+    return;
+  }
   alert("已保存");
 }
 
@@ -1602,10 +1958,22 @@ function applyAppearance(mode) {
     el.classList.toggle("active", el.dataset.mode === mode));
 }
 
+// T53b P1-2：后端 set_appearance 失败不再空 catch 吞——本地已先行
+// 生效（applyAppearance），文案明确"本地已切换、后端保存失败"语义；
+// 用户重试即再点一次分段控件。localStorage 的空 catch（L1606 既有）
+// 与 bootAppearance 的启动引导容错空 catch 按原状保留。
 async function setAppearance(mode) {
   try { localStorage.setItem("appearance", mode); } catch (e) {}
   applyAppearance(mode);
-  try { await api().set_appearance(mode); } catch (e) {}
+  let r = null;
+  try {
+    r = await api().set_appearance(mode);
+  } catch (e) {
+    return showErr("外观设置保存失败（本地已切换，重启应用后需重新选择）", e);
+  }
+  if (!r || !r.ok)
+    showErr("外观设置保存失败（本地已切换，重启应用后需重新选择）",
+            (r && (r.error || r)) || "后端保存未生效");
 }
 
 async function bootAppearance() {
@@ -2013,21 +2381,34 @@ window.__tgGuestProbe = {
 //       二次确认）+ 任务选号分段控件（新建页/任务库卡片/下载中组头）
 //       + tg:acct_hint 限速提示（大条可关闭 / 已有小号降级小字行）。
 //
-// 契约（T51 冻结名，正常路径按冻结名调用；本任务以桩数据接通）：
+// 契约（T53b 修正稿：T51 真实形状，88833c1 基线；桩数据接缝见下
+//        方"桩模式"段）：
 //   RPC  account_list() -> {ok, accounts:[{id:"main"|"alt1"|…,
-//        label, phone, me:{username|first_name},
-//        state:"ready"|"connecting"|"absent"}]}
-//        account_add_start(account_id, phone) -> {ok} | {ok:false, stage:…}
-//        account_verify_code(account_id, code) -> {ok} |
-//          {ok:false, stage:"need_password"} | {ok:false, error:…}
+//        label, phone, me:{username|first_name|name},
+//        state:"ready"|"adding"|"has_session"|"logged_out"|"error"}]}
+//        ——真实五枚举（ready/adding/has_session/logged_out/error），
+//        经 RPC_STATE_MAP 归一到 UI 三态 ready/connecting/absent
+//        （adding/has_session -> connecting，logged_out/error -> absent）
+//        account_add_start(account_id, phone) -> {ok:true} |
+//          {ok:true, stage:"need_password"}（真实 2FA 形状）|
+//          {ok:false, error:…}
+//        account_verify_code(account_id, code) -> {ok:true} |
+//          {ok:true, stage:"need_password"}（真实 2FA 形状）|
+//          {ok:false, stage:"need_password"}（接缝桩形状）|
+//          {ok:false, error:…}
+//          ——2FA 分支按 stage 字段优先判定（先于 ok，见 verifyCode：
+//          真实形与桩形同走 need_password 步）
 //        account_verify_password(account_id, password) -> {ok} | {ok:false,…}
 //        account_remove(account_id) -> {ok} | {ok:false, busy:true}
-//        edit_task(task_id, {acct:"main"|"alt1"|"auto"})
-//        （edit_task 已在 RPC 白名单；acct 字段扩展属 T51 后端，
-//         当前后端忽略未知字段并返回 ok，不产生错误）
+//        edit_task(task_id, {acct_pref:"main"|"alt1"|…"auto"})
+//        ——真实落盘字段为任务 JSON params.acct_pref（T51 真实形状；
+//          auto 时该键不存在/弹出）；edit_task 已在 RPC 白名单
 //   事件 tg:acct_hint（bridge.js 白名单已含 acct_hint）detail：
-//        {account_id, reason:"flood_wait"|"slow",
-//         suggestion:"add_alt"|"switch_alt", detail}
+//        T51 真实形状为嵌套负载 {task_id, data:{reason,
+//          from_acct, to_acct, item_msg, has_alt, hint, seq}}；
+//          接缝桩/旧稿为扁平 {account_id, reason,
+//          suggestion:"add_alt"|"switch_alt", detail}——normHint
+//          归一兼容两者（reason 仅 flood_wait|"slow" 驱动限速 UI）
 //
 // 桩模式：URL hash 含 t52demo=1 时（门控与 T45 t45demo 同级、默认
 //   关闭），账号数据源与账号模块 RPC 改读 window.__tgAcctProbe
@@ -2464,3 +2845,154 @@ const TgAccounts = (() => {
 // 组件对象暴露到 window（控制台/测试驱动；命名与 TgJobProbe 风格一致）
 window.TgAccounts = TgAccounts;
 // ===== T52 多账号前端（结束）=====
+
+// ============================================================
+// ===== T53b 统一错误反馈 / 批量复用工具（开始）=====
+// P1-2（A 包）：失败路径统一可见反馈。硬约束（本包钉死）：
+//   - 不自动消失：无任何 setTimeout 自动关闭，仅用户点「关闭」移除
+//     （错误需持续可见，不许一闪而过）；
+//   - 可展开详情：摘要行 + 「详情/收起」切换 + 全文区（异常
+//     message/stack、RPC error 文本原样保留）；
+//   - style.css / index.html 零改：DOM 全部运行时 createElement 创建
+//     （挂 document.body 的先例同 T50Move 弹层）；样式只内联引用既有
+//     CSS 变量 var(--glass-bg-strong)/var(--ink)/var(--danger)/
+//     var(--r-md)…——深浅色与液态主题下自动翻转、均可读；
+//   - 位置：顶部中央悬浮栈（z-index 9000，高于登录 60/滑层 71/模态
+//     80，且不与右下角 T45 作业进度卡争位）。
+//   - T52 设计语义保留：TgAccounts 的 account_list 等安静降级
+//     （console.debug）不接错误 Toast（TR-52.2 B2 断言行为）。
+// ============================================================
+const TgToast = (() => {
+  let host = null;
+
+  function ensureHost() {
+    if (host && host.isConnected) return host;
+    host = document.createElement("div");
+    host.style.cssText =
+      "position:fixed;top:18px;left:50%;transform:translateX(-50%);" +
+      "z-index:9000;display:flex;flex-direction:column;gap:10px;" +
+      "width:min(520px,92vw);max-height:70vh;pointer-events:none;";
+    document.body.appendChild(host);
+    return host;
+  }
+
+  function mkPill(text) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = text;
+    b.style.cssText =
+      "flex-shrink:0;font-size:11.5px;padding:3px 10px;" +
+      "border-radius:999px;border:1px solid var(--glass-edge);" +
+      "background:var(--glass-bg-soft);color:var(--ink-dim);";
+    return b;
+  }
+
+  function buildCard(summary, detail) {
+    const card = document.createElement("div");
+    card.dataset.t53bToast = "error";
+    card.style.cssText =
+      "pointer-events:auto;background:var(--glass-bg-strong);" +
+      "border:1px solid var(--glass-edge);border-left:3px solid var(--danger);" +
+      "border-radius:var(--r-md);box-shadow:var(--depth-shadow);" +
+      "padding:12px 14px;font-size:13px;color:var(--ink);" +
+      "backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);";
+    const head = document.createElement("div");
+    head.style.cssText = "display:flex;align-items:center;gap:10px;";
+    const mark = document.createElement("span");
+    mark.textContent = "⚠";
+    mark.style.cssText = "color:var(--danger);font-size:14px;flex-shrink:0;";
+    const sum = document.createElement("span");
+    sum.textContent = summary;
+    sum.style.cssText =
+      "flex:1;font-weight:650;line-height:1.45;word-break:break-all;";
+    const detailBtn = mkPill("详情");
+    const closeBtn = mkPill("关闭");
+    head.append(mark, sum, detailBtn, closeBtn);
+    const body = document.createElement("div");
+    body.style.cssText =
+      "display:none;margin-top:9px;padding:9px 11px;" +
+      "background:var(--glass-bg-soft);border-radius:var(--r-sm);" +
+      "color:var(--ink-dim);font-size:12px;white-space:pre-wrap;" +
+      "word-break:break-all;max-height:38vh;overflow-y:auto;";
+    body.textContent = detail == null ? "" : String(detail);
+    detailBtn.addEventListener("click", () => {
+      const open = body.style.display !== "none";
+      body.style.display = open ? "none" : "block";
+      detailBtn.textContent = open ? "详情" : "收起";
+    });
+    closeBtn.addEventListener("click", () => card.remove());
+    card.append(head, body);
+    return card;
+  }
+
+  function error(summary, detail) {
+    const h = ensureHost();
+    h.appendChild(buildCard(summary || "操作失败", detail));
+    return true;
+  }
+  function count() {
+    return host ? host.querySelectorAll("[data-t53b-toast]").length : 0;
+  }
+  function dismissAll() {
+    if (host) host.querySelectorAll("[data-t53b-toast]")
+      .forEach(c => c.remove());
+  }
+  return { error, count, dismissAll };
+})();
+// 暴露到 window（供 CDP 断言/测试驱动；命名与 __tgJobProbe 风格一致）
+window.TgToast = TgToast;
+
+// 错误详情归一：Error → stack/message；对象 → JSON 缩进串；字符串原样
+function errDetail(v) {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  if (v instanceof Error) return (v.stack || v.message) || String(v);
+  try { return JSON.stringify(v, null, 1); } catch (e) { return String(v); }
+}
+// P1-2 统一失败反馈入口（摘要 + 可展开详情；不自动消失）
+function showErr(summary, v) {
+  TgToast.error(summary, errDetail(v));
+}
+// withBusy 防重拒绝（双击第二拍抛 "操作进行中"）不是失败：静默放行
+function isBusyReject(e) {
+  return !!(e && e instanceof Error && e.message === "操作进行中");
+}
+
+// T53b P1-7（与 C 包 get_task 单读化对齐的前端边界）：get_task 返回若已含
+// 条目文件信息则复用、不再调 items_file_info；未携带时调用方 fallback
+// items_file_info（旧后端兼容）。携带位置防御性兼容三处（后端演进以实际
+// 形状为准）：顶层 r.files / r.task.files（{"src|mid":{exists,partial}}
+// 映射，同 items_file_info）或条目级 ti.file_info；形状不符一律视为
+// 未携带。键格式与 renderDetailItems 的 keyOf(src, ti.msg) 一致。
+function extractTaskFiles(r) {
+  const fromMap = (m) => {
+    if (!m || typeof m !== "object") return null;
+    const out = {};
+    let n = 0;
+    for (const k of Object.keys(m)) {
+      const v = m[k];
+      if (v && typeof v === "object" && typeof v.exists === "boolean") {
+        out[k] = { exists: v.exists, partial: !!v.partial };
+        n++;
+      }
+    }
+    return n ? out : null;
+  };
+  let got = fromMap(r && r.files);
+  if (got) return got;
+  got = fromMap(r && r.task && r.task.files);
+  if (got) return got;
+  const items = (r && r.task && Array.isArray(r.task.items)) ? r.task.items : [];
+  const out = {};
+  let n = 0;
+  for (const ti of items) {
+    const fi = ti && (ti.file_info || ti.file);
+    if (fi && typeof fi === "object" && typeof fi.exists === "boolean") {
+      out[keyOf(ti.src || "频道", ti.msg)] =
+        { exists: fi.exists, partial: !!fi.partial };
+      n++;
+    }
+  }
+  return n ? out : null;
+}
+// ===== T53b 统一错误反馈 / 批量复用工具（结束）=====
