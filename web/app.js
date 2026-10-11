@@ -303,6 +303,8 @@ async function doLogout() {
   showLoginStep("phone");
   document.getElementById("login").classList.remove("hidden");
   switchView("new");
+  // T52：退出登录后账号区回落（清空已加载的账号列表并重拉/降级渲染）
+  TgAccounts.refresh();
 }
 
 // ============================================================
@@ -478,6 +480,9 @@ async function doStart(btn) {
                            parallel, "", previewData.job_id || ""));
   } catch (e) { return; }
   if (!r.ok) return alert(r.error);
+  // T52：任务创建成功即下发账号策略（edit_task({acct})，T51 契约；
+  // 桩模式 t52demo=1 由 probe 应答并记录入参形状）
+  TgAccounts.applyNewTaskAcct(r.task_id);
   switchView("active");
 }
 
@@ -873,10 +878,13 @@ function onDlPhase(detail) {
             <span class="dl-group-stat"></span>
           </div>
           <span class="dl-phase" data-phase=""><span class="dl-phase-dot"></span><span class="dl-phase-text"></span></span>
+          <span class="acct-seg-host segmented" data-acct-tid="${esc(detail.task_id)}"></span>
           <button class="btn danger sm" onclick="abortGroup('${esc(detail.task_id)}',this)">中止任务</button>
         </div>
         <div class="dl-group-body"></div>`;
     document.getElementById("active-list").appendChild(g);
+    // T52：dl_phase 骨架组先落位选号控件（标题/计数由轮询补全）
+    TgAccounts.renderSegs();
   }
   if (g) updateGroupPhase(g, p, d);
   const tc = document.querySelector(
@@ -887,10 +895,12 @@ function onDlPhase(detail) {
 function syncActiveList(states) {
   const list = document.getElementById("active-list");
   const liveGroups = new Set();
+  let madeNew = false;   // T52：仅新建组时需填充选号控件（1s 轮询不重建）
   for (const s of states) {
     liveGroups.add(s.task_id);
     let g = list.querySelector(`[data-gid="${qAttr(s.task_id)}"]`);
     if (!g) {
+      madeNew = true;
       g = document.createElement("div");
       g.className = "dl-group";
       g.dataset.gid = s.task_id;
@@ -901,6 +911,7 @@ function syncActiveList(states) {
             <span class="dl-group-stat"></span>
           </div>
           <span class="dl-phase" data-phase=""><span class="dl-phase-dot"></span><span class="dl-phase-text"></span></span>
+          <span class="acct-seg-host segmented" data-acct-tid="${esc(s.task_id)}"></span>
           <button class="btn danger sm" onclick="abortGroup('${esc(s.task_id)}',this)">中止任务</button>
         </div>
         <div class="dl-group-body"></div>`;
@@ -916,6 +927,8 @@ function syncActiveList(states) {
   for (const oldG of Array.from(list.children)) {
     if (!liveGroups.has(oldG.dataset.gid)) oldG.remove();
   }
+  // T52：下载中视图组头选号控件（含新建骨架组）填充
+  if (madeNew) TgAccounts.renderSegs();
 }
 
 function syncCards(body, s) {
@@ -1083,6 +1096,10 @@ async function renderTasks() {
   if (taskFilter === "done") rows = rows.filter(t => t.pending + t.failed === 0);
   if (taskFilter === "failed") rows = rows.filter(t => t.failed > 0);
 
+  // T52：任务账号策略种子（T51 后端在 list_tasks 携带 acct 字段时生效；
+  // 用户本次会话内手动切换过的值优先，不被种子覆盖）
+  tasks.forEach(t => { if (t.acct) TgAccounts.noteTaskAcct(t.id, t.acct); });
+
   document.getElementById("task-empty").classList.toggle("hidden", rows.length > 0);
   document.getElementById("task-list").innerHTML = rows.map(t => {
     const pct = t.total ? Math.round(t.finished * 100 / t.total) : 0;
@@ -1098,6 +1115,11 @@ async function renderTasks() {
         <div class="tag-row">${tags.join("") || '<span class="mini-tag">全部完成</span>'}</div>
         <div class="task-bar"><div class="task-fill ${t.finished === t.total ? "full" : ""}" style="width:${pct}%"></div></div>
         <div class="task-stat"><span>${t.finished}/${t.total} 完成</span><span>${esc(t.created)}</span></div>
+        <div class="task-acct" onclick="event.stopPropagation()">
+          <span class="task-acct-label">本任务后续下载使用</span>
+          <span class="acct-seg-host segmented" data-acct-tid="${esc(t.id)}"></span>
+          <span class="task-acct-note">进行中的条目不受影响</span>
+        </div>
         <div class="task-actions">
           ${t.pending + t.failed ? `<button class="btn primary sm" onclick="quickResume('${esc(t.id)}',false,this)">继续</button>` : ""}
           ${t.failed ? `<button class="btn glass-btn sm" onclick="quickResume('${esc(t.id)}',true,this)">重试失败</button>` : ""}
@@ -1105,6 +1127,8 @@ async function renderTasks() {
         </div>
       </div>`;
   }).join("");
+  // T52：卡片重建后填充任务选号分段控件
+  TgAccounts.renderSegs();
   // T49：重建后恢复仍在进行中的阶段位（终态不复活——滑层/切视图零残留）
   document.querySelectorAll("#task-list .task-card").forEach(tc => {
     const ph = dlPhaseByTask.get(tc.dataset.tid);
@@ -1540,14 +1564,10 @@ async function runAppend() {
 async function loadSettings() {
   const r = await api().get_settings();
   document.getElementById("set-root").value = r.download_root;
-  const n = document.getElementById("me-name").textContent;
-  const u = document.getElementById("me-user").textContent;
-  // T46 游客态：账号区显示游客模式、隐藏退出登录按钮（对游客无意义）
-  document.getElementById("set-account").textContent = guestMode
-    ? "游客模式（未登录）"
-    : (n === "未登录" ? "未登录" : `${n}${u ? "  " + u : ""}`);
-  document.getElementById("set-logout-btn").style.display =
-    guestMode ? "none" : "";
+  // T52：账号区（主号卡/小号列表/添加入口）由 TgAccounts 渲染；
+  // 正常路径 account_list RPC（T51 契约，未接入前安静降级），
+  // 桩模式 t52demo=1 读 window.__tgAcctProbe，不发任何 HTTP。
+  TgAccounts.refresh();
 }
 async function chooseFolder() {
   const r = await api().choose_folder();
@@ -1845,6 +1865,9 @@ window.addEventListener("pywebviewready", () => {
   TgBus.on("search_items", onSearchItems);
   // T49：全局只挂一次 dl_phase 订阅（帧按 task_id 路由，见 onDlPhase）
   TgBus.on("dl_phase", onDlPhase);
+  // T52：全局只挂一次 acct_hint 订阅 + 账号数据源初拉
+  //（正常路径 account_list RPC / 桩模式 t52demo=1 读 __tgAcctProbe）
+  TgAccounts.mount();
 });
 // 组件对象也暴露到 window（供后续任务与控制台测试驱动；名字唯一无冲突）
 window.TgJobProgress = TgJobProgress;
@@ -1983,3 +2006,419 @@ window.__tgGuestProbe = {
   get pendingFifo() { return pendingIntents.map(i => i.label); },
 };
 // ===== T46 游客模式（结束）=====
+
+// ============================================================
+// ===== T52 多账号前端（开始）=====
+// 组成：账号数据源 + 设置页账号区（主号卡/小号列表/添加三步卡/移除
+//       二次确认）+ 任务选号分段控件（新建页/任务库卡片/下载中组头）
+//       + tg:acct_hint 限速提示（大条可关闭 / 已有小号降级小字行）。
+//
+// 契约（T51 冻结名，正常路径按冻结名调用；本任务以桩数据接通）：
+//   RPC  account_list() -> {ok, accounts:[{id:"main"|"alt1"|…,
+//        label, phone, me:{username|first_name},
+//        state:"ready"|"connecting"|"absent"}]}
+//        account_add_start(account_id, phone) -> {ok} | {ok:false, stage:…}
+//        account_verify_code(account_id, code) -> {ok} |
+//          {ok:false, stage:"need_password"} | {ok:false, error:…}
+//        account_verify_password(account_id, password) -> {ok} | {ok:false,…}
+//        account_remove(account_id) -> {ok} | {ok:false, busy:true}
+//        edit_task(task_id, {acct:"main"|"alt1"|"auto"})
+//        （edit_task 已在 RPC 白名单；acct 字段扩展属 T51 后端，
+//         当前后端忽略未知字段并返回 ok，不产生错误）
+//   事件 tg:acct_hint（bridge.js 白名单已含 acct_hint）detail：
+//        {account_id, reason:"flood_wait"|"slow",
+//         suggestion:"add_alt"|"switch_alt", detail}
+//
+// 桩模式：URL hash 含 t52demo=1 时（门控与 T45 t45demo 同级、默认
+//   关闭），账号数据源与账号模块 RPC 改读 window.__tgAcctProbe
+//   （测试注入：accounts 数组 / tasks_acct 种子 / busy 标志 /
+//   rpc(method, params) 应答并记录入参），对 account_* 与
+//   edit_task(acct) 不产生任何 bridge/HTTP 调用；probe 未注入时按
+//   空态渲染，同样不发 HTTP。无 hash 时桩代码零副作用（只走 api()
+//   正常路径）。桩拆除点登记于 EV\seam_checklist.md，发版前 T54 审计。
+// ============================================================
+const TgAccounts = (() => {
+  let _accounts = [];               // account_list 结果（主号+小号）
+  let _source = "none";             // none | rpc | stub（降级口径）
+  let _busy = false;                // 退出登录 busy（桩模式经 probe.busy）
+  let _hint = null;                 // 最近一条 acct_hint
+  const _hintDismissed = new Set(); // 用户已手动关闭的 reason（不再弹大条）
+  const taskAcct = new Map();       // task_id -> "main"|"alt1"|"auto"
+  let newTaskAcct = "auto";         // 新建任务页选号（创建成功后随 edit_task 下发）
+  let addingId = null;              // 添加小号流程中的目标 account_id
+  let removingId = null;            // 移除小号二次确认中的 account_id
+
+  // ---------- 桩门控（与 T45 maybeAutoDemo 的 t45demo 同级）----------
+  const stubOn = () => /[#&]t52demo=1/.test(location.hash);
+
+  // 账号模块 RPC：桩模式经 probe（零 HTTP）；正常路径经 bridge api()
+  function acctCall(method, ...params) {
+    if (stubOn()) {
+      const probe = window.__tgAcctProbe;
+      if (probe && typeof probe.rpc === "function")
+        return Promise.resolve(probe.rpc(method, params));
+      return Promise.resolve({ ok: false, error: "测试桩未就绪" });
+    }
+    return api()[method](...params);
+  }
+
+  // ---------- 数据源 ----------
+  async function refresh() {
+    if (stubOn()) {
+      // 桩模式：零 bridge/HTTP；probe 未注入按空态渲染
+      const probe = window.__tgAcctProbe;
+      _accounts = (probe && Array.isArray(probe.accounts)) ? probe.accounts : [];
+      _source = "stub";
+      _busy = !!(probe && probe.busy);
+      if (probe && probe.tasks_acct)
+        for (const k of Object.keys(probe.tasks_acct))
+          if (!taskAcct.has(k)) taskAcct.set(k, probe.tasks_acct[k]);
+    } else {
+      // 正常路径：T51 冻结契约 account_list。后端未接入前返回 400
+      //（未知方法），此处安静降级为空态（console.debug，不抛错）
+      try {
+        const r = await api().account_list();
+        if (r && r.ok && Array.isArray(r.accounts)) {
+          _accounts = r.accounts;
+          _source = "rpc";
+        } else {
+          _accounts = [];
+          _source = "none";
+        }
+      } catch (e) {
+        _accounts = [];
+        _source = "none";
+        console.debug("[T52] account_list 不可用（后端未接入前安静降级）：",
+                      (e && e.message) || e);
+      }
+      _busy = false;
+    }
+    render();
+    renderSegs();
+    renderHint();
+  }
+
+  const list = () => _accounts;
+  const mainAccount = () =>
+    _accounts.find(a => a.id === "main") || _accounts[0] || null;
+  const altAccounts = () =>
+    _accounts.filter(a => a.id && a.id !== "main" && a.state !== "absent");
+
+  const ACCT_STATE_TEXT = { ready: "在线", connecting: "连接中", absent: "未授权" };
+  function stateText(a) {
+    if (!a) return "";
+    if (_hint && _hint.account_id === a.id && _hint.reason)
+      return "限速中";
+    return ACCT_STATE_TEXT[a.state] || a.state || "";
+  }
+  function nameOf(a) {
+    if (!a) return "";
+    const me = a.me || {};
+    if (me.username) return "@" + me.username;
+    if (me.first_name) return me.first_name;
+    return a.label || a.id || "";
+  }
+  const subOf = a => (a && (a.phone || a.id)) || "";
+
+  // ---------- 设置页账号区渲染 ----------
+  function render() {
+    const region = document.getElementById("acct-region");
+    if (!region) return;
+    const addBtn = document.getElementById("acct-add-btn");
+    const errEl = document.getElementById("acct-err");
+    if (errEl) errEl.textContent = "";
+    // 游客态：只显示"未登录 · 点此登录"，不显示添加小号控件（T46 口径）
+    if (guestMode) {
+      region.innerHTML =
+        `<div class="acct-guest-row" onclick="openLoginFromGuest()">未登录 · 点此登录</div>`;
+      if (addBtn) addBtn.classList.add("hidden");
+      closeAddQuiet();
+      return;
+    }
+    if (!_accounts.length) {
+      // 后端方法缺失/未登录：安静降级（沿用旧"当前账号"口径）
+      const n = document.getElementById("me-name").textContent;
+      const u = document.getElementById("me-user").textContent;
+      region.innerHTML = `
+        <div class="acct-row">
+          <span class="acct-tag">主号</span>
+          <div class="acct-info">
+            <div class="acct-name">${esc(n || "未登录")}</div>
+            <div class="acct-sub">${esc(u || "")}</div>
+          </div>
+          <button class="btn danger sm" onclick="TgAccounts.logout(this)">退出登录</button>
+        </div>`;
+      if (addBtn) addBtn.classList.add("hidden");
+      return;
+    }
+    const main = mainAccount();
+    const alts = altAccounts();
+    const rows = [];
+    if (main) {
+      rows.push(`
+        <div class="acct-row" data-aid="${esc(main.id)}">
+          <span class="acct-tag">主号</span>
+          <div class="acct-info">
+            <div class="acct-name">${esc(nameOf(main))}</div>
+            <div class="acct-sub">${esc(subOf(main))}</div>
+          </div>
+          <span class="acct-state" data-st="${esc(main.state || "")}">${esc(stateText(main))}</span>
+          <button class="btn danger sm" onclick="TgAccounts.logout(this)"${_busy ? " disabled" : ""}>退出登录</button>
+        </div>`);
+    }
+    for (const a of alts) {
+      rows.push(`
+        <div class="acct-row alt" data-aid="${esc(a.id)}">
+          <span class="acct-tag alt">小号</span>
+          <div class="acct-info">
+            <div class="acct-name">${esc(nameOf(a))}</div>
+            <div class="acct-sub">${esc(a.id)} · ${esc(subOf(a))}</div>
+          </div>
+          <span class="acct-state" data-st="${esc(a.state || "")}">${esc(stateText(a))}</span>
+          <button class="btn glass-btn sm" onclick="TgAccounts.askRemove('${esc(a.id)}')">移除</button>
+        </div>`);
+    }
+    region.innerHTML = rows.join("");
+    if (addBtn) addBtn.classList.remove("hidden");
+  }
+
+  // ---------- 添加小号三步卡 ----------
+  function setAddStep(step) {
+    ["phone", "code", "pwd"].forEach(x =>
+      document.getElementById("acct-add-step-" + x)
+        .classList.toggle("hidden", x !== step));
+  }
+  function openAdd() {
+    // 下一个可用小号 id：alt1、alt2…（跳过已占用）
+    let i = 1;
+    const ids = new Set(_accounts.map(a => a.id));
+    while (ids.has("alt" + i)) i++;
+    addingId = "alt" + i;
+    document.getElementById("acct-add-phone").value = "";
+    document.getElementById("acct-add-code").value = "";
+    document.getElementById("acct-add-pwd").value = "";
+    document.getElementById("acct-add-err").textContent = "";
+    setAddStep("phone");
+    document.getElementById("acct-add-card").classList.remove("hidden");
+  }
+  function closeAdd() {
+    document.getElementById("acct-add-card").classList.add("hidden");
+    document.getElementById("acct-add-err").textContent = "";
+    addingId = null;
+  }
+  function closeAddQuiet() {
+    const el = document.getElementById("acct-add-card");
+    if (el && !el.classList.contains("hidden")) {
+      el.classList.add("hidden");
+      addingId = null;
+    }
+  }
+  const addErr = m =>
+    (document.getElementById("acct-add-err").textContent = m || "");
+
+  async function addStart(btn) {
+    addErr("");
+    const phone = document.getElementById("acct-add-phone").value.trim();
+    if (!phone) return addErr("请输入手机号");
+    let r;
+    try {
+      r = await withBusy(btn, "发送中…",
+        () => acctCall("account_add_start", addingId, phone));
+    } catch (e) {
+      return addErr("发送失败：" + ((e && e.message) || e));
+    }
+    if (r.ok) setAddStep("code");
+    else addErr(r.error || "发送验证码失败");
+  }
+  async function verifyCode(btn) {
+    addErr("");
+    let r;
+    try {
+      r = await withBusy(btn, "验证中…",
+        () => acctCall("account_verify_code", addingId,
+                       document.getElementById("acct-add-code").value.trim()));
+    } catch (e) {
+      return addErr("验证失败：" + ((e && e.message) || e));
+    }
+    if (r.ok) { closeAdd(); refresh(); }
+    else if (r.stage === "need_password") setAddStep("pwd");
+    else addErr(r.error || "验证码错误，请重试");
+  }
+  async function verifyPassword(btn) {
+    addErr("");
+    let r;
+    try {
+      r = await withBusy(btn, "确认中…",
+        () => acctCall("account_verify_password", addingId,
+                       document.getElementById("acct-add-pwd").value));
+    } catch (e) {
+      return addErr("确认失败：" + ((e && e.message) || e));
+    }
+    if (r.ok) { closeAdd(); refresh(); }
+    else addErr(r.error || "两步验证密码错误");
+  }
+
+  // ---------- 移除小号（二次确认弹层 + busy 拒绝）----------
+  function askRemove(id) {
+    removingId = id;
+    const a = _accounts.find(x => x.id === id);
+    document.getElementById("acct-remove-text").textContent =
+      `${nameOf(a) || id}：仅移除本地登录授权，不影响已下载任务。`;
+    document.getElementById("acct-remove-confirm").classList.remove("hidden");
+  }
+  function cancelRemove() {
+    document.getElementById("acct-remove-confirm").classList.add("hidden");
+    removingId = null;
+  }
+  async function confirmRemove(btn) {
+    const id = removingId;
+    if (!id) return cancelRemove();
+    let r;
+    try {
+      r = await withBusy(btn, null, () => acctCall("account_remove", id));
+    } catch (e) {
+      cancelRemove();
+      const errEl = document.getElementById("acct-err");
+      if (errEl) errEl.textContent = "移除失败：" + ((e && e.message) || e);
+      return;
+    }
+    cancelRemove();
+    if (r.ok) { refresh(); return; }
+    // busy 拒绝：小号行保留 + 错误说明
+    const errEl = document.getElementById("acct-err");
+    if (errEl) errEl.textContent =
+      r.busy ? "该小号正被任务使用，暂不能移除" : (r.error || "移除失败");
+  }
+
+  // ---------- 退出登录（接现有 logout RPC；busy 时禁用）----------
+  async function logout(btn) {
+    // busy 禁用：桩模式经 probe.busy；正常路径 doLogout 自身含
+    // is_active 守卫（下载中弹窗拦截），此处不重复第二套语义
+    if (_busy) {
+      const errEl = document.getElementById("acct-err");
+      if (errEl) errEl.textContent = "下载进行中，暂不能退出登录";
+      return;
+    }
+    return doLogout();
+  }
+
+  // ---------- tg:acct_hint 限速提示 ----------
+  function onAcctHint(detail) {
+    if (!detail || typeof detail.account_id !== "string") return;
+    _hint = detail;
+    render();
+    renderHint();
+  }
+  function renderHint() {
+    const bar = document.getElementById("acct-hint-bar");
+    const line = document.getElementById("acct-hint-line");
+    if (!bar || !line) return;
+    if (!_hint || !_hint.reason) {
+      bar.classList.add("hidden");
+      line.classList.add("hidden");
+      return;
+    }
+    if (altAccounts().length >= 1) {
+      // 已有 ≥1 个小号：同类提示降级为小字状态行，不反复弹大条
+      bar.classList.add("hidden");
+      line.textContent = "主号下载较慢（服务器限速）：任务可切换小号或保持自动分流";
+      line.classList.remove("hidden");
+      return;
+    }
+    line.classList.add("hidden");
+    bar.classList.toggle("hidden", _hintDismissed.has(_hint.reason));
+  }
+  function dismissHint() {
+    if (_hint && _hint.reason) _hintDismissed.add(_hint.reason);
+    document.getElementById("acct-hint-bar").classList.add("hidden");
+  }
+  function hintAddAlt() {
+    // 直达三步卡：切到设置页（loadSettings 会 refresh）并展开添加卡
+    switchView("settings");
+    openAdd();
+  }
+
+  // ---------- 任务选号分段控件 ----------
+  function segHtml(cur) {
+    const alts = altAccounts();
+    const btn = (v, label) =>
+      `<button class="seg${cur === v ? " active" : ""}" data-acctv="${esc(v)}" ` +
+      `onclick="event.stopPropagation();TgAccounts.pickSeg(this)">${label}</button>`;
+    let h = btn("main", "主号");
+    if (alts.length) h += btn(alts[0].id, "小号");
+    h += btn("auto", "自动");
+    return h;
+  }
+  function renderSegs() {
+    document.querySelectorAll(".acct-seg-host").forEach(host => {
+      const tid = host.dataset.acctTid || "";
+      const cur = tid ? (taskAcct.get(tid) || "auto") : newTaskAcct;
+      host.innerHTML = segHtml(cur);
+    });
+  }
+  function pickSeg(btnEl) {
+    const host = btnEl.closest(".acct-seg-host");
+    if (!host) return;
+    const value = btnEl.dataset.acctv;
+    if (host.dataset.acctTid) {
+      const tid = host.dataset.acctTid;
+      const prev = taskAcct.get(tid) || "auto";
+      if (prev === value) return;
+      taskAcct.set(tid, value);
+      renderSegs();
+      acctEditTask(tid, value, prev);
+    } else {
+      // 新建任务页：仅记录选择，任务创建成功后由 applyNewTaskAcct 下发
+      newTaskAcct = value;
+      renderSegs();
+    }
+  }
+  async function acctEditTask(tid, value, prev) {
+    // 立即下发 edit_task(task_id, {acct})（T51 冻结形状）；
+    // 被拒/异常时回退控件状态（console.debug，不弹错误）
+    try {
+      const r = await acctCall("edit_task", tid, { acct: value });
+      if (r && r.ok === false) {
+        taskAcct.set(tid, prev);
+        renderSegs();
+        console.debug("[T52] edit_task({acct}) 被拒绝，已回退：", r);
+      }
+    } catch (e) {
+      taskAcct.set(tid, prev);
+      renderSegs();
+      console.debug("[T52] edit_task({acct}) 调用失败，已回退：", e);
+    }
+  }
+  function applyNewTaskAcct(taskId) {
+    // 新建任务成功（start_download 返回 task_id）后下发本页选定的策略；
+    // fire-and-forget，失败静默（不影响下载已开始的事实）
+    if (!taskId) return;
+    acctCall("edit_task", taskId, { acct: newTaskAcct })
+      .catch(e => console.debug("[T52] 新任务 acct 下发失败：", e));
+  }
+  function noteTaskAcct(tid, v) {
+    // list_tasks 携带 acct 字段时的种子（T51 后端落地后生效）；
+    // 用户本会话手动切换过的值优先，不被种子覆盖
+    if (tid && v && !taskAcct.has(tid)) taskAcct.set(tid, v);
+  }
+
+  // ---------- 挂载 ----------
+  function mount() {
+    TgBus.on("acct_hint", onAcctHint);
+    refresh();
+  }
+
+  return {
+    mount, refresh, render, renderSegs, pickSeg,
+    openAdd, closeAdd, addStart, verifyCode, verifyPassword,
+    askRemove, cancelRemove, confirmRemove, logout,
+    dismissHint, hintAddAlt, applyNewTaskAcct, noteTaskAcct,
+    list, altAccounts, stateText,
+    get source() { return _source; },
+    get newAcct() { return newTaskAcct; },
+    get addingId() { return addingId; },
+  };
+})();
+// 组件对象暴露到 window（控制台/测试驱动；命名与 TgJobProbe 风格一致）
+window.TgAccounts = TgAccounts;
+// ===== T52 多账号前端（结束）=====

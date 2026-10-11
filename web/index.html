@@ -102,6 +102,15 @@
     <!-- T46 游客模式提示条：仅 guest 态显示，点击打开登录卡 -->
     <div id="guest-bar" class="guest-bar hidden" onclick="openLoginFromGuest()">未登录 · 点此登录</div>
 
+    <!-- T52 账号限速提示条：主号被限速且还没有小号时显示，可关闭 -->
+    <div id="acct-hint-bar" class="acct-hint-bar hidden">
+      <span id="acct-hint-text">当前账号下载较慢（服务器限速），登录小号可自动分流提速</span>
+      <button class="btn primary sm" id="acct-hint-add" onclick="TgAccounts.hintAddAlt()">添加小号</button>
+      <button class="acct-hint-close" onclick="TgAccounts.dismissHint()" title="关闭">✕</button>
+    </div>
+    <!-- T52 限速小字状态行：已有 ≥1 个小号时同类提示降级显示，不弹大条 -->
+    <div id="acct-hint-line" class="acct-hint-line hidden"></div>
+
     <!-- 下载中 -->
     <section id="view-active" class="view hidden">
       <header class="page-head">
@@ -260,6 +269,14 @@
             </div>
           </div>
 
+          <!-- T52 任务选号：新任务的账号策略（默认自动）。任务创建成功后
+               随 edit_task({acct}) 下发（T51 契约；桩模式由 probe 应答） -->
+          <div class="task-acct">
+            <span class="task-acct-label">本任务后续下载使用</span>
+            <span class="acct-seg-host segmented" id="new-acct-seg"></span>
+            <span class="task-acct-note">进行中的条目不受影响</span>
+          </div>
+
           <div class="wizard-actions">
             <button class="btn primary" id="preview-btn" onclick="doPreview()">开始搜索</button>
           </div>
@@ -302,13 +319,49 @@
     <!-- 设置 -->
     <section id="view-settings" class="view hidden">
       <header class="page-head"><div><h2>设置</h2><p class="page-sub">外观、下载目录与数据</p></div></header>
-      <div class="glass form-card narrow">
-        <label>当前账号</label>
-        <div class="account-row">
-          <div id="set-account" class="account-info">未登录</div>
-          <button class="btn danger sm" id="set-logout-btn" onclick="doLogout()">退出登录</button>
+      <!-- T52 账号区：主号卡 + 小号列表 + 添加小号三步卡。
+           数据源见 app.js TgAccounts：正常路径 account_list RPC（T51 契约，
+           未接入前安静降级）；t52demo=1 桩模式读 window.__tgAcctProbe。
+           游客态只显示"未登录 · 点此登录"，不显示添加小号控件（T46 口径）。 -->
+      <div class="glass form-card narrow" id="acct-card">
+        <label>账号</label>
+        <div id="acct-region"></div>
+        <p id="acct-err" class="login-err"></p>
+        <button class="btn glass-btn block hidden" id="acct-add-btn"
+          onclick="TgAccounts.openAdd()">＋ 添加小号</button>
+        <div id="acct-add-card" class="acct-add-card hidden">
+          <div id="acct-add-step-phone">
+            <label>小号手机号（含国家区号，不带 +）</label>
+            <input id="acct-add-phone" type="text" placeholder="8613800000000">
+            <button class="btn primary block" id="acct-add-send" onclick="TgAccounts.addStart(this)">发送验证码</button>
+            <button class="btn glass-btn block" onclick="TgAccounts.closeAdd()">取消</button>
+          </div>
+          <div id="acct-add-step-code" class="hidden">
+            <label>Telegram 发来的验证码</label>
+            <input id="acct-add-code" type="text" placeholder="如 12345">
+            <button class="btn primary block" id="acct-add-verify" onclick="TgAccounts.verifyCode(this)">验证并登录</button>
+            <button class="btn glass-btn block" onclick="TgAccounts.closeAdd()">取消</button>
+          </div>
+          <div id="acct-add-step-pwd" class="hidden">
+            <label>两步验证密码</label>
+            <input id="acct-add-pwd" type="password" placeholder="2FA 密码">
+            <button class="btn primary block" id="acct-add-pwd-btn" onclick="TgAccounts.verifyPassword(this)">确认</button>
+            <button class="btn glass-btn block" onclick="TgAccounts.closeAdd()">取消</button>
+          </div>
+          <p id="acct-add-err" class="login-err"></p>
         </div>
         <p class="hint">退出后本地登录授权将被删除，重新登录需输入手机号与验证码；任务清单和已下载视频不会被删除。下载进行中无法退出。</p>
+      </div>
+      <!-- T52 移除小号二次确认弹层（文案说明仅移除本地登录授权） -->
+      <div id="acct-remove-confirm" class="modal-mask hidden">
+        <div class="glass modal">
+          <div class="modal-head"><h3>移除小号？</h3></div>
+          <p class="modal-sub" id="acct-remove-text">仅移除本地登录授权，不影响已下载任务。</p>
+          <div class="acct-confirm-actions">
+            <button class="btn glass-btn" onclick="TgAccounts.cancelRemove()">取消</button>
+            <button class="btn danger" id="acct-remove-ok" onclick="TgAccounts.confirmRemove(this)">移除</button>
+          </div>
+        </div>
       </div>
       <div class="glass form-card narrow">
         <label>界面外观</label>

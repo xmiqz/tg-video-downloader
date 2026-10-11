@@ -1269,3 +1269,133 @@ html[data-theme="light"] .task-phase {
   background: rgba(20, 30, 60, 0.12);
   box-shadow: inset 0 1px 2px rgba(20, 30, 60, 0.12);
 }
+
+/* ============================================================
+   T52 D-LIQ 修复：liquid 主题下详情滑层恢复 fixed 定位。
+   缺陷（6db985a 实证）：body.liquid .glass{position:relative}
+   （本文件 "玻璃材质" 段，特异性 0,2,1）压过 .sheet{position:fixed}
+   （"详情滑层" 段，0,1,0）——#sheet 同时持有 sheet/glass 双类
+   （index.html），liquid 下滑层落文档流：基线探针 rect y=697、
+   中心 elementFromPoint=null（EV\logs\tr52_3_baseline.log）。
+   修法：等量特异性（0,2,1）+ 更晚源序恢复 fixed；top/right/bottom
+   沿用 .sheet 基规则（未被 liquid 规则覆盖，无需重申）；
+   不动 .glass 其它视觉规则、零删除行。
+   ============================================================ */
+body.liquid .sheet { position: fixed; }
+
+/* ============================================================
+   T52 多账号前端 UI（开始）
+   设置页账号区（主号卡/小号行/添加三步卡/移除确认）、任务选号
+   分段控件（新建页/任务库卡片/下载中组头）、acct_hint 限速提示
+   条与小字状态行。全部为追加规则：复用 .segmented/.seg/.btn/
+   .login-err/.modal-mask 既有体系与既有 CSS 变量，暗/亮/液态
+   三主题可读；窄宽（≤900px）随 flex-wrap 收敛不溢出。
+   ============================================================ */
+/* 设置页账号行（主号/小号） */
+.acct-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 2px; border-bottom: 1px solid rgba(255,255,255,.06);
+  flex-wrap: wrap;
+}
+.acct-row:last-child { border-bottom: none; }
+.acct-tag {
+  flex-shrink: 0; font-size: 11px; font-weight: 700; letter-spacing: .5px;
+  padding: 3px 9px; border-radius: 999px;
+  background: rgba(91,134,255,.18); color: #9db4ff;
+  border: 1px solid rgba(91,134,255,.4);
+}
+.acct-tag.alt {
+  background: rgba(139,91,255,.16); color: #c8b6ff;
+  border-color: rgba(139,91,255,.38);
+}
+.acct-info { flex: 1; min-width: 0; }
+.acct-name { font-size: 13.5px; font-weight: 600;
+             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-sub { font-size: 11.5px; color: var(--ink-mute); margin-top: 2px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-state { flex-shrink: 0; font-size: 11.5px; color: var(--ink-dim);
+              padding: 2px 8px; border-radius: 6px;
+              background: rgba(255,255,255,.06); }
+.acct-state[data-st="ready"] { color: #7ee2a8; }
+.acct-state[data-st="connecting"] { color: #ffc78a; }
+.acct-state[data-st="absent"] { color: var(--ink-mute); }
+/* 游客态账号行：点击打开登录卡（暖色系对齐 guest-bar） */
+.acct-guest-row {
+  padding: 10px 12px; border-radius: var(--r-md); cursor: pointer;
+  text-align: center; font-size: 12.5px; font-weight: 600;
+  color: #ffc78a; letter-spacing: .3px; user-select: none;
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.14), rgba(255,138,151,.12));
+  border: 1px solid rgba(255,184,77,.35);
+  transition: border-color .2s var(--ease), background .2s var(--ease);
+}
+.acct-guest-row:hover { border-color: rgba(255,184,77,.65); }
+/* 添加小号三步卡（复用登录卡输入/按钮风格） */
+.acct-add-card {
+  margin-top: 12px; padding: 14px 14px 6px;
+  border-radius: var(--r-md);
+  border: 1px dashed rgba(255,255,255,.18);
+  background: rgba(255,255,255,.04);
+}
+.acct-add-card label { display: block; margin: 8px 0 6px; }
+/* 移除确认弹层按钮行 */
+.acct-confirm-actions { display: flex; gap: 10px; margin-top: 14px; }
+.acct-confirm-actions .btn { flex: 1; }
+/* 任务选号行（任务库卡片 / 新建任务页） */
+.task-acct {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 10px 0 2px;
+}
+.task-acct-label, .task-acct-note { font-size: 11.5px; color: var(--ink-mute); }
+.task-acct-note { flex-basis: 100%; opacity: .85; }
+/* 选号分段控件：host 上叠加 .segmented 类（既有胶囊样式+亮色覆写
+   全量复用），此处只做紧凑化 */
+.acct-seg-host .seg { padding: 4px 11px; font-size: 11.5px; }
+/* 下载中组头：选号控件靠右（中止按钮前） */
+.dl-group-head .acct-seg-host { margin-left: auto; }
+.dl-group-head .btn { flex-shrink: 0; }
+/* acct_hint 顶部大条（无小号）：可关闭，样式对齐 guest-bar 暖色系 */
+.acct-hint-bar {
+  display: flex; align-items: center; justify-content: center;
+  gap: 10px; margin: 0 0 12px; padding: 8px 12px;
+  border-radius: var(--r-lg);
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.14), rgba(255,138,151,.12));
+  border: 1px solid rgba(255,184,77,.35);
+  color: #ffc78a; font-size: 12.5px; font-weight: 600;
+  letter-spacing: .3px; user-select: none;
+  transition: border-color .2s var(--ease), background .2s var(--ease);
+}
+.acct-hint-close {
+  border: none; background: transparent; cursor: pointer;
+  color: inherit; font-size: 13px; opacity: .7;
+  padding: 2px 6px; border-radius: 6px;
+}
+.acct-hint-close:hover { opacity: 1; }
+/* acct_hint 小字状态行（已有 ≥1 小号时降级） */
+.acct-hint-line {
+  margin: 0 0 10px; font-size: 11.5px; color: var(--ink-mute);
+  letter-spacing: .2px; user-select: none;
+}
+/* 静态亮主题可读性覆写 */
+:root[data-theme="light"] .acct-tag {
+  background: rgba(59,107,255,.12); color: #2c4bd8;
+  border-color: rgba(59,107,255,.3);
+}
+:root[data-theme="light"] .acct-tag.alt {
+  background: rgba(139,91,255,.12); color: #6c3fd4;
+  border-color: rgba(139,91,255,.28);
+}
+:root[data-theme="light"] .acct-state { background: rgba(20,30,60,.07); }
+:root[data-theme="light"] .acct-state[data-st="ready"] { color: #1d7a4a; }
+:root[data-theme="light"] .acct-state[data-st="connecting"] { color: #a86a10; }
+:root[data-theme="light"] .acct-guest-row,
+:root[data-theme="light"] .acct-hint-bar {
+  color: #8a5a12; border-color: rgba(180,120,30,.4);
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.22), rgba(255,200,160,.18));
+}
+:root[data-theme="light"] .acct-add-card {
+  border-color: rgba(20,30,60,.2); background: rgba(255,255,255,.5);
+}
+/* T52 多账号前端 UI（结束） */
