@@ -409,12 +409,19 @@ class Api:
         client = self._new_client()
 
         async def _do():
-            await client.connect()
+            # 连接整体限时 20s（对齐 connect() 的 wait_for 上限）：
+            # 网络不通时快速失败，不让 send_code 无限挂起。
+            await asyncio.wait_for(client.connect(), timeout=20.0)
 
         try:
             self.engine.submit(_do())
         except Exception as e:
+            # 半成品 client 绝不保留（对齐 connect()/send_code 失败路径）
             self._discard_client(client)
+            if type(e).__name__ in ("TimeoutError", "asyncio.TimeoutError"):
+                return ("连接 Telegram 服务器超时（20 秒）。\n"
+                        "请检查网络或代理后重试；若桌面版正在运行，"
+                        "请先关闭它再启动。")
             return f"{type(e).__name__}: {e}"
         self.client = client
         return None
@@ -422,9 +429,11 @@ class Api:
     # ---------- 退出登录 ----------
     def logout(self):
         """退出登录：通知 TG 销毁授权并删除本地会话，回到未登录状态。"""
-        if core.any_active():
+        # T55 对齐：双占位拒绝（下载 ACTIVE_SESSIONS / 目录搬运
+        # MOVING_TASKS 任一非空都算忙，文案单一真源 core.LOGOUT_BUSY_TEXT）
+        if core.any_active() or core.MOVING_TASKS:
             return {"ok": False, "busy": True,
-                    "error": "有下载任务正在进行，请先中止下载后再退出登录。"}
+                    "error": core.LOGOUT_BUSY_TEXT}
         client = self.client
 
         async def _do():
@@ -1271,15 +1280,24 @@ class Api:
                 "finished": c["finished"], "total": c["total"],
                 "pending": c["pending"], "failed": c["failed"],
                 "skipped": c["skipped"],
+                # T53b（T52 回显）：账号偏好——落盘 params.acct_pref
+                # 为 main/altN；auto = 键不存在（edit_task 写入语义）。
+                # 只读装配，任务 JSON 零写盘；前端 noteTaskAcct 消费
+                # 的键名是 acct（app.js t.acct），非 acct_pref。
+                "acct": ((t.get("params") or {}).get("acct_pref")) or "auto",
             })
         return out
 
     def get_task(self, task_id):
-        for t in core.load_tasks():
-            if t["id"] == task_id:
-                return {"ok": True, "task": t,
-                        "counts": core.task_counts(t)}
-        return {"ok": False, "error": "任务不存在"}
+        # T53b：按 id 直读单个任务（core.load_task 单文件读），不再
+        # 全目录解析——滑层 2s 轮询的每次拍打都是这条热路径（与
+        # resume_task 的 T49 单读语义一致；坏文件/不存在/穿越 id
+        # 均返"任务不存在"，与旧全扫过滤语义等价）。
+        t = core.load_task(task_id)
+        if t is None or t.get("id") != task_id:
+            return {"ok": False, "error": "任务不存在"}
+        return {"ok": True, "task": t,
+                "counts": core.task_counts(t)}
 
     def delete_task(self, task_id):
         for t in core.load_tasks():
