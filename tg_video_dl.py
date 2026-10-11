@@ -4907,14 +4907,17 @@ async def item_manage_flow(client, task):
     elif act == "3":
         print(f"已移除 {remove_items(task, keys)} 个条目")
     elif act == "4":
-        for ti in task["items"]:
-            if item_key(ti) in keys:
-                for p in glob.glob(os.path.join(task["folder"], ti["name"] + "*")):
-                    try:
-                        os.remove(p)
-                    except OSError:
-                        pass
-        print(f"已移除 {remove_items(task, keys)} 个条目并删除文件")
+        if not ask_yesno("将同时删除本地文件，确定移除所选条目？", True):
+            print(paint(" 已取消", DIM))
+        else:
+            for ti in task["items"]:
+                if item_key(ti) in keys:
+                    for p in glob.glob(os.path.join(task["folder"], ti["name"] + "*")):
+                        try:
+                            os.remove(p)
+                        except OSError:
+                            pass
+            print(f"已移除 {remove_items(task, keys)} 个条目并删除文件")
     elif act == "5":
         n = 0
         for ti in task["items"]:
@@ -5065,7 +5068,7 @@ async def task_menu(client, task, pool=None):
                     print(paint(" 目录不存在", YELLOW))
                 pause()
             elif key == "8":
-                if ask_yesno("确定删除任务记录？视频文件保留", False):
+                if ask_yesno("确定删除任务记录？视频文件保留", True):
                     delete_task(task)
                     return
         except Exception as e:
@@ -5093,7 +5096,7 @@ async def logout_flow(client, pool=None):
     if ACTIVE_SESSIONS or MOVING_TASKS:
         print(paint(f" {LOGOUT_BUSY_TEXT}", YELLOW))
         return False
-    if not ask_yesno("确定退出当前账号？退出后可重新接收验证码登录", False):
+    if not ask_yesno("确定退出当前账号？退出后可重新接收验证码登录", True):
         return False
     try:
         await client.log_out()
@@ -5649,9 +5652,11 @@ async def new_task_flow(client, args=None, pool=None):
         entity = await client.get_entity(channel_name)
     except ValueError:
         print(paint(f" 找不到频道「{channel_name}」：用户名拼错或不是公开频道", RED))
+        pause()
         return
     except Exception as e:
         print(paint(f" 解析频道失败：{type(e).__name__}: {str(e)[:120]}", RED))
+        pause()
         return
     title = getattr(entity, "title", None) or channel_name
 
