@@ -1360,17 +1360,47 @@ async function editChooseFolder() {
   if (r.ok && r.path) document.getElementById("ed-folder").value = r.path;
 }
 async function saveEditTask() {
+  // T50：保存按钮全程状态机——点击即锁；瞬时完成/失败/need_login 恢复；
+  // 勾选搬运时保持锁定到作业终态（弹层"关闭"后才恢复，允许重试）。
+  const btn = document.querySelector(
+    '#sheet-edit .edit-block button.primary');
+  const oldText = btn ? btn.textContent : "";
+  const unlock = () => {
+    if (btn) { btn.disabled = false; btn.textContent = oldText; }
+  };
+  if (btn) { btn.disabled = true; btn.textContent = "保存中…"; }
   const fields = {
     title: document.getElementById("ed-title").value.trim(),
     folder: document.getElementById("ed-folder").value.trim(),
     move_files: document.getElementById("ed-move").checked,
     parallel: document.getElementById("ed-parallel").value || 1,
   };
-  const r = await api().edit_task(sheet.taskId, fields);
-  if (!r.ok) return alert(r.error);
+  let r;
+  try {
+    r = await api().edit_task(sheet.taskId, fields);
+  } catch (e) {
+    unlock();
+    return alert("保存失败：" + (e && e.message || e));
+  }
+  if (r && r.need_login) { needLogin(r); unlock(); return; }
+  if (!r || !r.ok) { unlock(); return alert((r && r.error) || "保存失败"); }
+  if (r.job_id) {
+    // T50：搬运异步推进——弹层到终态；done → 关弹层/解锁/刷新/提示；
+    // error → 弹层内展示错误，关闭后恢复保存按钮允许重试
+    T50Move.watch(r.job_id, {
+      onDone: async () => {
+        unlock();
+        await reloadSheet();
+        alert("已保存");
+      },
+      onClose: unlock,
+    });
+    return;
+  }
   await reloadSheet();
   if (r.warnings && r.warnings.length)
     alert("部分文件移动失败：\n" + r.warnings.join("\n"));
+  unlock();
   alert("已保存");
 }
 function toggleEditSel(k) {
@@ -1683,6 +1713,14 @@ const TgJobProgress = (() => {
       return false;
     }
 
+    // T50：move_folder 作业早退——进度由 T50Move 弹层承接（一窗不渲染
+    // 通用悬浮卡，避免双卡）；未 watch 时帧丢弃（watch 的 jobs_state
+    // 兜底会补最新状态）。其它 kind 行为零变化。
+    if (job.kind === "move_folder") {
+      if (window.T50Move && T50Move.onJob) T50Move.onJob(job);
+      return false;
+    }
+
     let card = host.querySelector(`[data-job-id="${qAttr(id)}"]`);
     if (!card) card = buildCard(id);
 
@@ -1811,6 +1849,121 @@ window.addEventListener("pywebviewready", () => {
 // 组件对象也暴露到 window（供后续任务与控制台测试驱动；名字唯一无冲突）
 window.TgJobProgress = TgJobProgress;
 // ===== T45 作业事件总线 / 通用进度组件（结束）=====
+
+// ============================================================
+// ===== T50 移动目录进度弹层（开始）=====
+// 移动 job（kind=move_folder）专用遮罩弹层：文件名行/[i/n]/字节/百分比
+// 实时渲染；运行中无取消按钮、无关闭 X、点遮罩不关（跨卷半态无法安全
+// 回滚，作业不可取消）；done 自动收层回调 onDone，error 展示错误全文 +
+// 固定提示行，仅"关闭"按钮可收层并回调 onClose（保存按钮恢复可重试）。
+// 事件源：tg:job_update（bridge 转发）+ watch 开始时 jobs_state 快照
+// 兜底（防漏帧；快照/事件按 updated_ts 去重，直喂不经通用卡 seen 表）。
+// ============================================================
+const T50Move = (() => {
+  let cur = null;   // {jobId, dom, lastTs, ended, onDone, onClose, handler}
+
+  function buildDom() {
+    const mask = document.createElement("div");
+    mask.className = "t50-move-mask";
+    const box = document.createElement("div");
+    box.className = "t50-move-layer";
+    box.innerHTML = `
+      <div class="t50-move-title">正在移动文件…</div>
+      <div class="t50-move-name">准备移动…</div>
+      <div class="t50-move-count"></div>
+      <div class="t50-move-bar"><div class="t50-move-fill"></div></div>
+      <div class="t50-move-bytes"></div>
+      <div class="t50-move-err hidden">
+        <div class="t50-move-err-text"></div>
+        <div class="t50-move-err-hint">可再次执行，已存在文件自动跳过</div>
+        <button class="btn primary t50-move-close" type="button">关闭</button>
+      </div>`;
+    mask.appendChild(box);
+    document.body.appendChild(mask);
+    return {
+      mask, box,
+      name: box.querySelector(".t50-move-name"),
+      count: box.querySelector(".t50-move-count"),
+      fill: box.querySelector(".t50-move-fill"),
+      bytes: box.querySelector(".t50-move-bytes"),
+      err: box.querySelector(".t50-move-err"),
+      errText: box.querySelector(".t50-move-err-text"),
+      closeBtn: box.querySelector(".t50-move-close"),
+    };
+  }
+
+  function render(job) {
+    const d = Number(job.done) || 0, t = Number(job.total) || 0;
+    const bd = Number(job.bytes_done) || 0, bt = Number(job.bytes_total) || 0;
+    cur.dom.name.textContent = job.phase_detail || "";
+    cur.dom.count.textContent = t > 0 ? `${d}/${t}` : "";
+    cur.dom.bytes.textContent = bt > 0
+      ? `${human(bd)} / ${human(bt)}` : "";
+    const pct = bt > 0 ? Math.max(0, Math.min(100, bd * 100 / bt)) : 0;
+    cur.dom.fill.style.width = pct.toFixed(1) + "%";
+  }
+
+  function teardown() {
+    if (!cur) return;
+    TgBus.off("job_update", cur.handler);
+    if (cur.dom && cur.dom.mask && cur.dom.mask.parentNode)
+      cur.dom.mask.remove();
+    cur = null;
+  }
+
+  function handle(job) {
+    if (!cur || !job || job.job_id !== cur.jobId) return;
+    const ts = Number(job.updated_ts) || 0;
+    if (cur.lastTs !== null && ts <= cur.lastTs) return;   // 迟到/同值帧
+    cur.lastTs = ts;
+    render(job);
+    if (job.state === "done" && !cur.ended) {
+      cur.ended = true;
+      const cb = cur.onDone;
+      teardown();                       // 收层并移除监听（后续事件幂等）
+      if (cb) cb();
+    } else if ((job.state === "error" || job.state === "cancelled")
+               && !cur.ended) {
+      cur.ended = true;
+      cur.dom.err.classList.remove("hidden");
+      cur.dom.errText.textContent = job.error || "移动失败";
+    }
+  }
+
+  function onJob(job) {
+    // TgJobProgress renderJob 早路由转入（jobs_state 快照同步同源）
+    if (!cur || !job || job.job_id !== cur.jobId) return false;
+    handle(job);
+    return true;
+  }
+
+  function watch(jobId, cbs) {
+    if (cur) teardown();                // 终态外重复 watch：旧层先终结
+    const dom = buildDom();
+    cur = { jobId, dom, lastTs: null, ended: false,
+            onDone: cbs.onDone, onClose: cbs.onClose };
+    cur.handler = (job) => {
+      if (cur && job && job.job_id === cur.jobId) handle(job);
+    };
+    TgBus.on("job_update", cur.handler);
+    dom.closeBtn.addEventListener("click", () => {
+      teardown();
+      if (cbs.onClose) cbs.onClose();
+    });
+    // 重连/漏帧兜底：watch 开始即拉一次快照直喂（终态后仍幂等）
+    api().jobs_state().then((r) => {
+      if (r && r.ok && Array.isArray(r.jobs) && cur
+          && cur.jobId === jobId) {
+        const mine = r.jobs.find((j) => j.job_id === jobId);
+        if (mine) handle(mine);
+      }
+    }).catch(() => {});
+  }
+
+  return { watch, onJob };
+})();
+window.T50Move = T50Move;
+// ===== T50 移动目录进度弹层（结束）=====
 
 // ============================================================
 // ===== T46 游客模式（开始）=====

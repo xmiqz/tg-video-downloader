@@ -65,6 +65,11 @@ CONCURRENT = 4             # 并行连接数
 RETRIES = 3                # 单视频重试次数
 STALL_SECS = 90            # 停滞判定秒数
 SPEED_WIN_SEC = 10.0       # 总速度滑动窗口：统计最近 10 秒下载量，每秒更新
+# T50 目录搬运跨卷分块大小。依据：单搬运线程内存上限 ≤4 MiB；4 MiB 在
+# 10 MB/s 慢速 U 盘上单块约 0.4s，满足作业帧 ≤500ms 节拍预算；NVMe/SSD
+# 上单块数毫秒~数十毫秒，由 JobRegistry 0.30s 节流聚合；相对下载分片
+# PART=8 MiB 取半，节拍更细。
+MOVE_CHUNK = 4 * 1024 * 1024
 
 
 # ---------------- 配置与登录 ----------------
@@ -2549,35 +2554,224 @@ def set_parallel(task, n):
     save_task(task)
 
 
-def change_folder(task, new_path, move_files=False):
-    """修改任务保存目录；move_files=True 时把已下载文件一起搬过去。
-    返回 (成功, 消息列表)。"""
-    new_path = os.path.abspath(new_path)
+def _norm_dir(p):
+    """目录路径规范化（T50）：expanduser + abspath（normpath 语义，
+    折叠分隔符/相对段，不改动盘符大小写）。"""
+    return os.path.abspath(os.path.expanduser(str(p).strip()))
+
+
+def plan_move_files(task, new_path):
+    """T50 搬运规划（单一来源，GUI 首帧估算与 change_folder 共用）：
+    对每个 item 枚举成品 / .dl / .dl.partN.done 三类候选，按判定表定
+    处置。只做 stat，不读文件内容、不做任何搬运动作——"动手前一次性
+    规划，禁边搬边 glob"即本函数。
+
+    返回 (plan, total_bytes)：
+      plan 条目 {"name", "src", "dst", "size", "action"}，按处理顺序：
+        move     src 在、dst 不在 → 执行搬运（同卷 rename/跨卷分块拷贝）
+        skip     src 不在、dst 在且同大小（上次已完成）→ 自动跳过
+        clean    src/dst 同在且同大小（上次跨卷拷贝完成但漏删 src）→
+                 删 src，计入 moved
+        conflict src/dst 同在但大小不同 → 确定性失败，立即停（两文件不动）
+      两边都不存在的候选不进 plan、不计 total。
+      size 一律取"目标尺寸"（dst 存在用 dst，否则 src）；
+      total_bytes 为全部入 plan 候选的目标尺寸之和（skipped 按其大小
+      计入，保证重跑时百分比连续）。
+
+    分片标记 glob 用真实写出名 {name}.dl.part*.done（T50 修正：旧实现
+    模式 {name}.part*.done 与下载管线实际写出的 {name}.dl.part{idx}.done
+    前缀不符，永远匹配不到，跨目录移动从不搬续传标记）。"""
+    old = _norm_dir(task["folder"])
+    new = _norm_dir(new_path)
+    plan, total_bytes = [], 0
+    for ti in task["items"]:
+        name = ti["name"]
+        cands = [name, name + ".dl"]
+        cands += [os.path.basename(p) for p in sorted(
+            glob.glob(os.path.join(old, name + ".dl.part*.done")))]
+        for fn in cands:
+            src = os.path.join(old, fn)
+            dst = os.path.join(new, fn)
+            s_ok, d_ok = os.path.exists(src), os.path.exists(dst)
+            if not s_ok and not d_ok:
+                continue                       # 两边都不在：不属于本批
+            if not s_ok:
+                action, size = "skip", os.path.getsize(dst)
+            else:
+                ssize = os.path.getsize(src)
+                size = os.path.getsize(dst) if d_ok else ssize
+                if d_ok:
+                    action = "clean" if size == ssize else "conflict"
+                else:
+                    action = "move"
+            plan.append({"name": fn, "src": src, "dst": dst,
+                         "size": size, "action": action})
+            total_bytes += size
+    return plan, total_bytes
+
+
+def _copy_file_chunked(src, dst_tmp, on_bytes):
+    """跨卷分块拷贝（T50）：以 MOVE_CHUNK 循环读 src 写到 dst_tmp，
+    每块 flush（不要求 fsync），每块回调 on_bytes(本文件已拷字节)。
+    读到 EOF 结束。测试缝：TR harness 可包本函数注入慢盘节拍/计数器。"""
+    got = 0
+    with open(src, "rb") as f, open(dst_tmp, "wb") as g:
+        while True:
+            block = f.read(MOVE_CHUNK)
+            if not block:
+                break
+            g.write(block)
+            g.flush()
+            got += len(block)
+            on_bytes(got)
+    return got
+
+
+def change_folder(task, new_path, move_files=False, progress=None):
+    """修改任务保存目录（T50 重写，清除 P0-1 半截指向）。
+
+    返回 dict（不再返回元组；两个调用点 gui.edit_task / TUI task_edit_flow
+    均按此契约使用）：
+      成功/无变化：{"ok": True, "unchanged": bool, "moved": [名...],
+                    "skipped": [名...], "pending": [], "error": ""}
+      失败（单文件失败即停）：{"ok": False, "unchanged": False,
+                    "moved": [...], "skipped": [...], "pending": [...],
+                    "error": "文件名: ErrorType: msg"}
+    清单元素一律用 basename（ti 文件名本身，含 .dl/.partN.done 后缀）。
+
+    P0-1 语义：task["folder"] 仅在全部文件确认到目标后一次性更新落盘；
+    单文件失败即停、不再动后续文件，folder 仍指旧路径——可再次发起，
+    已在目标且同大小的文件自动跳过（幂等判定只认 os.path.getsize 大小
+    相等：下载管线自身对 .dl 完成度的既有判据即"存在且大小==目标尺寸"，
+    成品经原子 rename 产生；同大小即内容完整，重哈希大文件代价不可接受，
+    mtime 在 copy/rename 后不可靠）。
+
+    progress：可调用 progress(done, total, bytes_done, bytes_total, name)。
+    帧序：开工一次 (0, n, 0, total_bytes, "")；每文件开始
+    (i-1, n, 累计, total_bytes, name) 与搬完 (i, n, 累计, total_bytes,
+    name)（skipped/clean 同样两帧、无 IO）；跨卷分块期间每块追加
+    (i-1, n, 此前累计+本文件已拷, total_bytes, name)。done/bytes_done
+    全程非递减，末帧即 (n, n, total_bytes, total_bytes)（最后文件的
+    完成帧）。name 为 basename、超长截断 80 字符；回调异常 try 吞掉。"""
+    new_path = _norm_dir(new_path)
     os.makedirs(new_path, exist_ok=True)
-    old = task["folder"]
+    old = _norm_dir(task["folder"])
     if new_path == old:
-        return True, []
-    msgs = []
-    if move_files:
-        for ti in task["items"]:
-            for fn in (ti["name"], ti["name"] + ".dl"):
-                srcp = os.path.join(old, fn)
-                if os.path.exists(srcp):
-                    try:
-                        shutil.move(srcp, os.path.join(new_path, fn))
-                    except Exception as e:
-                        msgs.append(f"{fn}: {e}")
-            # 分片标记
-            for part in glob.glob(os.path.join(old, ti["name"] + ".part*.done")):
+        return {"ok": True, "unchanged": True, "moved": [], "skipped": [],
+                "pending": [], "error": ""}
+
+    def _emit(done, total, bd, bt, name):
+        if progress is None:
+            return
+        try:
+            progress(done, total, bd, bt, name)
+        except Exception:
+            pass
+
+    if not move_files:
+        # 纯路径修改：不搬任何文件，一次 save_task（行为与旧版一致）
+        task["folder"] = new_path
+        save_task(task)
+        return {"ok": True, "unchanged": False, "moved": [], "skipped": [],
+                "pending": [], "error": ""}
+
+    # ---- 搬运：进入进程级移动表（防同任务并发两个搬运，TUI/GUI 共用）----
+    tid = task["id"]
+    with _move_lock:
+        if tid in MOVING_TASKS:
+            return {"ok": False, "unchanged": False, "moved": [],
+                    "skipped": [], "pending": [],
+                    "error": "目录正在移动中，请勿重复提交"}
+        MOVING_TASKS.add(tid)
+    try:
+        plan, total_bytes = plan_move_files(task, new_path)
+        conflicts = [c for c in plan if c["action"] == "conflict"]
+        if conflicts:
+            # 大小冲突：确定性失败，立即停（两文件都不动，不写盘）
+            c = conflicts[0]
+            ssize = os.path.getsize(c["src"])
+            return {"ok": False, "unchanged": False, "moved": [],
+                    "skipped": [p["name"] for p in plan
+                                if p["action"] == "skip"],
+                    "pending": [p["name"] for p in plan
+                                if p["action"] != "skip"],
+                    "error": (f"{c['name']}: 目标已存在但大小不一致"
+                              f"（src {ssize} 字节/dst {c['size']} 字节），"
+                              f"为避免覆盖已停止")}
+        # 同卷判定（测试缝：TG_T50_FORCE_COPY=1 强制走分块拷贝分支，
+        # 供单卷机器覆盖真实跨卷代码；生产禁设）
+        force_copy = os.environ.get("TG_T50_FORCE_COPY") == "1"
+        same_volume = (not force_copy
+                       and os.stat(old).st_dev == os.stat(new_path).st_dev)
+        # 测试缝：TG_T50_FAIL_AT=k 时第 k 个（1-based）实际搬运动作
+        # （同卷 rename / 跨卷拷贝）开始处抛 OSError，供半截故障注入；
+        # 生产禁设。skip/clean 不计动作序号。
+        fail_at = None
+        if (os.environ.get("TG_T50_FAIL_AT", "").strip().lstrip("-")
+                .isdigit()):
+            fail_at = int(os.environ["TG_T50_FAIL_AT"])
+        n = len(plan)
+        moved, skipped, action_no = [], [], 0
+        done = 0
+        bytes_done = 0
+        _emit(0, n, 0, total_bytes, "")
+        for idx, ent in enumerate(plan):
+            fn, act, size = ent["name"], ent["action"], ent["size"]
+            disp = fn[:80]
+            _emit(done, n, bytes_done, total_bytes, disp)   # 文件开始帧
+            try:
+                if act == "skip":
+                    skipped.append(fn)
+                elif act == "clean":
+                    # 上次拷贝已完成但漏删 src：删 src 即完成，计入 moved
+                    os.remove(ent["src"])
+                    moved.append(fn)
+                else:                                      # move
+                    action_no += 1
+                    if fail_at is not None and action_no == fail_at:
+                        raise OSError("[T50 fault injection]")
+                    if same_volume:
+                        os.rename(ent["src"], ent["dst"])
+                    else:
+                        tmp = ent["dst"] + ".t50tmp"
+                        try:
+                            os.remove(tmp)          # best-effort 清残留
+                        except OSError:
+                            pass
+                        base = bytes_done
+                        _copy_file_chunked(
+                            ent["src"], tmp,
+                            lambda got, _b=base, _d=done, _nm=disp:
+                                _emit(_d, n, _b + got, total_bytes, _nm))
+                        os.replace(tmp, ent["dst"])
+                        os.remove(ent["src"])
+                    moved.append(fn)
+            except Exception as e:
+                # 单文件失败即停：best-effort 清理该文件临时副本，不再
+                # 动后续文件；不写 folder、不 save_task
+                tmp = ent["dst"] + ".t50tmp"
                 try:
-                    shutil.move(
-                        part, os.path.join(new_path, os.path.basename(part))
-                    )
-                except Exception:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                except OSError:
                     pass
-    task["folder"] = new_path
-    save_task(task)
-    return True, msgs
+                msg = str(e)[:200]
+                pending = [fn] + [p["name"] for p in plan[idx + 1:]
+                                  if p["action"] != "skip"]
+                return {"ok": False, "unchanged": False, "moved": moved,
+                        "skipped": skipped, "pending": pending,
+                        "error": f"{fn}: {type(e).__name__}: {msg}"}
+            done += 1
+            bytes_done += size
+            _emit(done, n, bytes_done, total_bytes, disp)  # 文件完成帧
+        # 全部确认到目标：folder 一次性更新落盘（仍在 MOVING_TASKS 内）
+        task["folder"] = new_path
+        save_task(task)
+        return {"ok": True, "unchanged": False, "moved": moved,
+                "skipped": skipped, "pending": [], "error": ""}
+    finally:
+        with _move_lock:
+            MOVING_TASKS.discard(tid)
 
 
 def set_item_status(task, key, status):
@@ -2808,6 +3002,14 @@ class DownloadSession:
 # 全部活动会话：task_id -> DownloadSession（不同任务独立，可并行）
 ACTIVE_SESSIONS = {}
 
+# T50 目录搬运中任务表：task_id 集合（TUI/GUI 共用，纯内存进程态，
+# 不持久化）。change_folder(move_files=True) 进入即登记、finally 移出；
+# open_download_session 在注册 ACTIVE_SESSIONS 之前的同步段检查拒绝
+# （搬运中禁下载），GUI RPC/TUI 调用点反向检查 ACTIVE_SESSIONS
+# （下载中禁搬）。
+MOVING_TASKS = set()
+_move_lock = threading.Lock()
+
 # T49 终态墓碑：task_id -> (终态快照 dict, monotonic 时刻)。
 # 会话结束后 3 秒内轮询（active_states）仍可见终态快照，前端能展示
 # "完成/已中止/失败"；open 同 id 新会话时无条件清除（中止后立即可再继续）。
@@ -2868,6 +3070,10 @@ async def open_download_session(client, task, planned, parallel, *, gui=None,
     if task["id"] in ACTIVE_SESSIONS:
         print("[!] 该任务已有下载会话，忽略重复启动")
         return None
+    # T50：目录搬运中禁开新下载会话（GUI/TUI 共同防线，worker 已建作业、
+    # 会话未注册的窗口由此兜底；异常经调用方既有 except 转 error 文案）
+    if task["id"] in MOVING_TASKS:
+        raise RuntimeError("任务目录正在移动中，暂不能开始下载")
     SESSION_TOMBSTONES.pop(task["id"], None)
     loop = asyncio.get_running_loop()
     mon = Monitor(
@@ -3731,6 +3937,40 @@ async def item_manage_flow(client, task):
     pause()
 
 
+def _tui_move_progress():
+    """T50 目录搬运 TUI 进度打印器（闭包捕获节流状态）。
+    文件开始帧打印 [i/n] 文件名（i 从 1 起）；跨卷分块期间按 ≥0.2s
+    节流追加字节拍 [i/n] 名 已搬/总。回调异常全部吞掉。"""
+    st = {"name": None, "i": 0, "t": 0.0}
+
+    def _fmt(n):
+        for unit in ("B", "KB", "MB", "GB"):
+            if n < 1024 or unit == "GB":
+                return f"{n:.1f}{unit}" if unit != "B" else f"{n}B"
+            n /= 1024
+        return f"{n}B"
+
+    def _cb(done, total, bytes_done, bytes_total, name):
+        try:
+            if not name:
+                return
+            now = time.monotonic()
+            if name != st["name"]:          # 新文件开始
+                st["name"] = name
+                st["i"] = done + 1
+                st["t"] = now
+                print(f"[{st['i']}/{total}] {name[:80]}")
+                return
+            if now - st["t"] >= 0.2:         # 同一文件内字节拍（跨卷分块）
+                st["t"] = now
+                print(f"[{st['i']}/{total}] {name[:80]}"
+                      f"  {_fmt(bytes_done)}/{_fmt(bytes_total)}")
+        except Exception:
+            pass
+
+    return _cb
+
+
 async def task_edit_flow(client, task):
     while True:
         cur_par = int(task.get("params", {}).get("parallel") or 1)
@@ -3750,10 +3990,42 @@ async def task_edit_flow(client, task):
         elif key == "3":
             newp = ask("新保存目录（绝对路径）", task["folder"])
             move = ask_yesno("把已下载文件一起搬过去", False)
-            ok, msgs = change_folder(task, newp, move)
-            for m in msgs:
-                print(paint(" " + m, YELLOW))
-            print("已修改" if ok else paint(" 未修改", DIM))
+            if task["id"] in ACTIVE_SESSIONS:
+                print(paint(" 该任务正在下载中，无法移动目录", YELLOW))
+            else:
+                r = None
+                try:
+                    if move:
+                        r = change_folder(task, newp, True,
+                                          progress=_tui_move_progress())
+                    else:
+                        r = change_folder(task, newp, False)
+                except Exception as e:
+                    print(paint(f" 修改失败：{type(e).__name__}: {e}", YELLOW))
+                    print(paint(" 未修改", DIM))
+                if r is not None:
+                    if r.get("ok"):
+                        if r.get("unchanged"):
+                            print("目录未变化")
+                        else:
+                            if move and r.get("skipped"):
+                                print(paint(
+                                    f"（{len(r['skipped'])} 个文件已在目标"
+                                    f"目录，自动跳过）", DIM))
+                            print("已修改")
+                    else:
+                        print(paint(" 移动失败：" + r.get("error", ""),
+                                    YELLOW))
+                        if r.get("moved"):
+                            print(paint(
+                                "（已搬 " + str(len(r["moved"])) + " 个："
+                                + "、".join(r["moved"][:8])
+                                + ("…" if len(r["moved"]) > 8 else "") + "）",
+                                DIM))
+                        for fn in r.get("pending") or []:
+                            print(paint("  未搬：" + fn, YELLOW))
+                        print("可再次执行，已存在文件自动跳过")
+                        print(paint(" 未修改", DIM))
         pause()
 
 

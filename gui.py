@@ -326,6 +326,11 @@ class Api:
         self._dl_jobs = {}
         self._dl_tasks = {}
         self._dl_lock = threading.Lock()
+        # T50 move_folder 作业映射（纯内存，_move_lock 保护）：task_id ->
+        # job_id。防同任务并发两个搬运作业（与内核 core.MOVING_TASKS 双
+        # 保险）。生命周期与作业一致：worker 收口 finally 清除。
+        self._move_tasks = {}
+        self._move_lock = threading.Lock()
 
     # ---------- 外观模式 ----------
     def get_appearance(self):
@@ -951,6 +956,10 @@ class Api:
             planned = core.build_planned(first, first_todo, None)
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        # T50 反向防线：目录搬运中禁开下载（拆分任务通常新 id 不会命中，
+        # 属防御性检查；与 resume_task/open_download_session 同源）
+        if first["id"] in core.MOVING_TASKS:
+            return {"ok": False, "error": "任务目录正在移动中，暂不能开始下载"}
         job_id, cancel_event = self.jobs.create("download")
         self.jobs.update(job_id, force=True, state="running",
                          phase="preparing",
@@ -1150,6 +1159,10 @@ class Api:
             return {"ok": False, "error": "任务不存在"}
         if task_id in core.ACTIVE_SESSIONS:
             return {"ok": False, "error": "该任务已在下载中，请勿重复开始"}
+        # T50 反向防线：目录搬运中禁开下载（补 worker 已建作业、会话
+        # 未注册的窗口；open_download_session 内另有同源兜底）
+        if task_id in core.MOVING_TASKS:
+            return {"ok": False, "error": "任务目录正在移动中，暂不能开始下载"}
         statuses = ("failed",) if only_failed else ("pending", "failed")
         n = sum(1 for ti in t["items"] if ti["status"] in statuses)
         if not n:
@@ -1209,7 +1222,10 @@ class Api:
         return None
 
     def edit_task(self, task_id, fields):
-        """批量修改任务属性：title/parallel/folder（+move_files）"""
+        """批量修改任务属性：title/parallel/folder（+move_files）。
+        T50：目录有变化且勾选搬文件 → 建 move_folder 作业异步搬运，
+        立即返回 {"ok": True, "job_id": ...}（请求线程只做 makedirs 与
+        stat 级规划，不做任何文件搬运 IO）；纯路径修改仍瞬时同步。"""
         t = self._load_one(task_id)
         if t is None:
             return {"ok": False, "error": "任务不存在"}
@@ -1217,12 +1233,134 @@ class Api:
             core.rename_task(t, fields["title"])
         if fields.get("parallel"):
             core.set_parallel(t, int(fields["parallel"]))
-        moved_msgs = []
-        if fields.get("folder"):
-            _, moved_msgs = core.change_folder(
-                t, fields["folder"], bool(fields.get("move_files"))
-            )
-        return {"ok": True, "warnings": moved_msgs}
+        folder = (fields.get("folder") or "").strip()
+        if not folder:
+            return {"ok": True, "warnings": []}
+        new_norm = os.path.abspath(os.path.expanduser(folder))
+        cur_norm = os.path.abspath(os.path.expanduser(
+            str(t.get("folder") or "")))
+        if new_norm == cur_norm:
+            # 路径未变化：不写 folder、不建作业
+            return {"ok": True, "warnings": []}
+        # 移动目录是写操作：登录闸门（任何写盘/建作业之前）
+        if self.client is None:
+            print("[GUI] need_login: edit_task")
+            return {"ok": False, "need_login": True}
+        # 状态闸：下载中禁搬 / 同任务防重复提交
+        if task_id in core.ACTIVE_SESSIONS:
+            return {"ok": False, "error": "该任务正在下载中，无法移动目录"}
+        with self._move_lock:
+            if task_id in self._move_tasks:
+                return {"ok": False,
+                        "error": "目录正在移动中，请勿重复提交"}
+        if bool(fields.get("move_files")):
+            # 请求线程只做：建目标目录 + stat 级规划（首帧 total/
+            # bytes_total 估算），不做任何阻塞搬运 IO
+            try:
+                os.makedirs(folder, exist_ok=True)
+                plan, size_sum = core.plan_move_files(t, new_norm)
+            except Exception as e:
+                return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            job_id, _ev = self.jobs.create("move_folder", cancelable=False)
+            with self._move_lock:
+                self._move_tasks[task_id] = job_id
+            self.jobs.update(job_id, force=True, state="running",
+                             phase="moving", phase_detail="准备移动…",
+                             total=len(plan), bytes_total=size_sum,
+                             done=0, bytes_done=0)
+            threading.Thread(
+                target=self._move_worker,
+                args=(job_id, task_id, new_norm),
+                daemon=True, name="move-" + job_id,
+            ).start()
+            # 立即返回（不带 warnings 键），搬运进度经 job_update 推送
+            return {"ok": True, "job_id": job_id}
+        # 纯路径（不搬文件）：瞬时同步路径（一次 save_task），行为不变
+        try:
+            r = core.change_folder(t, folder, move_files=False)
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        if r.get("ok"):
+            return {"ok": True, "warnings": []}
+        return {"ok": False, "error": r.get("error") or "修改失败"}
+
+    def _move_worker(self, job_id, task_id, new_path):
+        """move_folder 作业 daemon 线程（T50）：重新加载最新任务对象
+        （不用请求线程的旧副本），progress 闭包转 jobs.update；调
+        core.change_folder（唯一搬运实现）——ok → done 终帧并记日志，
+        fail → error 终帧 + 完整清单入日志；兜底 except 同样 error 终帧，
+        线程绝不裸崩；finally 清 _move_tasks 映射并核对终帧已发。"""
+        try:
+            t = core.load_task(task_id)
+            if t is None:
+                self.jobs.update(job_id, force=True, state="error",
+                                 phase="error", phase_detail="移动失败",
+                                 error="任务不存在")
+                return
+            cell = {"total": 0, "bytes_total": 0}
+            last = {"done": -1}
+
+            def _cb(done, total, bytes_done, bytes_total, name):
+                try:
+                    cell["total"] = total
+                    cell["bytes_total"] = bytes_total
+                    # 钉死格式：文件进行中 "[i/n] 文件名"（i 从 1 起，
+                    # 文件开始/分块帧 done==上一完成数 → i=done+1）；
+                    # 完成帧 done 前进 → i=done。开工帧 name 为空。
+                    if name:
+                        i = done + 1 if done == last["done"] else done
+                        detail = f"[{i}/{total}] {name[:80]}"
+                    else:
+                        detail = "准备移动…"
+                    last["done"] = done
+                    self.jobs.update(job_id, done=done, total=total,
+                                     bytes_done=bytes_done,
+                                     bytes_total=bytes_total,
+                                     phase_detail=detail)
+                except Exception:
+                    pass
+
+            r = core.change_folder(t, new_path, move_files=True,
+                                  progress=_cb)
+            if r.get("ok"):
+                n = int(cell["total"] or 0)
+                self.jobs.update(job_id, force=True, state="done",
+                                 phase="done",
+                                 phase_detail=f"已完成（共 {n} 个文件）",
+                                 done=n, total=n,
+                                 bytes_done=cell["bytes_total"],
+                                 bytes_total=cell["bytes_total"])
+                _job_log.info(
+                    "move_folder 完成 job=%s task=%s moved=%d skipped=%d"
+                    " moved清单=%s skipped清单=%s",
+                    job_id, task_id, len(r.get("moved") or []),
+                    len(r.get("skipped") or []),
+                    r.get("moved"), r.get("skipped"))
+            else:
+                self.jobs.update(job_id, force=True, state="error",
+                                 phase="error", phase_detail="移动失败",
+                                 error=r.get("error", ""))
+                _job_log.warning(
+                    "move_folder 失败 job=%s task=%s error=%s moved=%s"
+                    " pending=%s", job_id, task_id, r.get("error", ""),
+                    r.get("moved"), r.get("pending"))
+        except Exception as e:  # noqa: BLE001 - worker 线程兜底
+            _job_log.warning("move_folder worker 异常 job=%s", job_id,
+                             exc_info=True)
+            self.jobs.update(job_id, force=True, state="error",
+                             phase="error", phase_detail="移动失败",
+                             error=f"{type(e).__name__}: {e}")
+        finally:
+            with self._move_lock:
+                self._move_tasks.pop(task_id, None)
+            snap = self.jobs.snapshot(job_id)
+            if (snap is not None
+                    and snap.get("state") not in ("done", "error",
+                                                  "cancelled")):
+                # 终帧未达兜底（正常路径不可达）：补发 error 终帧
+                self.jobs.update(job_id, force=True, state="error",
+                                 phase="error", phase_detail="移动失败",
+                                 error="移动作业未正常收口")
 
     def set_item(self, task_id, src, mid, status):
         t = self._load_one(task_id)

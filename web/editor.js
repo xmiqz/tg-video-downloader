@@ -233,14 +233,113 @@ function edBulkRemove() {
 }
 
 // ---------- 任务设置 ----------
+// P1-5 修复：后端 choose_folder 返回形为 {"ok": true, "path": p}
+// （gui.Api.choose_folder），旧码误读返回体的 folder 键（其值为
+// undefined）致勾选目录后回填永不生效——统一以后端实际返参 path 为准。
 function edChooseFolder() {
   api().choose_folder().then((r) => {
-    if (r && r.ok && r.folder)
-      document.getElementById("ed2-folder").value = r.folder;
+    if (r && r.ok && r.path)
+      document.getElementById("ed2-folder").value = r.path;
   });
 }
 
+// T50：二窗搬运作业弹层（editor.html 零改，DOM 由 JS 动态建；class 与
+// 主窗 T50Move 共用 style.css 的 t50-move-* 样式）。运行中无取消/关闭
+// X/点遮罩关闭；done → 收层刷新；error → 错误全文 + 固定提示 + "关闭"
+// 按钮收层并恢复保存按钮。事件源：原生 tg:job_update 监听（editor.js
+// 无 TgBus）+ 挂载时 job_state 快照兜底；按 updated_ts 去重幂等。
+let _edMove = null;   // {jobId, dom, handler, lastTs, ended, onDone, onClose}
+
+function _edMoveBuildDom() {
+  const mask = document.createElement("div");
+  mask.className = "t50-move-mask";
+  const box = document.createElement("div");
+  box.className = "t50-move-layer";
+  box.innerHTML = `
+    <div class="t50-move-title">正在移动文件…</div>
+    <div class="t50-move-name">准备移动…</div>
+    <div class="t50-move-count"></div>
+    <div class="t50-move-bar"><div class="t50-move-fill"></div></div>
+    <div class="t50-move-bytes"></div>
+    <div class="t50-move-err hidden">
+      <div class="t50-move-err-text"></div>
+      <div class="t50-move-err-hint">可再次执行，已存在文件自动跳过</div>
+      <button class="btn primary t50-move-close" type="button">关闭</button>
+    </div>`;
+  mask.appendChild(box);
+  document.body.appendChild(mask);
+  return {
+    mask, box,
+    name: box.querySelector(".t50-move-name"),
+    count: box.querySelector(".t50-move-count"),
+    fill: box.querySelector(".t50-move-fill"),
+    bytes: box.querySelector(".t50-move-bytes"),
+    err: box.querySelector(".t50-move-err"),
+    errText: box.querySelector(".t50-move-err-text"),
+    closeBtn: box.querySelector(".t50-move-close"),
+  };
+}
+
+function _edMoveTeardown() {
+  if (!_edMove) return;
+  window.removeEventListener("tg:job_update", _edMove.handler);
+  if (_edMove.dom && _edMove.dom.mask && _edMove.dom.mask.parentNode)
+    _edMove.dom.mask.remove();
+  _edMove = null;
+}
+
+function _edMoveHandle(job) {
+  const st = _edMove;
+  if (!st || !job || job.job_id !== st.jobId) return;
+  const ts = Number(job.updated_ts) || 0;
+  if (st.lastTs !== null && ts <= st.lastTs) return;    // 迟到/同值帧
+  st.lastTs = ts;
+  const d = Number(job.done) || 0, t = Number(job.total) || 0;
+  const bd = Number(job.bytes_done) || 0, bt = Number(job.bytes_total) || 0;
+  st.dom.name.textContent = job.phase_detail || "";
+  st.dom.count.textContent = t > 0 ? `${d}/${t}` : "";
+  st.dom.bytes.textContent = bt > 0
+    ? `${humanSize(bd)} / ${humanSize(bt)}` : "";
+  st.dom.fill.style.width =
+    (bt > 0 ? Math.max(0, Math.min(100, bd * 100 / bt)) : 0).toFixed(1) + "%";
+  if (job.state === "done" && !st.ended) {
+    st.ended = true;
+    const cb = st.onDone;
+    _edMoveTeardown();
+    if (cb) cb();
+  } else if ((job.state === "error" || job.state === "cancelled")
+             && !st.ended) {
+    st.ended = true;
+    st.dom.err.classList.remove("hidden");
+    st.dom.errText.textContent = job.error || "移动失败";
+  }
+}
+
+function edWatchMove(jobId, onDone, onClose) {
+  if (_edMove) _edMoveTeardown();
+  const dom = _edMoveBuildDom();
+  _edMove = { jobId, dom, lastTs: null, ended: false, onDone, onClose };
+  _edMove.handler = (ev) => _edMoveHandle(ev && ev.detail);
+  window.addEventListener("tg:job_update", _edMove.handler);
+  dom.closeBtn.addEventListener("click", () => {
+    _edMoveTeardown();
+    if (onClose) onClose();
+  });
+  // 挂载即拉一次快照兜底（防 WS 漏帧；终态外幂等）
+  api().job_state(jobId).then((r) => {
+    if (r && r.ok && r.job) _edMoveHandle(r.job);
+  }).catch(() => {});
+}
+
 function edSave() {
+  // T50：保存按钮状态机——点击即锁；瞬时/失败/need_login 恢复；搬运
+  // 作业保持锁定到终态（错误弹层"关闭"后恢复，允许重试）。
+  const btn = document.querySelector('.editor-head button.primary');
+  const oldText = btn ? btn.textContent : "";
+  const unlock = () => {
+    if (btn) { btn.disabled = false; btn.textContent = oldText; }
+  };
+  if (btn) { btn.disabled = true; btn.textContent = "保存中…"; }
   const fields = {
     title: document.getElementById("ed2-title").value,
     folder: document.getElementById("ed2-folder").value,
@@ -248,8 +347,29 @@ function edSave() {
     move_files: document.getElementById("ed2-move").checked,
   };
   api().editor_save(TASK_ID, fields).then((r) => {
-    if (r && r.ok) alert("已保存");
-    else alert("保存失败：" + ((r && r.error) || ""));
+    if (r && r.need_login) {
+      unlock();
+      return alert("该功能需要登录，请在主窗口登录后重试");
+    }
+    if (!r || !r.ok) {
+      unlock();
+      return alert("保存失败：" + ((r && r.error) || ""));
+    }
+    if (r.job_id) {
+      edWatchMove(r.job_id,
+        async () => {
+          unlock();
+          await edLoad();
+          alert("已保存");
+        },
+        unlock);
+      return;
+    }
+    unlock();
+    alert("已保存");
+  }).catch((e) => {
+    unlock();
+    alert("保存失败：" + (e && e.message || e));
   });
 }
 

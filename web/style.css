@@ -1195,3 +1195,77 @@ html[data-theme="light"] .task-phase {
 @media (prefers-reduced-motion: reduce) {
   .dl-phase-dot, .fetch-dot { animation: none; }
 }
+
+
+/* ============================================================
+   T50 移动目录进度弹层（一窗 T50Move / 二窗 editor.js 动态建层共用）
+   遮罩全屏锁定：运行中无取消按钮、无关闭 X、点遮罩不关（作业不可
+   取消，跨卷半态无安全回滚）；层体玻璃风格与 .modal/.job-card 同源，
+   文字/渐变/圆角/阴影全部走既有 CSS 变量，明暗两主题自动适配。
+   ============================================================ */
+.t50-move-mask {
+  position: fixed; inset: 0; z-index: 90;      /* 高于模态(80)/滑层(71) */
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(4, 6, 18, 0.55);
+  backdrop-filter: blur(4px);
+  animation: fadeIn .25s;
+}
+.t50-move-layer {
+  width: min(430px, 92vw);
+  padding: 20px 22px 18px;
+  border-radius: var(--r-lg);
+  background: linear-gradient(155deg,
+    rgba(255,255,255,.14) 0%, rgba(255,255,255,.05) 100%);
+  border: 1px solid rgba(255,255,255,.22);
+  box-shadow: var(--depth-shadow);
+  animation: rise .3s var(--ease);
+}
+.t50-move-title {
+  font-size: 15.5px; font-weight: 650; color: var(--ink);
+  margin-bottom: 14px;
+}
+.t50-move-name {
+  font-size: 12.5px; color: var(--ink-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-height: 17px;
+}
+.t50-move-count {
+  margin-top: 4px; font-size: 11.5px; color: var(--ink-mute);
+  min-height: 15px;
+}
+.t50-move-bar {
+  position: relative; height: 6px; margin-top: 10px;
+  background: rgba(7,9,20,.55); border-radius: 6px; overflow: hidden;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,.5);
+}
+.t50-move-fill {
+  height: 100%; width: 0; border-radius: 6px;
+  background: var(--brand-grad);
+  transition: width .4s var(--ease);
+}
+.t50-move-bytes {
+  margin-top: 7px; font-size: 11.5px; color: var(--ink-mute);
+  min-height: 15px;
+}
+.t50-move-err { margin-top: 12px; }
+.t50-move-err-text {
+  font-size: 12px; color: var(--danger); line-height: 1.55;
+  word-break: break-all;
+  max-height: 140px; overflow-y: auto;
+}
+.t50-move-err-hint {
+  margin-top: 8px; font-size: 11.5px; color: var(--ink-mute);
+}
+.t50-move-close {
+  margin-top: 12px; width: 100%;
+}
+/* 亮色主题微调（沿用既有 light 覆写段风格） */
+:root[data-theme="light"] .t50-move-mask { background: rgba(30, 42, 80, 0.35); }
+:root[data-theme="light"] .t50-move-layer {
+  background: rgba(255, 255, 255, 0.72);
+  border-color: rgba(20, 30, 60, 0.14);
+}
+:root[data-theme="light"] .t50-move-bar {
+  background: rgba(20, 30, 60, 0.12);
+  box-shadow: inset 0 1px 2px rgba(20, 30, 60, 0.12);
+}
