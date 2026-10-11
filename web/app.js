@@ -480,8 +480,8 @@ async function doStart(btn) {
                            parallel, "", previewData.job_id || ""));
   } catch (e) { return; }
   if (!r.ok) return alert(r.error);
-  // T52：任务创建成功即下发账号策略（edit_task({acct})，T51 契约；
-  // 桩模式 t52demo=1 由 probe 应答并记录入参形状）
+  // T52：任务创建成功即下发账号策略（edit_task {acct_pref}，T51 真实
+  // 落盘字段；桩模式 t52demo=1 由 probe 应答并记录入参形状）
   TgAccounts.applyNewTaskAcct(r.task_id);
   switchView("active");
 }
@@ -2074,12 +2074,19 @@ const TgAccounts = (() => {
         for (const k of Object.keys(probe.tasks_acct))
           if (!taskAcct.has(k)) taskAcct.set(k, probe.tasks_acct[k]);
     } else {
-      // 正常路径：T51 冻结契约 account_list。后端未接入前返回 400
-      //（未知方法），此处安静降级为空态（console.debug，不抛错）
+      // 正常路径：T51 真实契约 account_list。HTTP 非 2xx（400/500/网络错）
+      // 时安静降级为空态（console.debug，不抛错）
       try {
         const r = await api().account_list();
         if (r && r.ok && Array.isArray(r.accounts)) {
-          _accounts = r.accounts;
+          // T51 真实状态枚举归一到 UI 三态（ready/connecting/absent）：
+          // adding=添加流程中、has_session=有授权待懒连接 -> 连接中；
+          // logged_out/error -> 未授权（真实快照中这两态 alt 不在列，
+          // 映射为防御性兜底）
+          _accounts = r.accounts.map(a => ({
+            ...a,
+            state: RPC_STATE_MAP[a.state] || a.state,
+          }));
           _source = "rpc";
         } else {
           _accounts = [];
@@ -2105,6 +2112,14 @@ const TgAccounts = (() => {
     _accounts.filter(a => a.id && a.id !== "main" && a.state !== "absent");
 
   const ACCT_STATE_TEXT = { ready: "在线", connecting: "连接中", absent: "未授权" };
+  // T51 AccountPool.snapshot() 真实状态枚举 -> UI 三态
+  const RPC_STATE_MAP = {
+    ready: "ready",
+    adding: "connecting",      // 小号添加三步进行中
+    has_session: "connecting", // 已有授权、按需懒连接前
+    logged_out: "absent",
+    error: "absent",
+  };
   function stateText(a) {
     if (!a) return "";
     if (_hint && _hint.account_id === a.id && _hint.reason)
@@ -2114,8 +2129,10 @@ const TgAccounts = (() => {
   function nameOf(a) {
     if (!a) return "";
     const me = a.me || {};
+    // T51 me 缓存字段为 name（桩/旧稿用 first_name，二者兼容）
+    const given = me.first_name || me.name || "";
     if (me.username) return "@" + me.username;
-    if (me.first_name) return me.first_name;
+    if (given) return given;
     return a.label || a.id || "";
   }
   const subOf = a => (a && (a.phone || a.id)) || "";
@@ -2240,8 +2257,10 @@ const TgAccounts = (() => {
     } catch (e) {
       return addErr("验证失败：" + ((e && e.message) || e));
     }
-    if (r.ok) { closeAdd(); refresh(); }
-    else if (r.stage === "need_password") setAddStep("pwd");
+    // T51 真实后端 2FA 形状为 {ok:true,stage:"need_password"}；
+    // 接缝桩形状为 {ok:false,stage:"need_password"}——stage 优先判定
+    if (r.stage === "need_password") setAddStep("pwd");
+    else if (r.ok) { closeAdd(); refresh(); }
     else addErr(r.error || "验证码错误，请重试");
   }
   async function verifyPassword(btn) {
@@ -2303,8 +2322,29 @@ const TgAccounts = (() => {
   }
 
   // ---------- tg:acct_hint 限速提示 ----------
-  function onAcctHint(detail) {
-    if (!detail || typeof detail.account_id !== "string") return;
+  // 负载归一：T51 真实事件 params[0] =
+  //   {task_id, data:{reason, from_acct, to_acct, item_msg, has_alt,
+  //                   hint, seq}}
+  // 接缝桩/旧稿为扁平 {account_id, reason, suggestion, detail}，两者兼容。
+  function normHint(raw) {
+    if (!raw) return null;
+    const d = (raw.data && typeof raw.data === "object") ? raw.data : {};
+    return {
+      account_id: d.from_acct || raw.account_id || "",
+      reason: d.reason || raw.reason || "",
+      has_alt: typeof d.has_alt === "boolean" ? d.has_alt : null,
+    };
+  }
+  function onAcctHint(raw) {
+    // 仅限速类 reason 驱动大条/小字；channel_private（alt 无权限回退）
+    // 等非限速事件不渲染限速 UI
+    const detail = normHint(raw);
+    if (!detail || typeof detail.account_id !== "string" || !detail.account_id)
+      return;
+    if (detail.reason !== "flood_wait" && detail.reason !== "slow") {
+      console.debug("[T52] 忽略非限速 acct_hint：", raw);
+      return;
+    }
     _hint = detail;
     render();
     renderHint();
@@ -2374,27 +2414,29 @@ const TgAccounts = (() => {
     }
   }
   async function acctEditTask(tid, value, prev) {
-    // 立即下发 edit_task(task_id, {acct})（T51 冻结形状）；
-    // 被拒/异常时回退控件状态（console.debug，不弹错误）
+    // 立即下发 edit_task(task_id, {acct_pref})（T51 真实落盘字段：
+    // 任务 JSON params.acct_pref，auto=pop 键）；
+    // 被拒/异常时回退控件态（console.debug，不弹错误）
     try {
-      const r = await acctCall("edit_task", tid, { acct: value });
+      const r = await acctCall("edit_task", tid, { acct_pref: value });
       if (r && r.ok === false) {
         taskAcct.set(tid, prev);
         renderSegs();
-        console.debug("[T52] edit_task({acct}) 被拒绝，已回退：", r);
+        console.debug("[T52] edit_task({acct_pref}) 被拒绝，已回退：", r);
       }
     } catch (e) {
       taskAcct.set(tid, prev);
       renderSegs();
-      console.debug("[T52] edit_task({acct}) 调用失败，已回退：", e);
+      console.debug("[T52] edit_task({acct_pref}) 调用失败，已回退：", e);
     }
   }
   function applyNewTaskAcct(taskId) {
-    // 新建任务成功（start_download 返回 task_id）后下发本页选定的策略；
+    // 新建任务成功（start_download 返回 task_id）后下发本页选定的策略
+    // （T51 真实字段 params.acct_pref）；
     // fire-and-forget，失败静默（不影响下载已开始的事实）
     if (!taskId) return;
-    acctCall("edit_task", taskId, { acct: newTaskAcct })
-      .catch(e => console.debug("[T52] 新任务 acct 下发失败：", e));
+    acctCall("edit_task", taskId, { acct_pref: newTaskAcct })
+      .catch(e => console.debug("[T52] 新任务 acct_pref 下发失败：", e));
   }
   function noteTaskAcct(tid, v) {
     // list_tasks 携带 acct 字段时的种子（T51 后端落地后生效）；
