@@ -3481,6 +3481,14 @@ class AccountPool:
             except Exception:
                 pass
 
+    def shutdown_main_state(self):
+        """T55 登出主号：清池内主号运行态（连接由调用方在登出语义内
+        负责断开——log_out/disconnect 已含在 logout 流程）。对称
+        shutdown_alts；小号侧（连接/文件/配置）不受影响。"""
+        self.clients[ACCT_MAIN] = None
+        self.state.pop(ACCT_MAIN, None)
+        self.me_cache.pop(ACCT_MAIN, None)
+
     # ---------- 懒连接 ----------
     async def aclient(self, account_id):
         """取已连接 client；alt 缺失则按 session 路径构造+connect+
@@ -5065,10 +5073,28 @@ async def task_menu(client, task, pool=None):
             pause()
 
 
-async def logout_flow(client):
-    """退出登录：销毁授权、删除会话，随后必须重启程序。"""
-    if not ask_yesno("确定退出当前账号？下次启动需重新接收验证码", False):
-        return
+LOGOUT_BUSY_TEXT = "有下载任务正在进行，请先中止下载后再退出登录。"
+
+
+async def logout_flow(client, pool=None):
+    """退出登录（T55：TUI 与 GUI logout() 语义统一）。
+
+    - busy 拒绝：ACTIVE_SESSIONS / MOVING_TASKS 非空时提示先停止
+      （沿用 GUI busy 文案）并返回 False；
+    - 确认后：Telegram log_out（异常时 disconnect 兜底）→ 池清理
+      （shutdown_alts 断小号连接/清运行态——复用 T51 函数，小号
+      session 文件/配置保留；shutdown_main_state 清池内主号态）
+      → 删主号 session 两文件（既有清理逻辑，与 GUI
+      _remove_session_files 同一文件集）→ cfg 清 phone；
+    - 返回 True 表示已登出，**不再 SystemExit**：调用方（settings_
+      menu/main_menu/run）向上冒泡回到登录入口，可重新 send_code
+      登录；退出程序仍只由菜单项 0 承担。
+    """
+    if ACTIVE_SESSIONS or MOVING_TASKS:
+        print(paint(f" {LOGOUT_BUSY_TEXT}", YELLOW))
+        return False
+    if not ask_yesno("确定退出当前账号？退出后可重新接收验证码登录", False):
+        return False
     try:
         await client.log_out()
     except Exception:
@@ -5076,17 +5102,33 @@ async def logout_flow(client):
             await client.disconnect()
         except Exception:
             pass
+    if pool is not None:
+        # 复用 T51 池清理（不写第二套）：小号断连清态、文件配置保留；
+        # 主号池态对称清理（连接已由上方 log_out/disconnect 语义处理）
+        try:
+            await pool.shutdown_alts()
+        except Exception:
+            pass
+        try:
+            pool.shutdown_main_state()
+        except Exception:
+            pass
     for p in (SESSION_PATH + ".session", SESSION_PATH + ".session-journal"):
         try:
             os.remove(p)
         except OSError:
             pass
-    print(paint(" 已退出登录，请关闭窗口后重新启动程序", GREEN))
-    pause()
-    raise SystemExit(0)
+    cfg = load_config()
+    if "phone" in cfg:
+        cfg.pop("phone", None)
+        save_config(cfg)
+    print(paint(" 已退出登录，返回登录入口（可重新登录）", GREEN))
+    return True
 
 
-async def settings_menu(client):
+async def settings_menu(client, pool=None):
+    """设置菜单（T55：返回值语义）——False/None=正常返回上级；
+    True=用户已退出登录（冒泡给 main_menu 回登录入口）。"""
     while True:
         cfg = load_config()
         cur_root = cfg.get("download_root") or str(DEFAULT_DOWNLOAD_ROOT)
@@ -5151,7 +5193,10 @@ async def settings_menu(client):
             print(paint(" 已恢复内置凭证（重启程序后生效）", GREEN))
             pause()
         elif choice == "5":
-            await logout_flow(client)
+            # T55：登出成功则冒泡 True（回登录入口）；被拒/取消时
+            # 留在本菜单继续
+            if await logout_flow(client, pool):
+                return True
 
 
 def _tui_acct_cb():
@@ -5260,6 +5305,8 @@ async def account_menu(pool):
 
 
 async def main_menu(client, pool=None):
+    """主菜单（T55 返回值语义）：False=用户选 0 退出程序；
+    True=已退出登录（冒泡给 run() 回登录入口，不退进程）。"""
     while True:
         tasks = load_tasks()
         clear_screen()
@@ -5284,12 +5331,13 @@ async def main_menu(client, pool=None):
         raw = choose_menu("请选择", opts)
 
         if raw == "0":
-            return
+            return False          # 退出程序（唯一退出路径）
         if raw and raw.lower() == "a":
             await account_menu(pool)          # None 时仅列主号（旧数据）
             continue
         if raw and raw.lower() == "s":
-            await settings_menu(client)
+            if await settings_menu(client, pool):
+                return True       # 已登出：冒泡，run() 回登录入口
             continue
         if raw == "1":
             try:
@@ -5664,19 +5712,25 @@ async def run():
     args = sys.argv[1:]
     setup_console_utf8()
     ensure_dirs_and_migrate()
-    cfg = setup_credentials()
 
-    # T51：账号池（唯一调度内核）；主号登录经 pool.login_main_tui
-    # （封装原内联构造/start/换凭证重试/get_me 流程，行为不变）
+    # T51：账号池（唯一调度内核）；T55：登录入口回路——主菜单
+    # 退出登录后回到这里重新 setup_credentials + login_main_tui
+    # （与 GUI 登出回登录卡对齐；退出程序只由菜单 0 承担）
     pool = AccountPool(event_cb=_tui_acct_cb())
     client = None
     try:
-        client = await pool.login_main_tui(cfg)
-        if args:
-            # 命令行参数模式：直接新建任务（兼容旧用法）
-            await new_task_flow(client, args, pool=pool)
-        else:
-            await main_menu(client, pool)
+        while True:
+            cfg = setup_credentials()
+            client = await pool.login_main_tui(cfg)
+            if args:
+                # 命令行参数模式：直接新建任务（兼容旧用法，一次即退）
+                await new_task_flow(client, args, pool=pool)
+                break
+            if not await main_menu(client, pool):
+                break               # 菜单 0：退出程序
+            # 已登出：清引用后回到循环头重新登录（login_main_tui 会
+            # 重新构造 client 并 adopt；cfg.phone 已被登出清理）
+            client = None
     finally:
         try:
             await pool.shutdown_alts()
