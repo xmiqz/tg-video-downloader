@@ -32,13 +32,17 @@ import tg_video_dl as core
 
 log = logging.getLogger("server_app")
 
-# RPC 方法白名单（40 个，逐字钉死；与 v1.2.6 window.pywebview.api 暴露面一致。
+# RPC 方法白名单（45 个，逐字钉死；与 v1.2.6 window.pywebview.api 暴露面一致。
 # 其中 job_state/jobs_state/job_cancel 为 T45 新增（作业模型基座），
 # set_guest 为 T46 新增（游客/离线受限模式），
 # preview_cancel 为 T48 新增（流式搜索作业取消），
-# t45_demo_job 为 T45 测试挂点，仅在 TG_T45_TEST_HOOK=1 时加入有效白名单）
+# t45_demo_job 为 T45 测试挂点，仅在 TG_T45_TEST_HOOK=1 时加入有效白名单，
+# account_list/account_add_start/account_verify_code/account_verify_password/
+# account_remove 为 T51 新增（多账号池 5 个））
 RPC_METHODS = frozenset({
-    "abort_task", "active_states", "choose_folder", "connect", "delete_task",
+    "abort_task", "account_add_start", "account_list",
+    "account_remove", "account_verify_code", "account_verify_password",
+    "active_states", "choose_folder", "connect", "delete_task",
     "edit_task", "editor_data", "editor_remove", "editor_save",
     "editor_set_status", "get_appearance", "get_item_text", "get_settings",
     "get_task", "is_active", "item_action", "items_file_info", "job_cancel",

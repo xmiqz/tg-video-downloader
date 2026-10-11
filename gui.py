@@ -331,6 +331,17 @@ class Api:
         # 保险）。生命周期与作业一致：worker 收口 finally 清除。
         self._move_tasks = {}
         self._move_lock = threading.Lock()
+        # T51 账号池：唯一调度内核（选号/状态/登录参数化全在
+        # core.AccountPool，本层只做参数传递与转发）。event_cb 延迟
+        # 绑定 push_event（仿 jobs sink；注入前 no-op）。池侧 emit 传
+        # 单 payload，这里包成 [payload]（T45 推送包络契约）。
+        def _acct_sink(name, payload):
+            push = self.push_event
+            if push is None:
+                return
+            push(name, [payload])
+        self._acct_sink = _acct_sink
+        self._pool = core.AccountPool(event_cb=_acct_sink)
 
     # ---------- 外观模式 ----------
     def get_appearance(self):
@@ -434,6 +445,11 @@ class Api:
                 self.engine.submit(_do())
         except Exception:
             pass
+        # T51：主号退出时断开小号运行态（不删 alt 文件/配置）
+        try:
+            self.engine.submit(self._pool.shutdown_alts())
+        except Exception:
+            pass
         self.client = None
         if self.guest:
             print("[GUI] guest=False（logout）")
@@ -463,6 +479,11 @@ class Api:
         if self.client is not None:
             print("[GUI] set_guest 拒绝：已登录账号无需进入游客模式")
             return {"ok": False, "error": "已登录账号无需进入游客模式"}
+        # T51：池内有 alt 就绪/adding 时拒绝进入游客模式
+        # （退出游客 on=False 不受限）
+        if on and self._pool.alt_ready_or_adding():
+            print("[GUI] set_guest 拒绝：已有小号登录信息")
+            return {"ok": False, "error": "已有小号登录信息，请先移除小号再进入游客模式"}
         self.guest = on
         print(f"[GUI] guest={self.guest}")
         return {"ok": True, "guest": self.guest}
@@ -474,6 +495,23 @@ class Api:
         return {"logged_in": False,
                 "has_session": pathlib.Path(core.SESSION_PATH + ".session").exists(),
                 "guest": bool(self.guest)}
+
+    def _adopt_and_cache_me(self):
+        """T51：主号就绪（connect ok / verify ready 后调用）——交池
+        托管（幂等，池不断开主号）+ 缓存 get_me（失败只吞，不影响
+        RPC 返回；account_list 自身绝不触网）。"""
+        self._pool.adopt_main(self.client)
+
+        async def _do():
+            u = await self.client.get_me()
+            self._pool.me_cache[core.ACCT_MAIN] = {
+                "name": u.first_name or "", "username": u.username or "",
+                "phone": u.phone or ""}
+
+        try:
+            self.engine.submit(_do())
+        except Exception:
+            pass
 
     def connect(self):
         if self.client is not None:
@@ -528,6 +566,7 @@ class Api:
             if self.guest:
                 print("[GUI] guest=False（connect 就绪）")
             self.guest = False
+            self._adopt_and_cache_me()       # T51：主号就绪交池托管
             return {"ok": True, "stage": "ready"}
         return {"ok": True, "stage": status}
 
@@ -575,6 +614,8 @@ class Api:
         if r == "ready" and self.guest:
             print("[GUI] guest=False（verify_code 就绪）")
             self.guest = False
+        if r == "ready":
+            self._adopt_and_cache_me()       # T51：主号就绪交池托管
         return {"ok": True, "stage": r}
 
     def verify_password(self, password):
@@ -590,6 +631,8 @@ class Api:
         if r == "ready" and self.guest:
             print("[GUI] guest=False（verify_password 就绪）")
             self.guest = False
+        if r == "ready":
+            self._adopt_and_cache_me()       # T51：主号就绪交池托管
         return {"ok": True, "stage": r}
 
     def me(self):
@@ -604,6 +647,103 @@ class Api:
             return {"ok": True, **self.engine.submit(_do())}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    # ---------- T51 账号池 RPC（5 个；除 account_list 外主号就绪+非游客闸门） ----------
+
+    def _acct_gate(self):
+        """账号管理闸门：游客态（用户明确进入）优先返回游客拒绝；
+        主号未就绪 -> need_login。返回拒绝 dict 或 None（通过）。"""
+        if self.guest:
+            return {"ok": False, "error": "游客模式下不可管理账号"}
+        if self.client is None:
+            print("[GUI] need_login: account rpc")
+            return {"ok": False, "need_login": True}
+        return None
+
+    def account_list(self):
+        """账号列表快照（不触网）：main 恒在列；alt1 仅在已配置或
+        adding 中时在列。main phone 补 cfg；me 取登录成功缓存。"""
+        rows = []
+        for a in self._pool.snapshot():
+            a = dict(a)
+            if a["id"] == core.ACCT_MAIN:
+                a["phone"] = (self.cfg.get("phone") or "")
+            rows.append(a)
+        return {"ok": True, "guest": bool(self.guest), "accounts": rows}
+
+    def account_add_start(self, account_id, phone):
+        gate = self._acct_gate()
+        if gate is not None:
+            return gate
+        if account_id != core.ACCT_ALT:
+            return {"ok": False, "error": "仅支持添加小号（alt1）"}
+        phone = (phone or "").strip()
+        if not phone:
+            return {"ok": False, "error": "手机号不能为空"}
+        try:
+            stage = self.engine.submit(
+                self._pool.add_start(account_id, phone))
+        except Exception as e:
+            if type(e).__name__ == "SendCodeUnavailableError":
+                # 首次 SendCodeRequest 已成功（验证码经 App 内消息送达），
+                # 失败的只是升级重发——沿用 send_code 同款映射
+                return {"ok": True, "stage": "need_code",
+                        "warning": "验证码已通过 Telegram App 消息发送，请直接查看并输入最新验证码；无需重复点击发送。"}
+            if "已存在" in str(e):
+                return {"ok": False, "error": "小号已存在"}
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        return {"ok": True, "stage": stage}
+
+    def account_verify_code(self, account_id, code):
+        gate = self._acct_gate()
+        if gate is not None:
+            return gate
+        if account_id != core.ACCT_ALT:
+            return {"ok": False, "error": "仅支持小号（alt1）"}
+        try:
+            stage = self.engine.submit(
+                self._pool.add_verify_code(account_id, code))
+        except Exception as e:
+            # 与 verify_code 同形：PhoneCodeInvalid/Expired 等原样透传
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        return {"ok": True, "stage": stage}
+
+    def account_verify_password(self, account_id, password):
+        gate = self._acct_gate()
+        if gate is not None:
+            return gate
+        if account_id != core.ACCT_ALT:
+            return {"ok": False, "error": "仅支持小号（alt1）"}
+        try:
+            stage = self.engine.submit(
+                self._pool.add_verify_password(account_id, password))
+        except Exception as e:
+            # 与 verify_password 同形：PasswordHashInvalid 等原样透传
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        return {"ok": True, "stage": stage}
+
+    def account_remove(self, account_id):
+        if account_id == core.ACCT_MAIN:
+            return {"ok": False, "error": "主号请使用退出登录"}
+        gate = self._acct_gate()
+        if gate is not None:
+            return gate
+        if account_id != core.ACCT_ALT:
+            return {"ok": False, "error": "仅支持小号（alt1）"}
+        # 同步段先判（RPC 线程毫秒级拒绝；池内 remove_account 再判一次）
+        if (core.any_active()
+                or self._pool.alt_adding()
+                or self._pool.busy_snapshot().get(core.ACCT_ALT, 0) > 0):
+            return {"ok": False, "busy": True,
+                    "error": "小号仍有下载任务，请先中止后再移除。"}
+        try:
+            self.engine.submit(self._pool.remove_account(account_id))
+        except core.AccountBusy:
+            return {"ok": False, "busy": True,
+                    "error": "小号仍有下载任务，请先中止后再移除。"}
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        return {"ok": True}
 
     # ---------- 频道预览（高级搜索；T48 改为 300ms ACK 作业式） ----------
     def preview(self, params):
@@ -971,7 +1111,8 @@ class Api:
                 core.open_download_session(
                     self.client, first, planned,
                     first["params"]["parallel"], gui={},
-                    lazy_statuses=None, phase_cb=cb),
+                    lazy_statuses=None, phase_cb=cb,
+                    pool=self._pool, event_cb=self._acct_sink),
                 self.engine.loop)
             sess = fut.result()
         except Exception as e:
@@ -1186,7 +1327,8 @@ class Api:
             fut = asyncio.run_coroutine_threadsafe(
                 core.open_download_session(
                     self.client, t, planned, parallel, gui={},
-                    lazy_statuses=statuses, phase_cb=cb),
+                    lazy_statuses=statuses, phase_cb=cb,
+                    pool=self._pool, event_cb=self._acct_sink),
                 self.engine.loop)
             sess = fut.result()
         except Exception as e:
@@ -1233,6 +1375,28 @@ class Api:
             core.rename_task(t, fields["title"])
         if fields.get("parallel"):
             core.set_parallel(t, int(fields["parallel"]))
+        # T51：账号偏好（不加新 RPC；T52 经 edit_task 切换任务偏好）。
+        # 仅接受 main/alt1/auto；非法值不落盘。auto 时 pop 键；live
+        # 会话存在时同步就地更新 sess.task（排队条目立即生效，不动
+        # 正在下载的条目）。
+        pref = fields.get("acct_pref")
+        if pref is not None:
+            if pref not in ("main", "alt1", "auto"):
+                return {"ok": False,
+                        "error": "acct_pref 仅支持 main/alt1/auto"}
+            params = t.setdefault("params", {})
+            if pref == "auto":
+                params.pop("acct_pref", None)
+            else:
+                params["acct_pref"] = pref
+            core.save_task(t)
+            sess = core.ACTIVE_SESSIONS.get(task_id)
+            if sess is not None:
+                sp = sess.task.setdefault("params", {})
+                if pref == "auto":
+                    sp.pop("acct_pref", None)
+                else:
+                    sp["acct_pref"] = pref
         folder = (fields.get("folder") or "").strip()
         if not folder:
             return {"ok": True, "warnings": []}

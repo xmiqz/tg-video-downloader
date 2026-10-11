@@ -71,6 +71,38 @@ SPEED_WIN_SEC = 10.0       # 总速度滑动窗口：统计最近 10 秒下载�
 # PART=8 MiB 取半，节拍更细。
 MOVE_CHUNK = 4 * 1024 * 1024
 
+# T51 多账号（小号）池：账号 id 白名单与标记（v2.1 仅两个，硬校验）。
+ACCT_MAIN = "main"
+ACCT_ALT = "alt1"
+ACCT_IDS = ("main", "alt1")
+ACCT_MARK = {"main": "[主]", "alt1": "[小]"}
+
+# 小号 session 同组附属文件后缀钉死 4 个（Telethon SQLite 可能产物，
+# 存在才删）；清理按完整 basename 逐后缀精确删除，严禁 tg_session*
+# 之类可能误伤主号的通配。
+ALT_SESSION_SUFFIXES = (".session", ".session-journal", ".session-wal",
+                        ".session-shm")
+
+# 慢速判定阈值（acct_policy 键缺省时的默认；高级用户可在 tg_config.json
+# 手改 acct_policy 覆盖，应用永远只读、永不主动写入）。依据：
+#   ACCT_SLOW_BPS=200KB/s：TG 服务端账号级限速典型体感档为几十~一百多
+#     KB/s；200KB/s 下 1GB 视频约 87 分钟，属明显被限速、值得分流；正常
+#     媒体下载常见 ≥1MB/s 不会误伤；与 STALL_SECS=90（停滞 90s 零字节）
+#     互补——后者抓死链，本阈值抓持续低速。
+#   ACCT_SLOW_WIN_SEC=20：2 倍于总速度窗 SPEED_WIN_SEC，跨新条目启动
+#     爬坡，避免误判。
+#   ACCT_COOLDOWN_SECS=60 初判冷却；重复判慢翻倍、封顶 ACCT_COOLDOWN_MAX。
+ACCT_SLOW_BPS = 200 * 1024        # 204800 B/s ≈ 200 KB/s
+ACCT_SLOW_WIN_SEC = 20.0
+ACCT_COOLDOWN_SECS = 60.0
+ACCT_COOLDOWN_MAX = 300.0
+
+# acct_hint 事件去抖：同 task+reason 最小间隔（channel_private 不受限）。
+ACCT_HINT_MIN_INTERVAL = 30.0
+
+# 无权限频道错误类名钉死集合（用 type(e).__name__ 与真 telethon 类比较）。
+PRIVATE_ERROR_NAMES = {"ChannelPrivateError"}
+
 
 # ---------------- 配置与登录 ----------------
 
@@ -169,6 +201,93 @@ def setup_credentials():
         ).strip()
     save_config(cfg)
     return cfg
+
+
+# ---------------- T51 账号池配置辅助（accounts/acct_policy 读写边界） ----------------
+
+def session_path_for(account_id):
+    """账号 session 路径：main 沿用 SESSION_PATH（零迁移零触碰）；
+    alt1 为 DATA_DIR/tg_session_alt1；其它 id 一律 ValueError。"""
+    if account_id == ACCT_MAIN:
+        return SESSION_PATH
+    if account_id == ACCT_ALT:
+        return str(DATA_DIR / "tg_session_alt1")
+    raise ValueError(f"未知账号 id：{account_id!r}")
+
+
+def alt_session_files():
+    """小号 session 同组附属文件完整路径列表（4 后缀逐个精确枚举）。"""
+    base = session_path_for(ACCT_ALT)
+    return tuple(base + suf for suf in ALT_SESSION_SUFFIXES)
+
+
+def load_acct_policy():
+    """读 cfg.acct_policy（只读、永不写）：缺省/非法值回退默认并 print
+    技术日志；数值夹紧到合法区间，任何情况不抛异常。"""
+    try:
+        raw = load_config().get("acct_policy")
+    except Exception:
+        raw = None
+    if not isinstance(raw, dict):
+        raw = {}
+
+    def _num(key, dflt, lo, hi):
+        try:
+            v = float(raw.get(key, dflt))
+        except (TypeError, ValueError):
+            print(f"[acct] acct_policy.{key} 非法，回退默认 {dflt}")
+            return dflt
+        if v < lo or v > hi:
+            print(f"[acct] acct_policy.{key}={v} 越界 [{lo},{hi}]，夹紧")
+            v = max(lo, min(v, hi))
+        return v
+
+    return {
+        "slow_bps": int(_num("slow_bps", ACCT_SLOW_BPS,
+                             1024, 100 * 1024 * 1024)),
+        "slow_win_sec": _num("slow_win_sec", ACCT_SLOW_WIN_SEC, 5, 300),
+        "cooldown_sec": _num("cooldown_sec", ACCT_COOLDOWN_SECS, 10, 1800),
+    }
+
+
+def alt_configured():
+    """cfg 已配置 alt1（accounts 含 alt1）？只读，任何路径不补写该键。"""
+    try:
+        accts = load_config().get("accounts")
+    except Exception:
+        return False
+    if not isinstance(accts, list):
+        return False
+    return any(isinstance(a, dict) and a.get("id") == ACCT_ALT
+               for a in accts)
+
+
+def save_accounts_add_alt(label=""):
+    """accounts 键的首次且唯一常规落盘时机：alt1 登录流程最终成功
+    （sign_in 完成且已授权）的那一刻。与 cfg 合并一次 save_config；
+    旧文件无该键视单账号，绝不因启动/主号登录/下载补写。"""
+    cfg = load_config()
+    accts = cfg.get("accounts")
+    if not isinstance(accts, list):
+        accts = [{"id": ACCT_MAIN}]
+    if not any(isinstance(a, dict) and a.get("id") == ACCT_MAIN
+               for a in accts):
+        accts.insert(0, {"id": ACCT_MAIN})
+    if any(isinstance(a, dict) and a.get("id") == ACCT_ALT for a in accts):
+        return                       # 已在表（幂等）：不重写
+    accts.append({"id": ACCT_ALT, "label": label or ""})
+    cfg["accounts"] = accts
+    save_config(cfg)
+
+
+def save_accounts_remove_alt():
+    """移除小号成功后：删除 accounts 键（恢复无该键状态），
+    pop 后一次 save_config；无键时零写盘。"""
+    cfg = load_config()
+    if "accounts" not in cfg:
+        return
+    cfg.pop("accounts", None)
+    save_config(cfg)
 
 
 def prompt_manual_api(cfg):
@@ -1575,6 +1694,9 @@ class Monitor:
                 "done": 0, "status": "等待中", "speed": 0.0,
                 "samples": [], "started": None, "ended": None,
                 "error": "", "final": "",
+                # T51：条目下载账号（main 默认；快照/行标记消费，
+                # 绝不进任务 JSON 以外的持久面）
+                "acct": ACCT_MAIN,
             }
             self.entries.append(e)
             self.order[(src, p["mid"])] = e
@@ -1769,6 +1891,8 @@ class Monitor:
                     "pct": round(e["done"] * 100 / (e["total"] or 1), 1),
                     "speed": round(e["speed"], 1),
                     "status": e["status"], "error": e["error"],
+                    # T51 纯增 1 键：本条下载账号（默认 main）
+                    "acct": e.get("acct", ACCT_MAIN),
                     # text（消息原文）不随每秒轮询返回，前端展开时按需取
                 }
                 for e in self.entries
@@ -1911,7 +2035,10 @@ class Monitor:
         lines = []
 
         if self.detailed:
-            lines.append(f"[{e['n']}] 消息 #{e['mid']}   {e['status']}")
+            lines.append(
+                f"{ACCT_MARK[e.get('acct', ACCT_MAIN)]} "
+                f"[{e['n']}] 消息 #{e['mid']}   {e['status']}"
+            )
             lines += wrap_text(e["name"], w, "     文件：")
             head = (
                 f"日期：{e['date'] or '-'}    大小：{human(e['total'])}"
@@ -1944,6 +2071,7 @@ class Monitor:
             barw = max(8, min(24, w - 30))
             tail = human_speed(e["speed"]) if active else e["status"]
             lines.append(
+                f"{ACCT_MARK[e.get('acct', ACCT_MAIN)]}"
                 f"[{e['n']}] #{e['mid']} {_bar(pct, barw)} {pct:5.1f}% {tail}"
             )
 
@@ -2999,6 +3127,722 @@ class DownloadSession:
         return snap
 
 
+# ---------------- T51 多账号池（AccountPool；TUI/GUI 唯一调度内核） ----------------
+
+class AccountUnavailable(Exception):
+    """池内账号不可用（懒连接失败/未授权）：选号器据此跳过，
+    worker 捕获后回退 main，不向上炸穿会话。"""
+
+
+class AccountBusy(Exception):
+    """池内忙拒绝（有活动下载/添加中）：调用方转 {"ok":False,"busy":True}。"""
+
+
+class AccountDenied(BaseException):
+    """池内信号：alt 对当前频道无权限（PRIVATE_ERROR_NAMES 命中），
+    worker 捕获后仅一次回退 main。继承 BaseException 的依据：
+    download_one 的通用分支是 `except Exception as e:`（3/6/12s 退避），
+    Exception 子类会被吞进退避循环、到不了 worker 的回退分支；与
+    CancelledError（同为 BaseException）"控制类信号穿透重试"的既有
+    先例一致。抛出点仅 _ClientView（且仅 alt 启用 deny 转换），
+    捕获点仅 worker，无裸 except 吞没风险。"""
+
+
+# 测试缝：模块级 client 工厂覆盖位（夹具注入伪工厂用；
+# 生产路径保持 None，一律走真 Telethon 工厂）。
+_CLIENT_FACTORY = None
+
+
+class _ClientView:
+    """池提供的客户端视图包装器：__getattr__ 透传，仅包
+    iter_download/download_media/get_messages 三个方法。
+    - FloodWaitError：note_flood 后原样 re-raise（download_one 现有
+      except 链逐字保留，当前条目仍原号严格等待——FR-9 不变）；
+    - PRIVATE_ERROR_NAMES 命中：deny_convert=True（alt）时转抛
+      AccountDenied；main（deny_convert=False）保持现状原样上抛。
+    """
+
+    def __init__(self, client, pool, acct, deny_convert=False):
+        self._client = client
+        self._pool = pool
+        self._acct = acct
+        self._deny = deny_convert
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+    def _raise_maybe_deny(self, e):
+        if self._deny and type(e).__name__ in PRIVATE_ERROR_NAMES:
+            raise AccountDenied(f"{self._acct} 无权限访问该频道") from e
+        raise e
+
+    def iter_download(self, media, *a, **kw):
+        inner = self._client.iter_download(media, *a, **kw)
+
+        async def _gen():
+            it = inner.__aiter__()
+            while True:
+                try:
+                    chunk = await it.__anext__()
+                except StopAsyncIteration:
+                    return
+                except FloodWaitError as e:
+                    self._pool.note_flood(self._acct, e.seconds)
+                    raise
+                except Exception as e:  # noqa: BLE001 - 分类后原样上抛
+                    self._raise_maybe_deny(e)
+                yield chunk
+
+        return _gen()
+
+    async def download_media(self, msg, *a, **kw):
+        try:
+            return await self._client.download_media(msg, *a, **kw)
+        except FloodWaitError as e:
+            self._pool.note_flood(self._acct, e.seconds)
+            raise
+        except Exception as e:  # noqa: BLE001 - 分类后原样上抛
+            self._raise_maybe_deny(e)
+
+    async def get_messages(self, ent, ids=None):
+        try:
+            return await self._client.get_messages(ent, ids=ids)
+        except FloodWaitError as e:
+            self._pool.note_flood(self._acct, e.seconds)
+            raise
+        except Exception as e:  # noqa: BLE001 - 分类后原样上抛
+            self._raise_maybe_deny(e)
+
+
+class AccountPool:
+    """多 client 懒连接/健康状态/拆除 + 条目选号（T51）。
+    单账号（无 accounts 键/无 alt session）是其退化态：所有条目恒
+    main，行为与现状一致（feeder 主号、download_one 主号）。
+    选号/采样只在 asyncio 循环内发生；snapshot() 供 RPC 线程轮询。"""
+
+    def __init__(self, event_cb=None, client_factory=None, policy=None):
+        # 事件出口（{"type":"acct_hint","task_id","data"} payload）：
+        # None=no-op；异常只吞不炸
+        self.event_cb = event_cb
+        self.client_factory = client_factory     # None 用 _CLIENT_FACTORY/真工厂
+        self.policy = policy or load_acct_policy()
+        # 每号运行态（内存，不持久化）
+        self.clients = {ACCT_MAIN: None, ACCT_ALT: None}
+        self.state = {}                          # acct -> ready|has_session|logged_out|adding|error
+        self.busy = {ACCT_MAIN: 0, ACCT_ALT: 0}  # 该号正在下载条目数
+        self.flood_until = {}                    # acct -> monotonic 期限
+        self.slow_since = {}                     # 连续低速起点
+        self.slow_marked = {}                    # 是否被标记低速
+        self.slow_strikes = {}                   # 连续判慢次数（冷却翻倍）
+        self.cooldown_until = {}                 # 慢速冷却期限
+        self.canary = {}                         # 探针恢复期中
+        self.canary_ok_since = {}                # 探针连续达标起点
+        self.denied_channels = {}                # 本进程内该号无权限频道集合
+        self.me_cache = {}                       # acct -> {"name","username","phone"}|None
+        self._adding = {}                        # acct -> {"client","phone"}（半成品）
+        self._alt_cfg = alt_configured()         # cfg accounts 含 alt1（缓存）
+        self._alt_phone = ""                     # 添加流程内存值
+        self._lock = threading.Lock()
+        self._seq = 0                            # 选号决策日志序号（从 1 连续）
+        self._last_hint = {}                     # (task_id, reason) -> monotonic 去抖
+        self._sampler = None                     # 慢速采样任务
+
+    # ---------- 事件出口 ----------
+    def emit(self, name, payload):
+        cb = self.event_cb
+        if cb is None:
+            return
+        try:
+            cb(name, payload)
+        except Exception:
+            pass
+
+    def acct_hint(self, task, reason, from_acct, to_acct, item_msg=None,
+                  has_alt=None):
+        """acct_hint 事件（复用 T45 通道，唯一事件出口，不新增事件名）。
+        payload=params[0]= {"task_id", "data":{reason,from_acct,to_acct,
+        item_msg,has_alt,hint}}。去抖：同 task+reason 最小间隔 30s，
+        channel_private 不受限。"""
+        try:
+            tid = (task or {}).get("id") or ""
+        except Exception:
+            tid = ""
+        if reason in ("flood_wait", "slow"):
+            now = time.monotonic()
+            key = (tid, reason)
+            if now - self._last_hint.get(key, 0.0) < ACCT_HINT_MIN_INTERVAL:
+                return
+            self._last_hint[key] = now
+        if has_alt is None:
+            has_alt = self._alt_ready()
+        data = {
+            "reason": reason, "from_acct": from_acct, "to_acct": to_acct,
+            "item_msg": item_msg, "has_alt": bool(has_alt),
+            "hint": "当前账号下载较慢（服务器限速），登录小号可自动分流提速",
+            # seq 纯增 1 键：与 [acct] 决策日志同源序号，TUI 行展示与
+            # 日志可对齐（六钉死键零改动；bridge 原样转发 params[0]）
+            "seq": self._seq,
+        }
+        self.emit("acct_hint", {"task_id": tid, "data": data})
+
+    # ---------- 工厂 ----------
+    def _raw_client(self, acct, cfg=None):
+        """构造（不连接）指定账号的 client：client_factory（池）/模块级
+        _CLIENT_FACTORY（测试缝）优先，生产路径走真 Telethon 工厂。
+        工厂签名 (session_path, api_id, api_hash) -> client。"""
+        path = session_path_for(acct)
+        _cfg = cfg or load_config()
+        factory = self.client_factory or _CLIENT_FACTORY
+        if factory is not None:
+            return factory(path, _cfg.get("api_id"), _cfg.get("api_hash"))
+        return TelegramClient(
+            path, _cfg.get("api_id", BUILTIN_API_ID),
+            _cfg.get("api_hash", BUILTIN_API_HASH),
+            flood_sleep_threshold=120,
+        )
+
+    # ---------- 主号接入 ----------
+    def adopt_main(self, client):
+        """GUI 把现成 self.client 交池托管（幂等）；池绝不断开主号。"""
+        if client is not None:
+            self.clients[ACCT_MAIN] = client
+            self.state[ACCT_MAIN] = "ready"
+
+    async def login_main_tui(self, cfg):
+        """TUI 主号登录：封装原 run() 内联流程（TelegramClient 构造、
+        client.start(phone)、内置凭证失效换用户凭证重试一次、get_me），
+        行为逐行不变；成功后托管进池并返回 client。"""
+        client = self._raw_client(ACCT_MAIN, cfg)
+        print("\n正在登录 Telegram …（首次需输入 Telegram App 收到的验证码）")
+        try:
+            await client.start(phone=lambda: cfg["phone"])
+        except Exception as e:
+            if cfg.get("builtin_api") and type(e).__name__ in (
+                "ApiIdInvalidError", "ApiIdPublishedFloodError",
+                "PhoneNumberBannedError"
+            ):
+                await client.disconnect()
+                prompt_manual_api(cfg)
+                client = self._raw_client(ACCT_MAIN, cfg)
+                await client.start(phone=lambda: cfg["phone"])
+            else:
+                raise
+        me = await client.get_me()
+        print(f"已登录：{me.first_name or ''} @{me.username or ''}")
+        self.clients[ACCT_MAIN] = client
+        self.state[ACCT_MAIN] = "ready"
+        self.me_cache[ACCT_MAIN] = {
+            "name": me.first_name or "", "username": me.username or "",
+            "phone": me.phone or ""}
+        return client
+
+    # ---------- 小号登录（参数化；gui RPC 与 TUI 菜单同一套协程） ----------
+    async def add_start(self, account_id, phone):
+        """alt1 添加第 1 步：构造+connect+(已授权即 ready)否则发码。
+        返回 "need_code"|"ready"；异常原样上抛由调用方映射（gui
+        connect/send_code 同款语义）。"""
+        if account_id != ACCT_ALT:
+            raise ValueError(f"不支持添加账号：{account_id!r}（仅 alt1）")
+        if self._adding.get(ACCT_ALT) is not None:
+            raise RuntimeError("小号正在添加中")
+        if (self.clients.get(ACCT_ALT) is not None
+                or self._alt_cfg):
+            raise RuntimeError("小号已存在")
+        client = self._raw_client(ACCT_ALT)
+        self._adding[ACCT_ALT] = {"client": client, "phone": phone or ""}
+        self.state[ACCT_ALT] = "adding"
+        try:
+            await client.connect()
+            if await client.is_user_authorized():
+                await self._finish_add()
+                return "ready"
+            await client.send_code_request(phone)
+            return "need_code"
+        except Exception:
+            await self._cleanup_add()   # 断开半成品；不删可能已授权的 session
+            raise
+
+    async def add_verify_code(self, account_id, code):
+        """alt1 添加第 2 步：sign_in(phone, code)；2FA 返回
+        "need_password"，成功即 ready（此刻首次落盘 accounts 键）。"""
+        from telethon.errors import SessionPasswordNeededError  # noqa: PLC0415
+        if account_id != ACCT_ALT or self._adding.get(ACCT_ALT) is None:
+            raise RuntimeError("小号不在添加流程中（请先发送验证码）")
+        ent = self._adding[ACCT_ALT]
+        try:
+            await ent["client"].sign_in(phone=ent.get("phone") or None,
+                                        code=code)
+        except SessionPasswordNeededError:
+            return "need_password"
+        await self._finish_add()
+        return "ready"
+
+    async def add_verify_password(self, account_id, password):
+        """alt1 添加第 3 步：sign_in(password=…)；成功即 ready
+        （accounts 键唯一常规落盘时机在此刻，§2.2）。"""
+        if account_id != ACCT_ALT or self._adding.get(ACCT_ALT) is None:
+            raise RuntimeError("小号不在添加流程中（请先校验验证码）")
+        ent = self._adding[ACCT_ALT]
+        await ent["client"].sign_in(password=password)
+        await self._finish_add()
+        return "ready"
+
+    async def _finish_add(self):
+        """添加成功收口：get_me 缓存 -> 首次写 accounts 键 -> ready。"""
+        ent = self._adding.pop(ACCT_ALT, None)
+        if ent is None:
+            return
+        client = ent["client"]
+        me = None
+        try:
+            me = await client.get_me()
+            self.me_cache[ACCT_ALT] = {
+                "name": me.first_name or "", "username": me.username or "",
+                "phone": me.phone or ""}
+        except Exception:
+            self.me_cache[ACCT_ALT] = None
+        self._alt_phone = ent.get("phone") or ""
+        self.clients[ACCT_ALT] = client
+        self.state[ACCT_ALT] = "ready"
+        self._alt_cfg = True
+        save_accounts_add_alt()
+
+    async def _cleanup_add(self):
+        """添加失败收口：断开半成品 client（失败吞掉），不删可能已授权
+        的 session 文件（与主号现状同策略）。"""
+        ent = self._adding.pop(ACCT_ALT, None)
+        if ent is None:
+            return
+        client = ent.get("client")
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        self._alt_phone = ""
+        self.state[ACCT_ALT] = (
+            "has_session"
+            if pathlib.Path(session_path_for(ACCT_ALT) + ".session").exists()
+            else "logged_out")
+
+    # ---------- 拆除 ----------
+    async def remove_account(self, account_id):
+        """移除小号：main 拒绝（主号退出走 logout 既有语义）；有任何
+        活动下载（any_active / alt busy / adding 中）抛 AccountBusy。
+        顺序：停选号资格 -> disconnect（吞）-> 逐后缀删 4 文件 ->
+        pop accounts 键一次 save -> 清状态。"""
+        if account_id != ACCT_ALT:
+            raise ValueError("仅支持移除小号；主号请使用退出登录")
+        if any_active() or self.busy.get(ACCT_ALT, 0) > 0 \
+                or self._adding.get(ACCT_ALT) is not None:
+            raise AccountBusy()
+        client = self.clients.pop(ACCT_ALT, None)
+        self.state.pop(ACCT_ALT, None)
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        for f in alt_session_files():
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        save_accounts_remove_alt()
+        self._alt_cfg = False
+        self._alt_phone = ""
+        self.me_cache.pop(ACCT_ALT, None)
+        self.denied_channels.pop(ACCT_ALT, None)
+        self.flood_until.pop(ACCT_ALT, None)
+        self.busy[ACCT_ALT] = 0
+        self.slow_since.pop(ACCT_ALT, None)
+        self.slow_marked.pop(ACCT_ALT, None)
+        self.slow_strikes.pop(ACCT_ALT, None)
+        self.cooldown_until.pop(ACCT_ALT, None)
+        self.canary.pop(ACCT_ALT, None)
+        self.canary_ok_since.pop(ACCT_ALT, None)
+
+    async def shutdown_alts(self):
+        """主号 logout 时调用：断开 alt 连接、清运行态；
+        不删 alt 文件/配置（下次连接可复用授权）。"""
+        self._adding.pop(ACCT_ALT, None)
+        client = self.clients.pop(ACCT_ALT, None)
+        self.state.pop(ACCT_ALT, None)
+        self.denied_channels.pop(ACCT_ALT, None)
+        self.flood_until.pop(ACCT_ALT, None)
+        self.busy[ACCT_ALT] = 0
+        for k in (self.slow_since, self.slow_marked, self.slow_strikes,
+                  self.cooldown_until, self.canary, self.canary_ok_since):
+            k.pop(ACCT_ALT, None)
+        self._alt_phone = ""
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+    # ---------- 懒连接 ----------
+    async def aclient(self, account_id):
+        """取已连接 client；alt 缺失则按 session 路径构造+connect+
+        is_user_authorized；未授权/文件缺失置 error 并抛
+        AccountUnavailable（worker 据此回退 main）。"""
+        c = self.clients.get(account_id)
+        if c is not None:
+            return c
+        if account_id == ACCT_MAIN:
+            raise AccountUnavailable("主号未接入账号池")
+        if self.state.get(ACCT_ALT) in ("adding",):
+            raise AccountUnavailable("小号正在添加中")
+        if not pathlib.Path(session_path_for(ACCT_ALT)
+                            + ".session").exists():
+            self.state[ACCT_ALT] = "logged_out"
+            raise AccountUnavailable("小号无会话文件")
+        client = self._raw_client(ACCT_ALT)
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                raise AccountUnavailable("小号未授权（请移除后重新登录）")
+        except AccountUnavailable:
+            self.state[ACCT_ALT] = "error"
+            raise
+        except Exception as e:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            self.state[ACCT_ALT] = "error"
+            raise AccountUnavailable(
+                f"小号连接失败：{type(e).__name__}") from e
+        self.clients[ACCT_ALT] = client
+        self.state[ACCT_ALT] = "ready"
+        return client
+
+    # ---------- 状态标注（下载侧经客户端视图回调） ----------
+    def note_flood(self, acct, seconds, channel=None, item_msg=None):
+        """该号条目捕获 FloodWaitError：置 flood_until=now+seconds。
+        当前条目仍原号按 enter_flood 严格等待（FR-9 不变）；
+        后续新条目改派（flood 到期自动恢复，无需 canary）。"""
+        now = time.monotonic()
+        until = now + float(seconds)
+        if until > self.flood_until.get(acct, 0.0):
+            self.flood_until[acct] = until
+        print(f"[acct] {ACCT_MARK.get(acct, acct)} 触发服务器限速 "
+              f"FloodWait {int(seconds)}s，新条目改派（本条仍原号等待）")
+
+    def note_deny(self, acct, channel, item_msg=None):
+        """alt 对该频道无权限（AccountDenied 已被 worker 捕获）：
+        denied_channels 记频道（本进程），后续同频道条目不再派该号。"""
+        if channel:
+            self.denied_channels.setdefault(acct, set()).add(channel)
+        print(f"[acct] {ACCT_MARK.get(acct, acct)} 无该频道权限"
+              f"（{channel}，#{item_msg if item_msg is not None else '—'}），"
+              f"后续同频道改派")
+
+    # ---------- 慢速状态机（1s 采样喂入；随 run_download_session 启停） ----------
+    def _strike(self, acct, now):
+        """判慢一次：标记 + 冷却（重复翻倍、封顶 ACCT_COOLDOWN_MAX）。"""
+        pol = self.policy
+        self.slow_strikes[acct] = self.slow_strikes.get(acct, 0) + 1
+        cd = min(pol["cooldown_sec"]
+                 * (2 ** (self.slow_strikes[acct] - 1)), ACCT_COOLDOWN_MAX)
+        self.cooldown_until[acct] = now + cd
+        self.slow_marked[acct] = True
+        self.slow_since.pop(acct, None)
+        self.canary.pop(acct, None)
+        self.canary_ok_since.pop(acct, None)
+        print(f"[acct] {ACCT_MARK.get(acct, acct)} 持续低速"
+              f"（阈值 {human_speed(pol['slow_bps'])} 已满 "
+              f"{int(pol['slow_win_sec'])}s），标记低速并冷却 {int(cd)}s"
+              f"（第 {self.slow_strikes[acct]} 次）")
+        return cd
+
+    def _recover(self, acct, now):
+        """探针连续达标：清标记/冷却/次数，重新参与正常调度。"""
+        self.slow_strikes.pop(acct, None)
+        self.slow_marked.pop(acct, None)
+        self.cooldown_until.pop(acct, None)
+        self.canary.pop(acct, None)
+        self.canary_ok_since.pop(acct, None)
+        print(f"[acct] {ACCT_MARK.get(acct, acct)} 速度已恢复，"
+              f"重新参与调度")
+        # 说明：恢复边沿不产生新 acct_hint（reason 枚举钉死 3 值且
+        # 禁新增事件名）；TUI 打印本行即可观测，GUI 经 account_list
+        # 轮询 flag 感知（T52 已论证无新事件必要）。
+
+    def _slow_feed(self, acct, speed, cover, now):
+        """1s 采样输入：低速累计 + 边沿（标记/再冷却/恢复）。"""
+        pol = self.policy
+        win = pol["slow_win_sec"]
+        if cover < win * 0.8:
+            # 样本覆盖不足（条目刚启动爬坡）：不足以判慢；高速则清累计
+            if speed >= pol["slow_bps"]:
+                self.slow_since.pop(acct, None)
+                self.canary_ok_since.pop(acct, None)
+            return
+        if speed >= pol["slow_bps"]:
+            self.slow_since.pop(acct, None)
+            if self.canary.get(acct):
+                ok_since = self.canary_ok_since.get(acct)
+                if ok_since is None:
+                    self.canary_ok_since[acct] = now
+                elif now - ok_since >= win:
+                    self._recover(acct, now)
+            return
+        # 本秒低速
+        self.canary_ok_since.pop(acct, None)
+        if self.canary.get(acct):
+            self._strike(acct, now)          # 探针失败：立即再冷却翻倍
+            return
+        if (self.slow_marked.get(acct)
+                and now < self.cooldown_until.get(acct, 0.0)):
+            return       # 已标记且冷却中：不再累计（canary 探针期除外）
+        since = self.slow_since.setdefault(acct, now)
+        if now - since >= win:
+            self._strike(acct, now)
+
+    def start_sampler(self, sess):
+        """慢速采样任务（open 后启动、run 收尾 finally 取消，与
+        phase_heartbeat 同生命周期范式）：每 1s 从 Monitor 条目取
+        "分配给本号"条目的 done 增量之和喂 _slow_feed。
+
+        逐条目增量求和（而非"下载中条目 done 之和"）：后者随条目
+        完成离开窗口而下降，会造出假低速（负 delta）。完成条目
+        的尾帧增量同样计入；seed 续传字节的单峰跳变只会高估速度，
+        不会误判低速。该号本秒无任何增量且无新"下载中"条目时
+        cover 断档重置（覆盖不足不判慢）。"""
+        async def _sample():
+            mon = sess.mon
+            prev_done = {}     # entry key -> 上次 done
+            cover = {}
+            interval = 1.0
+            while True:
+                await asyncio.sleep(interval)
+                now = time.monotonic()
+                for a in ACCT_IDS:
+                    delta = 0
+                    active = False
+                    for e in mon.entries:
+                        if e.get("acct", ACCT_MAIN) != a:
+                            continue
+                        k = e["key"]
+                        cur = e["done"]
+                        prev = prev_done.get(k)
+                        prev_done[k] = cur
+                        if prev is None:
+                            # 条目首帧：只记账不计速（起始爬坡）
+                            if e.get("status") == "下载中":
+                                active = True
+                            continue
+                        d = cur - prev
+                        if d > 0:
+                            delta += d
+                            active = True
+                    if not active:
+                        cover.pop(a, None)
+                        continue
+                    cover[a] = cover.get(a, 0.0) + interval
+                    self._slow_feed(a, delta / interval, cover[a], now)
+
+        self._sampler = asyncio.ensure_future(_sample())
+        return self._sampler
+
+    def stop_sampler(self):
+        t = self._sampler
+        self._sampler = None
+        if t is not None:
+            t.cancel()
+
+    # ---------- 条目选号（纯同步决策，确定性，决策日志逐行可 grep） ----------
+    def _alt_lazy_ok(self):
+        """alt 是否可懒连接（select 侧内存+文件 stat 判定，不触网）：
+        有 ready client；或已配置+session 文件在且不在 error/adding。"""
+        if self.clients.get(ACCT_ALT) is not None:
+            return self.state.get(ACCT_ALT) != "error"
+        if self.state.get(ACCT_ALT) in ("adding", "error"):
+            return False
+        return self._alt_cfg and pathlib.Path(
+            session_path_for(ACCT_ALT) + ".session").exists()
+
+    def _alt_ready(self):
+        """alt 当下可用（供 acct_hint 的 has_alt）。"""
+        return self._alt_lazy_ok()
+
+    def _eligible(self, acct, channel):
+        """该号当下是否可派新条目（返回 (ok, 过滤原因)）。
+        过滤原因字符串：flood:<s> / slow:cooldown<s> / denied / ""
+        （空=合格；main 永远不在 denied 集——note_deny 仅 alt 触发）。"""
+        now = time.monotonic()
+        fu = self.flood_until.get(acct, 0.0)
+        if now < fu:
+            return False, f"flood:{int(fu - now) + 1}"
+        if self.slow_marked.get(acct) and now < self.cooldown_until.get(
+                acct, 0.0):
+            return False, f"slow:cooldown{int(self.cooldown_until[acct] - now) + 1}"
+        if acct == ACCT_ALT:
+            if channel and channel in self.denied_channels.get(acct, ()):
+                return False, "denied"
+        return True, ""
+
+    def select(self, task, item_key, sticky_acct=None):
+        """条目选号（唯一调度决策实现，TUI/GUI 共用；禁止分叉）。
+        输入：task（sess.task 同一 dict，偏好实时读）、item_key=(src,mid)、
+        sticky_acct=条目持久 acct（缺失=main）。
+        决策日志逐次打印：[acct] seq=n item=#mid pref=… select=… reason=…
+        busy main=a alt1=b。"""
+        pref = ((task.get("params") or {}).get("acct_pref")
+                or "auto")
+        if pref not in ("main", "alt1", "auto"):
+            pref = "auto"
+        mid = item_key[1] if isinstance(item_key, tuple) else item_key
+        channel = (task or {}).get("channel")
+        now = time.monotonic()
+        self._seq += 1
+
+        # main 侧过滤（flood/slow 冷却）
+        m_ok, m_rsn = self._eligible(ACCT_MAIN, channel)
+        a_ok = False
+        a_rsn = ""
+        has_alt = self._alt_lazy_ok()
+        if has_alt:
+            a_ok, a_rsn = self._eligible(ACCT_ALT, channel)
+
+        sel, reason = ACCT_MAIN, "only"
+        if pref == "main":
+            sel, reason = ACCT_MAIN, "only"
+        elif pref == "alt1":
+            if a_ok:
+                sel, reason = ACCT_ALT, "only"
+            else:
+                sel, reason = ACCT_MAIN, (a_rsn or "only")
+        else:                                   # auto
+            if not has_alt:
+                sel, reason = ACCT_MAIN, "only"     # 退化态：恒 main
+            elif sticky_acct == ACCT_ALT and a_ok:
+                sel, reason = ACCT_ALT, "sticky"    # .dl 亲和
+            elif not a_ok:
+                sel, reason = ACCT_MAIN, (a_rsn or "busy")
+            elif not m_ok:
+                # main 被 flood/slow 过滤 -> 改派 alt（reason=过滤原因）
+                sel, reason = ACCT_ALT, m_rsn
+            else:
+                # canary 优先：被标记号的冷却已到期且探针尚未在期 ->
+                # 本条无条件作为探针（无论 busy 大小）
+                cand = None
+                if (self.slow_marked.get(ACCT_MAIN)
+                        and not self.canary.get(ACCT_MAIN)
+                        and now >= self.cooldown_until.get(ACCT_MAIN, 0.0)):
+                    cand = ACCT_MAIN
+                elif (self.slow_marked.get(ACCT_ALT)
+                        and not self.canary.get(ACCT_ALT)
+                        and now >= self.cooldown_until.get(ACCT_ALT, 0.0)
+                        and a_ok):
+                    cand = ACCT_ALT
+                if cand is not None:
+                    sel, reason = cand, "canary"
+                    self.canary[cand] = True
+                else:
+                    mb, ab = self.busy[ACCT_MAIN], self.busy.get(ACCT_ALT, 0)
+                    if ab < mb:
+                        sel, reason = ACCT_ALT, "busy"
+                    else:
+                        sel, reason = ACCT_MAIN, "busy"  # tie -> main 优先
+
+        # acct_hint（改派/提示；reason 词表映射 flood_wait/slow）。
+        # 触发依据是 main 是否被 flood/slow 过滤（而非 reason 字面——
+        # 无 alt 退化态 reason=only 也要发提示）：
+        #  - 改派 alt：from=main to=alt1 has_alt=true
+        #  - 无可用 alt（或偏好钉死 main）：from=main to=null
+        #    has_alt=false（T52 无小号 CTA 场景）
+        # 同 task+reason 去抖 30s（acct_hint 内部）。
+        if not m_ok:
+            ev = "flood_wait" if m_rsn.startswith("flood") else "slow"
+            if sel == ACCT_ALT:
+                self.acct_hint(task, ev, ACCT_MAIN, ACCT_ALT,
+                               item_msg=mid, has_alt=True)
+            else:
+                self.acct_hint(task, ev, ACCT_MAIN, None,
+                               item_msg=mid, has_alt=False)
+        print(f"[acct] seq={self._seq} item=#{mid} pref={pref} "
+              f"select={sel} reason={reason} "
+              f"busy main={self.busy[ACCT_MAIN]} "
+              f"alt1={self.busy.get(ACCT_ALT, 0)}")
+        return sel
+
+    # ---------- 快照（RPC 线程轮询；与 asyncio 侧一把锁） ----------
+    def _flag_of(self, acct, now):
+        if now < self.flood_until.get(acct, 0.0):
+            return "flood"
+        if (self.slow_marked.get(acct) or self.canary.get(acct)):
+            return "slow"
+        if self.denied_channels.get(acct):
+            return "denied"
+        return "ok"
+
+    def _state_of(self, acct):
+        if acct == ACCT_MAIN:
+            if self.clients.get(ACCT_MAIN) is not None:
+                return "ready"
+            return ("has_session"
+                    if pathlib.Path(SESSION_PATH + ".session").exists()
+                    else "logged_out")
+        if self._adding.get(ACCT_ALT) is not None:
+            return "adding"
+        if self.clients.get(ACCT_ALT) is not None:
+            return self.state.get(ACCT_ALT, "ready")
+        return self.state.get(ACCT_ALT) or (
+            "has_session"
+            if pathlib.Path(session_path_for(ACCT_ALT)
+                            + ".session").exists()
+            else "logged_out")
+
+    def snapshot(self):
+        """线程安全账号状态列表（account_list RPC 消费）：
+        main 恒在列；alt1 仅在已配置（或半成品文件在）或 adding 中时
+        在列。me 不触网（仅登录成功缓存的 get_me）。"""
+        now = time.monotonic()
+        with self._lock:
+            out = [{
+                "id": ACCT_MAIN, "label": "",
+                "state": self._state_of(ACCT_MAIN),
+                "phone": "", "me": self.me_cache.get(ACCT_MAIN),
+                "busy": self.busy.get(ACCT_MAIN, 0),
+                "flag": self._flag_of(ACCT_MAIN, now),
+            }]
+            alt_on = (self._alt_lazy_ok()
+                      or self._adding.get(ACCT_ALT) is not None)
+            if alt_on:
+                out.append({
+                    "id": ACCT_ALT, "label": "",
+                    "state": self._state_of(ACCT_ALT),
+                    "phone": self._alt_phone,
+                    "me": self.me_cache.get(ACCT_ALT),
+                    "busy": self.busy.get(ACCT_ALT, 0),
+                    "flag": self._flag_of(ACCT_ALT, now),
+                })
+            return out
+
+    def busy_snapshot(self):
+        """线程安全 busy 快照（remove 等闸门用）。"""
+        with self._lock:
+            return dict(self.busy)
+
+    def alt_adding(self):
+        return self._adding.get(ACCT_ALT) is not None
+
+    def alt_ready_or_adding(self):
+        """set_guest 拒绝条件：池内有 alt 就绪/adding。"""
+        return (self.clients.get(ACCT_ALT) is not None
+                or self._alt_lazy_ok()
+                or self._adding.get(ACCT_ALT) is not None)
+
+    # ---------- busy 记账（worker 调；asyncio 循环内） ----------
+    def busy_add(self, acct):
+        self.busy[acct] = self.busy.get(acct, 0) + 1
+
+    def busy_sub(self, acct):
+        self.busy[acct] = max(0, self.busy.get(acct, 0) - 1)
+
+
 # 全部活动会话：task_id -> DownloadSession（不同任务独立，可并行）
 ACTIVE_SESSIONS = {}
 
@@ -3057,7 +3901,8 @@ def build_planned(task, todo, lazy_statuses):
 
 
 async def open_download_session(client, task, planned, parallel, *, gui=None,
-                                lazy_statuses=None, phase_cb=None):
+                                lazy_statuses=None, phase_cb=None,
+                                pool=None, event_cb=None):
     """纯内存打开下载会话（T49）：构造 Monitor/DownloadSession 并以
     preparing 阶段注册进 ACTIVE_SESSIONS——不做任何磁盘/网络/阻塞
     调用，GUI 点"继续"后轮询立刻可见 preparing（≤200ms 预算的关键）。
@@ -3066,6 +3911,10 @@ async def open_download_session(client, task, planned, parallel, *, gui=None,
     - 同 id 墓碑无条件清除后重建（中止后可立即再继续，不等 TTL）。
     - phase_cb：6 参契约 (task_id, phase, detail, index, total, snap)，
       内部包装成 Monitor 的 4 参 phase_cb；回调异常只记不抛。
+    - pool/event_cb（T51，仅 keyword-only 可选）：挂到 sess（sess.pool/
+      sess.event_cb），不传时 worker 选号退化为主 client——全部既有
+      夹具调用零改、行为逐字节一致。pool 非空时慢速采样任务随本 open
+      启动（run 收尾 finally 取消）。
     返回 sess（已置 preparing 并注册）。"""
     if task["id"] in ACTIVE_SESSIONS:
         print("[!] 该任务已有下载会话，忽略重复启动")
@@ -3085,6 +3934,8 @@ async def open_download_session(client, task, planned, parallel, *, gui=None,
     sess.wake = asyncio.Event()
     sess.entities = {}            # src -> entity（file_reference 刷新缓存）
     sess.fatal_error = ""         # worker/feeder 致命错误槽（首条不覆盖）
+    sess.pool = pool              # T51：账号池（None=现状主 client 单号）
+    sess.event_cb = event_cb      # T51：acct_hint 出口（None=no-op）
     if phase_cb is not None:
         def _notify(phase, text, index, total, _cb=phase_cb, _s=sess):
             try:
@@ -3094,6 +3945,8 @@ async def open_download_session(client, task, planned, parallel, *, gui=None,
         mon.phase_cb = _notify
     await mon.set_phase("preparing")
     ACTIVE_SESSIONS[task["id"]] = sess
+    if pool is not None:
+        pool.start_sampler(sess)
     return sess
 
 
@@ -3254,6 +4107,10 @@ async def run_download_session(client, task, sess, *, gui=None,
 
     async def worker(it):
         key = _rec_key(it)
+        # T51 选号态（pool=None 即现状行为：单主号直下）
+        pool = getattr(sess, "pool", None)
+        acct = ACCT_MAIN
+        busy_on = False
         try:
             ti = find_item(task, key)
             want = sess._want.pop(key, None)
@@ -3288,12 +4145,107 @@ async def run_download_session(client, task, sess, *, gui=None,
             # 记录实际走的下载路径，暂停后恢复才能决定是否保留字节
             it["_mode"] = "parallel" if it["size"] > 4 * 1024 * 1024 \
                 else "simple"
+
+            # ---- T51 条目选号（唯一实现；每次实时读 sess.task 同一
+            #      dict，运行中改偏好立即对排队条目生效） ----
+            dl_client = client
+            if pool is not None:
+                acct = pool.select(task, key,
+                                   (ti.get("acct") if ti is not None
+                                    else None))
+                ment = mon.order.get(key)
+                if ment is not None:
+                    ment["acct"] = acct
+                # 持久条目归属变化才写盘一次（main→main 零写盘）
+                if ti is not None and ti.get("acct") != acct:
+                    if acct == ACCT_ALT:
+                        ti["acct"] = ACCT_ALT
+                    else:
+                        ti.pop("acct", None)
+                    save_task(task)
+                try:
+                    raw_client = await pool.aclient(acct)
+                except AccountUnavailable as ex:
+                    # 该号不可用（懒连接失败/未授权，已置 error）：
+                    # 本条改派 main 一次，后续选号自动跳过该号
+                    print(f"[acct] #{key[1]} 小号不可用（{ex}），"
+                          f"本条改派主号")
+                    acct = ACCT_MAIN
+                    if ment is not None:
+                        ment["acct"] = ACCT_MAIN
+                    if ti is not None and "acct" in ti:
+                        ti.pop("acct", None)
+                        save_task(task)
+                    raw_client = client
+                # 客户端视图：FloodWait note_flood 后原样上抛（download_one
+                # 严格等待——FR-9 不变）；alt 上 ChannelPrivate 转池内
+                # AccountDenied（main 保持现状原样）
+                dl_client = _ClientView(
+                    raw_client, pool, acct,
+                    deny_convert=(acct == ACCT_ALT))
+                # 跨号/换号刷新引用（同号续传不刷新，保持 T49 现状）：
+                # 用目标号自己的授权取新 file_reference/access_hash
+                if raw_client is not client:
+                    print(f"[acct] #{key[1]} 由 "
+                          f"{ACCT_MARK.get(acct, acct)} 下载"
+                          f"（切换账号，先刷新文件引用）")
+                    try:
+                        await refresh_record(raw_client, sess, it)
+                    except Exception as rex:
+                        print(f"[acct] #{key[1]} 引用刷新失败"
+                              f"（{type(rex).__name__}），"
+                              f"交由下载重试链兜底")
+                pool.busy_add(acct)
+                busy_on = True
+
             try:
-                r = await download_one(
-                    client, it, str(folder / it["name"]), ctl,
-                    state={"monitor": mon, "session": sess},
-                )
+                try:
+                    r = await download_one(
+                        dl_client, it, str(folder / it["name"]), ctl,
+                        state={"monitor": mon, "session": sess},
+                    )
+                except AccountDenied:
+                    # ---- alt 无权限（ChannelPrivate）：仅一次回退 main。
+                    # main 的 view 不做 deny 转换（自身无权限维持现状
+                    # 重试→失败语义），故二次 AccountDenied 理论不可达；
+                    # 防御性兜底按普通失败落终态。----
+                    prev_acct = acct
+                    pool.note_deny(prev_acct, task.get("channel"),
+                                   it["msg"].id)
+                    pool.acct_hint(task, "channel_private", prev_acct,
+                                   ACCT_MAIN, item_msg=it["msg"].id,
+                                   has_alt=True)
+                    if busy_on:
+                        pool.busy_sub(prev_acct)
+                        busy_on = False
+                    acct = ACCT_MAIN
+                    ment2 = mon.order.get(key)
+                    if ment2 is not None:
+                        ment2["acct"] = ACCT_MAIN
+                    ti2 = find_item(task, key)
+                    if ti2 is not None and "acct" in ti2:
+                        ti2.pop("acct", None)
+                        save_task(task)
+                    # main 接续 alt 的条目（跨号）：先刷新引用再重下
+                    try:
+                        await refresh_record(client, sess, it)
+                    except Exception as rex:
+                        print(f"[acct] #{key[1]} 回退主号后引用刷新失败"
+                              f"（{type(rex).__name__}）")
+                    print(f"[acct] #{key[1]} 小号无该频道权限，"
+                          f"回退主号重下")
+                    pool.busy_add(ACCT_MAIN)
+                    busy_on = True
+                    try:
+                        r = await download_one(
+                            client, it, str(folder / it["name"]), ctl,
+                            state={"monitor": mon, "session": sess},
+                        )
+                    except AccountDenied:
+                        r = ("fail", "AccountDenied: 主号也无权限")
             finally:
+                if busy_on and pool is not None:
+                    pool.busy_sub(acct)
                 mon.flood_probe = saved_probe
 
             err = None
@@ -3426,6 +4378,10 @@ async def run_download_session(client, task, sess, *, gui=None,
         await schedule()
     finally:
         heartbeat.cancel()
+        # T51：慢速采样任务随 run 收尾取消（与 open 的启动同生命周期）
+        _pool = getattr(sess, "pool", None)
+        if _pool is not None:
+            _pool.stop_sampler()
         keys.stop()
         if translate is not None:
             translate.cancel()
@@ -3497,7 +4453,7 @@ def _tui_phase_cb():
 
 
 async def execute_downloads(client, task, todo, parallel, gui=None,
-                            lazy_statuses=None):
+                            lazy_statuses=None, pool=None, event_cb=None):
     """下载 todo（含消息对象的记录），每完成一个就把状态写回任务清单。
 
     T49 起为薄包装：build_planned -> open_download_session ->
@@ -3512,12 +4468,17 @@ async def execute_downloads(client, task, todo, parallel, gui=None,
     gui 非空：GUI 模式（无控制台按键/无交互输入），控制走 DownloadSession。
     lazy_statuses 非空：边读边下模式（todo 可为空），按状态筛选清单，
     消息分批从服务器拉取，取到即排队开下，不再一次性等完全部消息。
+    pool/event_cb（T51，可选）：透传 open_download_session（账号池与
+    acct_hint 出口）；不传即现状单主号行为，既有夹具零改。
+    execute_downloads 走 TUI 下载路径（GUI 的 start_download/resume_task
+    直接 open+run 并自带 pool 参数）。
     """
     planned = build_planned(task, todo, lazy_statuses)
     phase_cb = _tui_phase_cb() if gui is None else None
     sess = await open_download_session(
         client, task, planned, parallel, gui=gui,
         lazy_statuses=lazy_statuses, phase_cb=phase_cb,
+        pool=pool, event_cb=event_cb,
     )
     if sess is None:
         return {"status": "aborted",
@@ -3836,7 +4797,24 @@ def show_task_detail(task):
         paged_view(f"{task['channel_title']} · {label}", rows)
 
 
-async def resume_flow(client, task, statuses):
+def _ask_acct_pref(pool, task):
+    """TUI 下载前账号偏好（§2.8）：仅当已配置 alt 时问一次；
+    1=自动（默认，回车）/ 2=主号 / 3=小号。偏好写 params.acct_pref
+    （仅 2/3 落盘；auto 时 pop；无小号时不问不写）。"""
+    if pool is None or not pool._alt_lazy_ok():
+        return
+    raw = ask("本任务使用账号 1=自动（默认） 2=主号 3=小号", "1").strip()
+    pref = {"1": "auto", "2": "main", "3": "alt1"}.get(raw, "auto")
+    params = task.setdefault("params", {})
+    if pref in ("main", "alt1"):
+        params["acct_pref"] = pref
+        save_task(task)
+    elif "acct_pref" in params:
+        params.pop("acct_pref", None)
+        save_task(task)
+
+
+async def resume_flow(client, task, statuses, pool=None):
     """statuses=('pending','failed') 继续全部；=('failed',) 只重试失败。"""
     n_sel = sum(1 for ti in task["items"] if ti["status"] in statuses)
     if not n_sel:
@@ -3844,11 +4822,14 @@ async def resume_flow(client, task, statuses):
         return
     stored_par = int(task.get("params", {}).get("parallel") or 1)
     parallel = ask_int("同时下载几路（1-8）", stored_par, 1, 8)
+    _ask_acct_pref(pool, task)          # T51：已配置 alt 才问
 
     print(f"\n开始下载：共 {n_sel} 个视频，将分批从服务器核对信息，"
           f"读到即下 …")
     result = await execute_downloads(client, task, [], parallel,
-                                     lazy_statuses=statuses)
+                                     lazy_statuses=statuses, pool=pool,
+                                     event_cb=(_tui_acct_cb()
+                                               if pool is not None else None))
     if isinstance(result, dict) and result.get("status") == "error":
         print(paint(f" 下载失败：{result.get('error', '')}", RED))
     pause()
@@ -4029,7 +5010,7 @@ async def task_edit_flow(client, task):
         pause()
 
 
-async def task_menu(client, task):
+async def task_menu(client, task, pool=None):
     changed = reconcile_task(task)
     if changed:
         save_task(task)
@@ -4059,9 +5040,10 @@ async def task_menu(client, task):
             if key == "0":
                 return
             elif key == "1":
-                await resume_flow(client, task, ("pending", "failed"))
+                await resume_flow(client, task, ("pending", "failed"),
+                                  pool=pool)
             elif key == "2":
-                await resume_flow(client, task, ("failed",))
+                await resume_flow(client, task, ("failed",), pool=pool)
             elif key == "3":
                 show_task_detail(task)
             elif key == "4":
@@ -4172,7 +5154,112 @@ async def settings_menu(client):
             await logout_flow(client)
 
 
-async def main_menu(client):
+def _tui_acct_cb():
+    """TUI 默认 acct_hint 回调（§2.6）：切号/回退/提示实时打印单行
+    （YELLOW 着色），与 [acct] 决策日志同事件源；文本携带 seq，供
+    验证与决策日志同一序号对齐。"""
+    def cb(name, payload):
+        try:
+            if name != "acct_hint":
+                return
+            d = (payload or {}).get("data") or {}
+            r = d.get("reason")
+            seq = d.get("seq")
+            mid = d.get("item_msg")
+            if r == "channel_private":
+                txt = f"〔回退〕seq={seq} #{mid} 小号无权限，回退主号"
+            elif d.get("to_acct"):
+                why = "主号限速" if r == "flood_wait" else "主号持续低速"
+                txt = f"〔切号〕seq={seq} #{mid} 主号→小号（{why}）"
+            else:
+                txt = "〔提示〕主号持续低速，登录小号可自动分流"
+            print(paint(txt, YELLOW))
+        except Exception:
+            pass
+    return cb
+
+
+ACCT_STATE_CN = {
+    "ready": "就绪", "has_session": "有登录信息",
+    "logged_out": "未登录", "adding": "添加中", "error": "异常",
+}
+ACCT_FLAG_CN = {
+    "ok": "正常", "flood": "限速", "slow": "低速", "denied": "无权限频道",
+}
+
+
+async def account_menu(pool):
+    """T51 账号管理子菜单：① 列出账号（[主]/[小]、状态/忙闲/标记/
+    手机号）；② 添加小号（手机号→验证码→（需要时）2FA，错误中文可
+    重试）；③ 移除小号（ask_yesno 二次确认，忙时中文拒绝）。
+    全部走 pool 同一协程（TUI/GUI 无第二套逻辑）。"""
+    while True:
+        clear_screen()
+        title_bar("账号管理")
+        rows = pool.snapshot()
+        for a in rows:
+            st = ACCT_STATE_CN.get(a["state"], a["state"])
+            flag = ACCT_FLAG_CN.get(a["flag"], a["flag"])
+            me = a.get("me") or {}
+            who = (a.get("phone") or me.get("phone") or "").strip()
+            nm = me.get("name") or ""
+            line = (f"  {ACCT_MARK[a['id']]} {nm}  {who}  {st}"
+                    f"  忙 {a['busy']}  {flag}")
+            print(paint(line, DIM if a["state"] != "ready" else None))
+        if not any(a["id"] == ACCT_ALT for a in rows):
+            print(paint("  （无小号）", DIM))
+        opts = [
+            ("1", "添加小号（第二手机号登录）", True),
+            ("2", "移除小号", True),
+            ("0", "返回", True),
+        ]
+        key = choose_menu("请选择", opts)
+        if key in (None, "0"):
+            return
+        if key == "1":
+            try:
+                if any(a["id"] == ACCT_ALT and a["state"] == "ready"
+                       for a in rows):
+                    print(paint(" 小号已存在", YELLOW))
+                    pause()
+                    continue
+                phone = ask("小号手机号（含国家区号，不要加 +）")
+                if not phone:
+                    continue
+                r = await pool.add_start(ACCT_ALT, phone)
+                if r == "need_code":
+                    code = ask("Telegram App 内收到的验证码")
+                    r = await pool.add_verify_code(ACCT_ALT, code)
+                if r == "need_password":
+                    pw = ask("两步验证密码（该账号设置了 2FA）")
+                    r = await pool.add_verify_password(ACCT_ALT, pw)
+                if r == "ready":
+                    print(paint(" 小号登录成功", GREEN))
+            except Exception as e:
+                print(paint(
+                    f" 添加失败：{type(e).__name__}: {str(e)[:120]}", RED))
+                print(paint(" 可重新进入本菜单再试", DIM))
+            pause()
+        elif key == "2":
+            if not any(a["id"] == ACCT_ALT for a in pool.snapshot()):
+                print(paint(" 没有小号可移除", YELLOW))
+                pause()
+                continue
+            if ask_yesno("确定移除小号？会删除其本地登录信息", False):
+                try:
+                    await pool.remove_account(ACCT_ALT)
+                    print(paint(" 小号已移除", GREEN))
+                except AccountBusy:
+                    print(paint(" 小号仍有下载任务，请先中止后再移除。",
+                                YELLOW))
+                except Exception as e:
+                    print(paint(
+                        f" 移除失败：{type(e).__name__}: {str(e)[:120]}",
+                        RED))
+            pause()
+
+
+async def main_menu(client, pool=None):
     while True:
         tasks = load_tasks()
         clear_screen()
@@ -4191,18 +5278,22 @@ async def main_menu(client):
             print(f"  [{i}] {t['channel_title']}  {t['created']}  "
                   f"{c['finished']}/{c['total']}  {state}")
             opts.append((str(i), t["channel_title"], True))
+        opts.append(("a", "账号管理（小号分流提速）", True))
         opts.append(("s", "设置（下载目录、账号凭证）", True))
         opts.append(("0", "退出", True))
         raw = choose_menu("请选择", opts)
 
         if raw == "0":
             return
+        if raw and raw.lower() == "a":
+            await account_menu(pool)          # None 时仅列主号（旧数据）
+            continue
         if raw and raw.lower() == "s":
             await settings_menu(client)
             continue
         if raw == "1":
             try:
-                await new_task_flow(client)
+                await new_task_flow(client, pool=pool)
             except Exception as e:
                 print(paint(f"\n 任务中断：{type(e).__name__}: {str(e)[:120]}", RED))
                 pause()
@@ -4210,7 +5301,7 @@ async def main_menu(client):
         try:
             idx = int(raw) - 2
             if 0 <= idx < len(tasks):
-                await task_menu(client, tasks[idx])
+                await task_menu(client, tasks[idx], pool=pool)
                 continue
         except (ValueError, TypeError):
             pass
@@ -4500,7 +5591,7 @@ async def append_flow(client, task):
     pause()
 
 
-async def new_task_flow(client, args=None):
+async def new_task_flow(client, args=None, pool=None):
     args = args or []
     channel_in = args[0] if args else ask(
         "频道用户名（@xxx 或 t.me/xxx 链接）")
@@ -4547,6 +5638,9 @@ async def new_task_flow(client, args=None):
     )
     for t in tasks:
         save_task(t)
+    # T51：账号偏好问在任务落盘前（params 已并入首个任务 dict 时写键）；
+    # 仅当已配置 alt 才问，无小号不问不写
+    _ask_acct_pref(pool, tasks[0])
     if len(tasks) > 1:
         print(paint(f"\n 任务较大，已自动拆分为 {len(tasks)} 个任务"
                     f"（每个约 200GB、不超过 999 条），先下载第 1 个，"
@@ -4554,7 +5648,10 @@ async def new_task_flow(client, args=None):
     first = tasks[0]
     first_ids = {it["msg"] for it in first["items"]}
     first_todo = [r for r in todo if r["msg"].id in first_ids]
-    result = await execute_downloads(client, first, first_todo, parallel)
+    result = await execute_downloads(client, first, first_todo, parallel,
+                                     pool=pool,
+                                     event_cb=(_tui_acct_cb()
+                                               if pool is not None else None))
     if isinstance(result, dict) and result.get("status") == "error":
         print(paint(f" 下载失败：{result.get('error', '')}", RED))
     if not args:
@@ -4569,37 +5666,24 @@ async def run():
     ensure_dirs_and_migrate()
     cfg = setup_credentials()
 
-    client = TelegramClient(
-        SESSION_PATH, cfg["api_id"], cfg["api_hash"], flood_sleep_threshold=120
-    )
-    print("\n正在登录 Telegram …（首次需输入 Telegram App 收到的验证码）")
+    # T51：账号池（唯一调度内核）；主号登录经 pool.login_main_tui
+    # （封装原内联构造/start/换凭证重试/get_me 流程，行为不变）
+    pool = AccountPool(event_cb=_tui_acct_cb())
+    client = None
     try:
-        await client.start(phone=lambda: cfg["phone"])
-    except Exception as e:
-        # 内置凭证失效时，换成用户自己的凭证重试一次
-        if cfg.get("builtin_api") and type(e).__name__ in (
-            "ApiIdInvalidError", "ApiIdPublishedFloodError", "PhoneNumberBannedError"
-        ):
-            await client.disconnect()
-            prompt_manual_api(cfg)
-            client = TelegramClient(
-                SESSION_PATH, cfg["api_id"], cfg["api_hash"],
-                flood_sleep_threshold=120
-            )
-            await client.start(phone=lambda: cfg["phone"])
-        else:
-            raise
-    me = await client.get_me()
-    print(f"已登录：{me.first_name or ''} @{me.username or ''}")
-
-    try:
+        client = await pool.login_main_tui(cfg)
         if args:
             # 命令行参数模式：直接新建任务（兼容旧用法）
-            await new_task_flow(client, args)
+            await new_task_flow(client, args, pool=pool)
         else:
-            await main_menu(client)
+            await main_menu(client, pool)
     finally:
-        await client.disconnect()
+        try:
+            await pool.shutdown_alts()
+        except Exception:
+            pass
+        if client is not None:
+            await client.disconnect()
 
 
 if __name__ == "__main__":
