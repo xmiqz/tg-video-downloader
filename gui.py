@@ -331,6 +331,11 @@ class Api:
         # 保险）。生命周期与作业一致：worker 收口 finally 清除。
         self._move_tasks = {}
         self._move_lock = threading.Lock()
+        # T53b-E scan_append 作业映射（纯内存，_scan_lock 保护）：
+        # task_id -> job_id。防同任务并发两个追加扫描作业。生命周期与
+        # 作业一致：worker finally 清除（含 error/cancelled 全路径）。
+        self._scan_tasks = {}
+        self._scan_lock = threading.Lock()
         # T51 账号池：唯一调度内核（选号/状态/登录参数化全在
         # core.AccountPool，本层只做参数传递与转发）。event_cb 延迟
         # 绑定 push_event（仿 jobs sink；注入前 no-op）。池侧 emit 传
@@ -1565,25 +1570,162 @@ class Api:
         return {"ok": True, "removed": n}
 
     def scan_append(self, task_id, params):
-        """按高级搜索参数扫描并把新视频追加到已有任务"""
+        """T53b-E：追加扫描作业化（ACK 式，仿 preview/gui.py:758-779）。
+
+        同步前置校验（全部在建 job 之前完成，ACK 前零触网）：
+          1. 游客/未登录 -> need_login（建 job 前）
+          2. core.load_task 单读（不再全目录扫描）
+          3. 每任务并发占位（仿 _move_tasks）
+        成功返回 {"ok":True,"job_id":...}；后台 daemon 线程消费
+        search_videos_stream 并按批 append_records 落盘，经
+        search_items 增量帧 + job_update 推送进度与终态。"""
         if self.client is None:
             print("[GUI] need_login: scan_append")
             return {"ok": False, "need_login": True}
-        t = self._load_one(task_id)
-        if t is None:
+        t = core.load_task(task_id)
+        if t is None or t.get("id") != task_id:
             return {"ok": False, "error": "任务不存在"}
+        with self._scan_lock:
+            if task_id in self._scan_tasks:
+                return {"ok": False,
+                        "error": "该任务正在追加扫描中，请勿重复提交"}
+        job_id, cancel_event = self.jobs.create("scan_append")
+        with self._scan_lock:
+            self._scan_tasks[task_id] = job_id
+        threading.Thread(
+            target=self._scan_worker,
+            args=(job_id, cancel_event, task_id, dict(params)),
+            daemon=True, name="scan-" + job_id,
+        ).start()
+        return {"ok": True, "job_id": job_id}
 
-        async def _do():
-            entity = await self.client.get_entity(t["channel"])
-            records, meta = await core.search_videos(self.client, entity, params)
-            added = core.append_records(t, records)
-            return added, meta
-
+    def _scan_worker(self, job_id, cancel_event, task_id, params):
+        """scan_append 作业 daemon 线程（仿 _search_worker/_move_worker）：
+        协程提交到 engine.loop 消费 stream；异常兜底为 job error（文案含
+        已追加数）；finally 仿 _move_worker 清 _scan_tasks 占位并做终态
+        未达兜底。绝不裸崩进程。"""
         try:
-            added, meta = self.engine.submit(_do())
-            return {"ok": True, "added": added, "meta": meta}
-        except Exception as e:
-            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            fut = asyncio.run_coroutine_threadsafe(
+                self._scan_coro(job_id, cancel_event, task_id, params),
+                self.engine.loop)
+            fut.result()
+        except Exception as e:  # noqa: BLE001 - worker 线程兜底
+            _job_log.warning("scan worker 异常 job=%s", job_id, exc_info=True)
+            snap = self.jobs.snapshot(job_id) or {}
+            added = snap.get("done", 0)
+            err_msg = f"已追加 {added} 条后失败：{type(e).__name__}: {e}"
+            self.jobs.update(job_id, force=True, state="error",
+                             phase="error", phase_detail="追加扫描失败",
+                             error=err_msg)
+        finally:
+            with self._scan_lock:
+                self._scan_tasks.pop(task_id, None)
+            snap = self.jobs.snapshot(job_id)
+            if (snap is not None
+                    and snap.get("state") not in ("done", "error",
+                                                  "cancelled")):
+                added = snap.get("done", 0)
+                self.jobs.update(job_id, force=True, state="error",
+                                 phase="error", phase_detail="追加扫描失败",
+                                 error=f"已追加 {added} 条后未正常收口")
+
+    async def _scan_coro(self, job_id, cancel_event, task_id, params):
+        """scan_append 作业协程（跑在 engine.loop）：消费 stream、
+        每批重读任务→过滤真新增→append_records 落盘→节流推增量帧
+        （task-item 8 键 msg 形）；终帧先于 done job_update；取消竞态
+        按 preview 同构处理。"""
+        p = dict(params)
+        t0 = time.time()
+        added_total = 0
+        skipped_dup = 0
+        items_seq = []       # 已追加条目的序列化（按到达序，键唯一）
+        pushed_n = 0         # 已 WS 下发条数
+        last_push = 0.0
+        first_sent = False
+
+        def _maybe_push():
+            """WS 节流（沿用 SEARCH_WS_* 常量）。"""
+            nonlocal pushed_n, last_push, first_sent
+            n = len(items_seq)
+            if n <= pushed_n:
+                return
+            now = time.time()
+            if not first_sent:
+                if ((n - pushed_n) >= SEARCH_WS_FIRST_ITEMS
+                        or (now - t0 >= SEARCH_WS_FIRST_SECS)):
+                    self._search_push(
+                        job_id, {"items": list(items_seq[:n])})
+                    pushed_n, last_push, first_sent = n, now, True
+                return
+            if ((now - last_push) >= SEARCH_WS_INTERVAL
+                    or (n - pushed_n) >= SEARCH_WS_DELTA_ITEMS):
+                self._search_push(
+                    job_id, {"items": list(items_seq[pushed_n:n])})
+                pushed_n, last_push = n, now
+
+        self.jobs.update(job_id, state="running", phase="server_search",
+                         phase_detail="追加扫描启动", total=0)
+        # 任务对象每批重读（缩小并发丢更新窗口）
+        t = core.load_task(task_id)
+        if t is None or t.get("id") != task_id:
+            self.jobs.update(job_id, force=True, state="error",
+                             phase="error", phase_detail="追加扫描失败",
+                             error="任务不存在")
+            return
+        channel = t["channel"]
+        entity = await self.client.get_entity(channel)
+        async for ev in core.search_videos_stream(self.client, entity, p,
+                                                  cancel=cancel_event):
+            kind = ev["kind"]
+            if kind == "progress":
+                detail = (f"已扫描 {ev['scanned']} 条"
+                          f" · 已匹配 {ev['matched']} 条"
+                          f" · 已追加 {added_total} 条")
+                self.jobs.update(job_id, phase=ev["phase"],
+                                 phase_detail=detail,
+                                 done=added_total, total=0)
+            elif kind == "items":
+                # 每批重读任务对象（获取最新已落盘条目）
+                t = core.load_task(task_id)
+                if t is None or t.get("id") != task_id:
+                    self.jobs.update(
+                        job_id, force=True, state="error",
+                        phase="error", phase_detail="追加扫描失败",
+                        error=f"已追加 {added_total} 条后任务丢失")
+                    return
+                # 用 item_key + (name,size) 集合过滤本批真新增候选
+                exist_keys = {core.item_key(ti) for ti in t["items"]}
+                exist_content = {(ti["name"], ti["size"])
+                                 for ti in t["items"]}
+                fresh_recs = []
+                for r in ev["items"]:
+                    k = (r.get("src", core.SRC_CHANNEL), r["msg"].id)
+                    if k in exist_keys or (r["name"], r["size"]) in exist_content:
+                        skipped_dup += 1
+                        continue
+                    fresh_recs.append(r)
+                    exist_keys.add(k)
+                    exist_content.add((r["name"], r["size"]))
+                if fresh_recs:
+                    added = core.append_records(t, fresh_recs)
+                    added_total += added
+                    for r in fresh_recs[:added]:
+                        ti = core.make_task_item(r)
+                        items_seq.append(ti)
+                    _maybe_push()
+            elif kind == "done":
+                if cancel_event.is_set():
+                    return   # 取消竞态：终态已由 registry 直发
+                records, meta = ev["records"], ev["meta"]
+                meta["added"] = added_total
+                meta["skipped_dup"] = skipped_dup
+                meta["n_matched"] = len(records)
+                # 终帧必须先于 done 的 job_update（同一协程内顺序调用）
+                self._search_push(
+                    job_id, {"items": [], "meta": meta, "final": True})
+                self.jobs.update(job_id, state="done", phase="filter",
+                                 phase_detail=f"已追加 {added_total} 条",
+                                 done=added_total, total=0)
 
     # ---------- 独立编辑窗口（Task 16 将改为应用内全屏路由） ----------
     def open_editor(self, task_id):

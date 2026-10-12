@@ -589,8 +589,15 @@ function appendPreviewRow(it) {
 // bridge.js 白名单转发的 tg:search_items（detail = params[0]）。
 // 增量帧只 append 新行（按 key 去重），绝不 innerHTML 全量重绘；
 // 终帧（final:true）以 data.items 做权威收敛（防极限边界错位）。
+// T53b-E：scan_append 增量帧也走同一入口，按 appendJob.job_id 路由
+// 到 onAppendItems（msg 键形，并入滑层结果区）。search 路径零改。
 function onSearchItems(detail) {
   if (!detail || typeof detail.job_id !== "string") return;
+  // T53b-E：scan_append 帧路由
+  if (appendJob && detail.job_id === appendJob.job_id) {
+    onAppendItems(detail);
+    return;
+  }
   if (!searchJob || detail.job_id !== searchJob.job_id) return; // 非当前作业忽略
   const data = detail.data || {};
   const items = Array.isArray(data.items) ? data.items : [];
@@ -1834,6 +1841,10 @@ function openAppend() {
 }
 function closeAppend() { document.getElementById("append-modal").classList.add("hidden"); }
 
+// T53b-E：追加扫描作业化。作业态（前端全局，仿 searchJob）。
+// {job_id, taskId} —— 终态后清空（onAppendJobUpdate 收口）。
+let appendJob = null;
+
 async function runAppend() {
   const btn = document.getElementById("ap-run-btn");
   document.getElementById("ap-err").textContent = "";
@@ -1846,6 +1857,7 @@ async function runAppend() {
     date_from: document.getElementById("ap-datefrom").value || "",
     date_to: document.getElementById("ap-dateto").value || "",
   };
+  // T53b-E：busy 仅覆盖 ACK（≤300ms）；不再等完成式返回。
   btn.textContent = "搜索中…"; btn.disabled = true;
   let r;
   try {
@@ -1856,12 +1868,63 @@ async function runAppend() {
       (e && e.message) || String(e));
   }
   btn.textContent = "搜索并追加"; btn.disabled = false;
-  if (needLogin(r)) return;   // T46 兜底：漏网入口转为登录弹卡
+  if (needLogin(r)) return;   // T46 兜底
   if (!r.ok) return (document.getElementById("ap-err").textContent = r.error);
+  // ACK 式：记录 job_id，弹层即关，进度改由通用卡承载
+  appendJob = { job_id: r.job_id, taskId: sheet.taskId };
   closeAppend();
-  await reloadSheet();
-  alert(`已追加 ${r.added} 个新视频` +
-    (r.meta && r.meta.n_small ? `（${r.meta.n_small} 个体积过小被过滤）` : ""));
+}
+
+// T53b-E：scan_append 增量帧消费——把增量 task-item（msg 键形）
+// 并入滑层结果区（sheet.task.items），按 (src,msg) 去重。
+// 与 2s sheetPoll 协调：poll 全量重绘 sheet.task，增量帧只补
+// 即时性，两路都以 (src,msg) 为身份不双行。
+function onAppendItems(detail) {
+  if (!appendJob || detail.job_id !== appendJob.job_id) return;
+  const data = detail.data || {};
+  const items = Array.isArray(data.items) ? data.items : [];
+  if (data.final === true) {
+    // 终帧：记录 meta，触发 reloadSheet 权威收敛
+    appendJob._meta = data.meta || {};
+    reloadSheet();
+    return;
+  }
+  if (!sheet.task || !sheet.task.items) return;
+  let fresh = false;
+  for (const ti of items) {
+    const src = ti.src || "频道";
+    const k = keyOf(src, ti.msg);
+    // 按 (src,msg) 去重：检查 sheet.task.items 是否已有
+    const exists = sheet.task.items.some(
+      x => (x.src || "频道") === src && x.msg === ti.msg);
+    if (exists) continue;
+    sheet.task.items.push(ti);
+    fresh = true;
+  }
+  if (fresh) renderDetailItems();
+}
+
+// T53b-E：scan_append 作业的 job_update 消费。
+// running → 通用卡自行渲染（renderJob 落通用卡）；终态后收口。
+function onAppendJobUpdate(job) {
+  if (!appendJob || job.job_id !== appendJob.job_id) return;
+  if (job.state === "running" || job.state === "queued") return;
+  // 终态
+  const meta = appendJob._meta || {};
+  if (job.state === "done") {
+    reloadSheet();
+    const added = meta.added != null ? meta.added : (job.done || 0);
+    const bits = [`已追加 ${added} 个新视频`];
+    if (meta.n_small) bits.push(`（${meta.n_small} 个体积过小被过滤）`);
+    alert(bits.join(""));
+  } else if (job.state === "error") {
+    showErr("追加扫描失败", job.error || "未知错误");
+  } else if (job.state === "cancelled") {
+    const added = meta.added != null ? meta.added : (job.done || 0);
+    reloadSheet();
+    alert(`已停止追加，已追加 ${added} 条已保留`);
+  }
+  appendJob = null;
 }
 
 // ============================================================
@@ -2031,6 +2094,11 @@ const JOB_STATE_LABEL = {
   queued: "排队中", running: "进行中", done: "已完成",
   error: "失败", cancelled: "已取消",
 };
+// T53b-E F3：通用卡 kind 中文文案映射（缺失则回退原 kind 文本）
+const JOB_KIND_LABEL = {
+  search: "搜索", download: "下载", move_folder: "移动目录",
+  scan_append: "追加扫描", t45_demo: "演示作业",
+};
 const JOB_TERMINAL = new Set(["done", "error", "cancelled"]);
 
 const TgJobProgress = (() => {
@@ -2109,6 +2177,14 @@ const TgJobProgress = (() => {
       return false;
     }
 
+    // T53b-E：scan_append 作业落通用卡（不早退），同时把
+    // job_update 转交 onAppendJobUpdate 做终态收口（reloadSheet
+    // + 提示 + 清 appendJob）。通用卡自行渲染进度/取消按钮。
+    if (job.kind === "scan_append") {
+      onAppendJobUpdate(job);
+      // 不 return：继续落通用卡渲染
+    }
+
     let card = host.querySelector(`[data-job-id="${qAttr(id)}"]`);
     if (!card) card = buildCard(id);
 
@@ -2118,7 +2194,7 @@ const TgJobProgress = (() => {
     card.dataset.phase = job.kind === "download" ? (job.phase || "") : "";
 
     const state = JOB_STATE_LABEL[job.state] ? job.state : "queued";
-    setText(card, ".job-kind", job.kind || "");
+    setText(card, ".job-kind", JOB_KIND_LABEL[job.kind] || job.kind || "");
     const st = card.querySelector(".job-state");
     st.textContent = JOB_STATE_LABEL[state];
     st.className = "job-state s-" + state;
