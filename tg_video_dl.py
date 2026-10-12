@@ -116,10 +116,15 @@ def load_config():
 
 
 def save_config(cfg):
+    # T56 Bug5：原子写（同目录 tmp + os.replace）——崩溃至多留 .tmp
+    # 残文件（由 ensure_dirs_and_migrate 启动清理），cfg 永远是旧值或
+    # 新值二选一，杜绝写一半的劈叉文件。同目录 rename 不跨卷。
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(
+    tmp = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+    tmp.write_text(
         json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    os.replace(tmp, CONFIG_PATH)
 
 
 def get_download_root(cfg):
@@ -180,6 +185,19 @@ def ensure_dirs_and_migrate():
             except Exception:
                 pass
 
+    # T56 Bug5：原子写崩溃残留的 .tmp 清理（tmp 只可能来自 save_config
+    # 中途崩溃，此时 cfg 本体仍是完整旧值，残文件无保留意义）
+    tmp_cfg = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+    if tmp_cfg.exists():
+        try:
+            tmp_cfg.unlink()
+            print("[acct] 已清理上次崩溃残留的配置临时文件")
+        except OSError:
+            pass
+
+    # T56 Bug5：提升流程中断对账（零网络；正常态零动作）
+    reconcile_session_promotion()
+
 
 # 内置凭证：Telegram 官方桌面客户端公开使用的 api_id/api_hash，
 # 普通用户无需自己去 my.telegram.org 申请，开箱即用。
@@ -200,6 +218,20 @@ def setup_credentials():
             "手机号（含国家区号，不要加 +，例如 8613800000000）："
         ).strip()
     save_config(cfg)
+    return cfg
+
+
+def ensure_builtin_credentials():
+    """GUI 专用（T56 Bug1）：非交互补凭证——只保证 api_id/api_hash
+    存在（缺则补内置值并落盘），绝不 input、绝不碰 phone。
+    覆盖 send_code/account_add_start 等未先 connect 的构造路径
+    （GUI 无控制台，setup_credentials 的 phone input 有冻结风险）。"""
+    cfg = load_config()
+    if not cfg.get("api_id") or not cfg.get("api_hash"):
+        cfg["api_id"] = BUILTIN_API_ID
+        cfg["api_hash"] = BUILTIN_API_HASH
+        cfg["builtin_api"] = True
+        save_config(cfg)
     return cfg
 
 
@@ -288,6 +320,93 @@ def save_accounts_remove_alt():
         return
     cfg.pop("accounts", None)
     save_config(cfg)
+
+
+# ---------------- T56 Bug5：小号提升为主号（纯 FS，可离线单测） ----------------
+
+def promote_alt_session_files():
+    """把 alt1 的 4 个 session 文件提升（改名）为 main 同名文件。
+    前提：主号已完成登出/断开（目标 main 文件是死文件，存在先删）。
+    - 逐后缀 os.replace（同目录同卷原子改名）；缺失跳过；
+    - .session 本体放最后改名（中途崩溃时启动对账把"alt .session 在
+      且 main .session 缺"识别为未完成态续办，授权文件不双存）；
+    - 单个 OSError 吞掉继续（不中断编排；调用方以返回值判定成功）。
+    返回 {"moved": [...], "removed": [...]}（main 侧最终路径）。"""
+    moved, removed = [], []
+    sufs = [s for s in ALT_SESSION_SUFFIXES if s != ".session"] + [".session"]
+    for suf in sufs:
+        alt_f = pathlib.Path(session_path_for(ACCT_ALT) + suf)
+        if not alt_f.exists():
+            continue
+        main_f = pathlib.Path(SESSION_PATH + suf)
+        if main_f.exists():
+            try:
+                os.remove(main_f)
+                removed.append(str(main_f))
+            except OSError:
+                pass
+        try:
+            os.replace(alt_f, main_f)
+            moved.append(str(main_f))
+        except OSError:
+            pass
+    return {"moved": moved, "removed": removed}
+
+
+def reconcile_session_promotion():
+    """启动对账（ensure_dirs_and_migrate 末尾调用；零网络）：
+    提升（logout 主号位）流程在改名单与 cfg 写入之间崩溃时，
+    依据"正常态不可达"的 accounts×session 组合收敛。正常态零动作。
+
+    组合与判定（前提：cfg accounts 含 alt1——正常只在 alt 登录成功后
+    写入、只在 alt 文件删除后移除，故"有 accounts 无 alt 文件"的中间
+    态只能来自提升流程中断）：
+      A. alt .session 在 且 main .session 缺 → 崩在改名中途：
+         续完改名（alt 授权成为新主号）+ pop accounts + 清 phone；
+      B. alt .session 缺 且 main .session 在 → 崩在改名后 cfg 前：
+         main 已是提升后有效授权，删 alt 残留附属文件 + pop accounts
+         + 清 phone；
+      C. 其余组合（含双双在=正常双号在线）零动作。
+    对账只做安全收敛，绝不删除 main 侧有效授权。"""
+    try:
+        cfg = load_config()
+    except Exception:
+        return
+    accts = cfg.get("accounts")
+    if not (isinstance(accts, list)
+            and any(isinstance(a, dict) and a.get("id") == ACCT_ALT
+                    for a in accts)):
+        return
+    alt_sess = pathlib.Path(session_path_for(ACCT_ALT) + ".session")
+    main_sess = pathlib.Path(SESSION_PATH + ".session")
+    if alt_sess.exists() and not main_sess.exists():
+        r = promote_alt_session_files()
+        if str(main_sess) in r["moved"]:
+            print("[acct] reconcile: 检测到未完成的小号提升（崩在改名"
+                  f"中途），已续完（moved={len(r['moved'])}）")
+            cfg = load_config()
+            cfg.pop("accounts", None)
+            cfg.pop("phone", None)
+            save_config(cfg)
+            print("[acct] reconcile: 小号已提升为主号（accounts/phone "
+                  "已收敛）")
+        else:
+            # .session 改名未成（被占用等）：保留 accounts 原样，
+            # 下次启动由此组合继续重试（幂等、零丢失）
+            print("[acct] reconcile: 小号提升改名未完成（会话文件被"
+                  "占用），下次启动重试")
+    elif not alt_sess.exists() and main_sess.exists():
+        for f in alt_session_files():
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        cfg = load_config()
+        cfg.pop("accounts", None)
+        cfg.pop("phone", None)
+        save_config(cfg)
+        print("[acct] reconcile: 检测到提升后残留的小号配置/附属文件，"
+              "已收敛（新主号授权完好）")
 
 
 def prompt_manual_api(cfg):
@@ -3489,6 +3608,24 @@ class AccountPool:
         self.state.pop(ACCT_MAIN, None)
         self.me_cache.pop(ACCT_MAIN, None)
 
+    def reset_alt_runtime(self):
+        """T56 Bug5：小号提升为主号后清 alt 全部运行态（对称
+        remove_account 的状态清理段）。文件/cfg/连接不在本方法职责
+        （编排方已断开连接并完成文件改名/配置改写）；提升后的新主号
+        经既有 adopt_main()+me 缓存回收入池。"""
+        self._adding.pop(ACCT_ALT, None)
+        self.clients.pop(ACCT_ALT, None)
+        self.state.pop(ACCT_ALT, None)
+        self._alt_cfg = False
+        self._alt_phone = ""
+        self.me_cache.pop(ACCT_ALT, None)
+        self.denied_channels.pop(ACCT_ALT, None)
+        self.flood_until.pop(ACCT_ALT, None)
+        self.busy[ACCT_ALT] = 0
+        for k in (self.slow_since, self.slow_marked, self.slow_strikes,
+                  self.cooldown_until, self.canary, self.canary_ok_since):
+            k.pop(ACCT_ALT, None)
+
     # ---------- 懒连接 ----------
     async def aclient(self, account_id):
         """取已连接 client；alt 缺失则按 session 路径构造+connect+
@@ -3524,6 +3661,45 @@ class AccountPool:
         self.clients[ACCT_ALT] = client
         self.state[ACCT_ALT] = "ready"
         return client
+
+    async def warm_alt(self):
+        """T56 Bug3：主号就绪后静默预热小号（fire-and-forget 提交，
+        绝不阻塞登录返回）。仅当可懒连接（已配置+session 文件在）且
+        无 client、非 adding/error 时动作；construct→connect（限时
+        20s）→is_user_authorized→成功置 ready+缓存 me（含回填
+        _alt_phone）；任何失败 disconnect 吞掉、绝不置 error——状态
+        回落 has_session，保住下次选号资格（离线不能永久打掉 alt）。"""
+        if not self._alt_lazy_ok():
+            return False
+        if self.clients.get(ACCT_ALT) is not None:
+            return False
+        if self._adding.get(ACCT_ALT) is not None:
+            return False
+        client = self._raw_client(ACCT_ALT)
+        try:
+            await asyncio.wait_for(client.connect(), timeout=20.0)
+            if not await client.is_user_authorized():
+                raise RuntimeError("小号未授权")
+        except Exception as e:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            print(f"[acct] 小号预热失败（{type(e).__name__}），保持待连接")
+            return False
+        self.clients[ACCT_ALT] = client
+        self.state[ACCT_ALT] = "ready"
+        try:
+            me = await client.get_me()
+            self.me_cache[ACCT_ALT] = {
+                "name": me.first_name or "", "username": me.username or "",
+                "phone": me.phone or ""}
+            if me.phone:
+                self._alt_phone = me.phone
+        except Exception:
+            self.me_cache[ACCT_ALT] = None
+        print("[acct] 小号预热成功（连接已就绪）")
+        return True
 
     # ---------- 状态标注（下载侧经客户端视图回调） ----------
     def note_flood(self, acct, seconds, channel=None, item_msg=None):
@@ -4631,7 +4807,9 @@ BR_CYAN = _esc(96)
 def paint(text, *styles):
     if not styles or not USE_COLOR:
         return str(text)
-    return "".join(styles) + str(text) + RESET
+    # T56 Bug2 防御：过滤 None 样式（历史 bug：ready 行传 None 位置参数
+    # 导致 join 抛 TypeError；现在即使再传 None 也不炸）
+    return "".join(s for s in styles if s) + str(text) + RESET
 
 
 def clear_screen():
@@ -5253,7 +5431,7 @@ async def account_menu(pool):
             nm = me.get("name") or ""
             line = (f"  {ACCT_MARK[a['id']]} {nm}  {who}  {st}"
                     f"  忙 {a['busy']}  {flag}")
-            print(paint(line, DIM if a["state"] != "ready" else None))
+            print(line if a["state"] == "ready" else paint(line, DIM))
         if not any(a["id"] == ACCT_ALT for a in rows):
             print(paint("  （无小号）", DIM))
         opts = [

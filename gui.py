@@ -378,6 +378,9 @@ class Api:
 
     # ---------- client 生命周期辅助 ----------
     def _new_client(self):
+        # T56 Bug1：构造前补凭证（全新数据目录未先 connect 直接 send_code
+        # 时 self.cfg 为空，此处同步补齐并落盘，消除 KeyError 风险）
+        self.cfg = core.ensure_builtin_credentials()
         return TelegramClient(
             core.SESSION_PATH, self.cfg["api_id"], self.cfg["api_hash"],
             flood_sleep_threshold=120,
@@ -433,12 +436,31 @@ class Api:
 
     # ---------- 退出登录 ----------
     def logout(self):
-        """退出登录：通知 TG 销毁授权并删除本地会话，回到未登录状态。"""
-        # T55 对齐：双占位拒绝（下载 ACTIVE_SESSIONS / 目录搬运
-        # MOVING_TASKS 任一非空都算忙，文案单一真源 core.LOGOUT_BUSY_TEXT）
-        if core.any_active() or core.MOVING_TASKS:
+        """退出登录。T56 Bug5：有小号（cfg 已配置且 session 文件在——
+        adding 半成品绝不提升）时第一次退出 = 主号 Telegram 注销 + 小号
+        会话提升为主号 + 进程内重建连接（返回 stage=promoted）；无小号 =
+        维持既有清光语义（stage=logged_out）。重连失败仍返回 promoted
+        +warning（本地授权有效，下次启动自动恢复，绝不回滚文件）。
+        busy 闸：下载 ACTIVE_SESSIONS / 目录搬运 MOVING_TASKS / 小号
+        添加中 / 小号下载忙，任一非空拒绝（文案单一真源 LOGOUT_BUSY_TEXT）。"""
+        if (core.any_active() or core.MOVING_TASKS
+                or self._pool.alt_adding()
+                or self._pool.busy_snapshot().get(core.ACCT_ALT, 0) > 0):
             return {"ok": False, "busy": True,
                     "error": core.LOGOUT_BUSY_TEXT}
+        # alt 判定双条件：cfg 已配置 且 alt session 文件在（契约 Q3：
+        # accounts 正常态只在 alt 登录成功后写入，"有 accounts 无文件"
+        # 只能来自提升中断——由启动对账收敛，不当提升依据）
+        has_alt = (core.alt_configured()
+                   and pathlib.Path(
+                       core.session_path_for(core.ACCT_ALT)
+                       + ".session").exists())
+        if has_alt:
+            return self._logout_promote()
+        return self._logout_plain()
+
+    def _logout_plain(self):
+        """无小号：既有清光语义（T55 登出），返回体补 stage=logged_out。"""
         client = self.client
 
         async def _do():
@@ -472,13 +494,138 @@ class Api:
         # T48：同时清空搜索作业存储（内存态；作业表自身不持久化）
         self._search_previews = {}
         self._remove_session_files()
-        # 清掉已保存手机号，重新登录时从输入手机号开始
-        self.cfg.pop("phone", None)
+        # 清掉已保存手机号，重新登录时从输入手机号开始。
+        # T56：以盘上 cfg 为准重读再写（内存 self.cfg 可能已被提升
+        # 流程/其它写盘点更新，直接写回会把旧键复活）
+        cfg = core.load_config()
+        cfg.pop("phone", None)
         try:
-            core.save_config(self.cfg)
+            core.save_config(cfg)
         except Exception:
             pass
-        return {"ok": True}
+        self.cfg = cfg
+        return {"ok": True, "stage": "logged_out"}
+
+    def _logout_promote(self):
+        """T56 Bug5：有 alt 的退出编排——主号注销（失败降级 disconnect
+        → alt 最佳努力取 phone 后断开 → 主号残留文件扫尾 → alt 会话
+        文件提升 → cfg 单次写 → 池清态 → 进程内重连（wait_for 20s）→
+        adopt+me 缓存。返回 {ok, stage:"promoted"}（重连失败仍 promoted
+        +warning，不回滚——服务端主号已注销，回滚只会得到死会话）。"""
+        client = self.client
+
+        async def _main_do():
+            # 主号 Telegram 授权注销；限时 20s 防挂死，失败/超时降级
+            # disconnect（沿用既有"本地照登出"语义）
+            if client is None:
+                return
+            try:
+                await asyncio.wait_for(client.log_out(), timeout=20.0)
+                return
+            except Exception:
+                pass
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+        async def _alt_do():
+            # 最佳努力：惰性连上小号拿 phone（cfg 回填用），拿完优雅断开
+            # （get_me 失败不阻断——授权会话不依赖 phone）
+            phone = ""
+            try:
+                c = await asyncio.wait_for(
+                    self._pool.aclient(core.ACCT_ALT), timeout=20.0)
+                try:
+                    me = await asyncio.wait_for(c.get_me(), timeout=10.0)
+                    phone = getattr(me, "phone", "") or ""
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            c = self._pool.clients.get(core.ACCT_ALT)
+            if c is not None:
+                try:
+                    await c.disconnect()
+                except Exception:
+                    pass
+            return phone
+
+        try:
+            if client is not None:
+                self.engine.submit(_main_do())
+        except Exception:
+            pass
+        alt_phone = ""
+        try:
+            alt_phone = self.engine.submit(_alt_do()) or ""
+        except Exception:
+            alt_phone = ""
+        # 主号残留会话文件扫尾（log_out 内 telethon 会自删 .session 本体；
+        # -journal 等残留在此清）
+        self._remove_session_files()
+        # alt 会话文件提升为主号（RPC 线程同步段，毫秒级）
+        # alt 会话文件提升为主号（RPC 线程同步段，毫秒级）；成功判据：
+        # 主号 .session 出现在 moved（两侧同为 str(Path()) 规范化后
+        # 比较，免受正反斜杠拼接差异影响）
+        moved = core.promote_alt_session_files()
+        if str(pathlib.Path(core.SESSION_PATH + ".session")) \
+                not in moved["moved"]:
+            # 提升失败（.session 改名未成，常见为被占用）：alt 文件原地
+            # 保留、cfg 不动——重启时启动对账按残缺组合自愈；当前进程
+            # 维持登出视图
+            self.client = None
+            self.guest = False
+            self._preview = {}
+            self._search_previews = {}
+            return {"ok": False,
+                    "error": "小号会话提升失败（会话文件被占用），"
+                             "请重启应用后重试"}
+        # cfg 单次写：pop accounts + phone 置小号（alt phone 是本轮
+        # 最佳努力取的展示便利值，取不到为空——授权不依赖 phone）
+        cfg = core.load_config()
+        cfg.pop("accounts", None)
+        cfg["phone"] = alt_phone
+        try:
+            core.save_config(cfg)
+        except Exception:
+            pass          # 写失败不回滚文件；重启由启动对账组合 B 自愈
+        self.cfg = cfg
+        # 池清态：旧主号 + 旧 alt 运行态全清（连接已断、文件已改）
+        self._pool.shutdown_main_state()
+        self._pool.reset_alt_runtime()
+        # 内存态收尾（与无 alt 登出路径一致的部分——账号态留空，
+        # 由下方重连成功后 re-adopt）
+        self.client = None
+        if self.guest:
+            print("[GUI] guest=False（logout promote）")
+        self.guest = False
+        self._preview = {}
+        self._search_previews = {}
+        # 进程内重建连接（不重启进程）：SESSION_PATH 已是提升后会话
+        new_client = self._new_client()
+        ready = False
+        try:
+            async def _reconnect():
+                async def _do():
+                    await new_client.connect()
+                    if await new_client.is_user_authorized():
+                        return "ok"
+                    raise RuntimeError("新主号会话未授权")
+                return await asyncio.wait_for(_do(), timeout=20.0)
+            ready = (self.engine.submit(_reconnect()) == "ok")
+        except Exception:
+            ready = False
+        if ready:
+            self.client = new_client
+            self._adopt_and_cache_me()
+            return {"ok": True, "stage": "promoted"}
+        # 重连失败：client 丢弃（下次启动 connect() 自动恢复），
+        # 仍返回 promoted+warning
+        self._discard_client(new_client)
+        return {"ok": True, "stage": "promoted",
+                "warning": "小号已提升为主号；当前网络连接失败，"
+                           "下次启动将自动恢复登录"}
 
     # ---------- 登录 ----------
     def set_guest(self, on=True):
@@ -513,7 +660,9 @@ class Api:
     def _adopt_and_cache_me(self):
         """T51：主号就绪（connect ok / verify ready 后调用）——交池
         托管（幂等，池不断开主号）+ 缓存 get_me（失败只吞，不影响
-        RPC 返回；account_list 自身绝不触网）。"""
+        RPC 返回；account_list 自身绝不触网）。
+        T56 Bug3：同一处 fire-and-forget 预热小号（run_coroutine_
+        threadssafe 提交即返回，绝不阻塞本方法/engine.submit 等待）。"""
         self._pool.adopt_main(self.client)
 
         async def _do():
@@ -527,11 +676,26 @@ class Api:
         except Exception:
             pass
 
+        # T56 Bug3：小号预热（静默、失败吞掉；warm 内部自带
+        # 前置判定/20s 限时/失败回落 has_session）
+        async def _warm():
+            try:
+                await self._pool.warm_alt()
+            except Exception as e:
+                print(f"[acct] 小号预热异常已吞：{type(e).__name__}")
+
+        try:
+            asyncio.run_coroutine_threadsafe(_warm(), self.engine.loop)
+        except Exception:
+            pass
+
     def connect(self):
         if self.client is not None:
             return {"ok": True}
         core.ensure_dirs_and_migrate()
-        self.cfg = core.setup_credentials()
+        # T56 Bug1：GUI 改用非交互补凭证（绝不 input；phone 缺失由
+        # need_phone 步骤补），消除 windowed GUI 无控制台时的冻结风险
+        self.cfg = core.ensure_builtin_credentials()
         client = self._new_client()
 
         async def _do():
