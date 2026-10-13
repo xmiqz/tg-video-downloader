@@ -461,6 +461,8 @@
     <button class="btn glass-btn hidden" id="sheet-done-btn" onclick="toggleEdit(false)">完成编辑</button>
     <button class="btn glass-btn" onclick="sheetOpenFolder()">目录</button>
     <button class="btn primary" id="sheet-resume" onclick="sheetResume()">继续下载</button>
+    <!-- T57 C9②：恢复跳过 N 个（skipped>0 时由 renderSheet 切显） -->
+    <button class="btn glass-btn hidden" id="sheet-resume-skip" onclick="resumeSkipped(sheet.taskId,this,sheet.counts.skipped,'sheet')">恢复跳过</button>
     <button class="btn danger" onclick="sheetDelete()">删除任务</button>
   </div>
 </aside>

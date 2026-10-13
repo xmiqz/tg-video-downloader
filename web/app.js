@@ -49,6 +49,92 @@ async function withBusy(btn, busyText, fn) {
   }
 }
 
+// ---------- T57 文案集中区（C2/C6/C7/C9/补3；恢复跳过/持久 busy/账号标签/取消语义） ----------
+const T57_LABELS = {
+  acctAlt: "小号",                    // C2：与 segHtml/设置页账号区同文同紫系
+  busy: {
+    pause: "暂停中…", skip: "跳过中…", remove: "移除中…", resume: "恢复中…",
+    abort: "正在中止…", resumeskip: "恢复跳过中…",
+  },
+  cancelDownload: "取消下载",         // 补3：真取消语义明确化（旧文案「取消」歧义）
+  cancelling: "取消中…",               // C6：中间态，终态由真实收尾驱动，不预显“已取消”
+  collapse: "收起",                    // 补3：收起浮层，零取消 RPC，下次有作业可再出现
+};
+const resumeSkipLabel = n => `恢复跳过 ${n} 个`;
+
+// ============================================================
+// T57 持久 pending（C7）：ACK 不撤忙，1s 轮询观测真实状态翻转才撤；
+// 15s TTL 兖底撤忙 + console.warn；渲染期 view() 消费使 innerHTML
+// 重建不抹忙态；探针 window.__t57Probe 供 TR 断言（对齐 __tgJobProbe 风格）。
+// ============================================================
+const T57_PENDING_TTL_MS = 15000;
+const PendingOps = (() => {
+  let ttlMs = T57_PENDING_TTL_MS;
+  const map = new Map();   // key -> {ts, label, ctx, node, busyText, timer}
+  const warns = [];
+
+  function unpendBusyNode(node) {
+    // 恢复被 pend 忙化的持久节点（组头/批量/卡片按钮；离线节点随行消失）
+    if (!node || !node.isConnected) return;
+    node.classList.remove("is-busy");
+    node.disabled = false;
+    if (node.dataset.oldHTML !== undefined) node.innerHTML = node.dataset.oldHTML;
+    delete node.dataset.busy;
+    delete node.dataset.oldHTML;
+  }
+
+  function pendBusyNode(node, busyText) {
+    if (!node || node.dataset.busy === "1") return;
+    node.dataset.busy = "1";
+    node.dataset.oldHTML = node.innerHTML;
+    node.disabled = true;
+    node.classList.add("is-busy");
+    node.innerHTML = `<span class="spinner"></span>` +
+      (busyText != null ? esc(busyText) : "");
+  }
+
+  function pend(key, opts = {}) {
+    if (map.has(key)) return false;
+    const e = {
+      ts: Date.now(),
+      label: opts.label || "",
+      busyText: opts.busyText != null ? opts.busyText : opts.label || "",
+      node: opts.node || null,
+      ctx: opts.ctx || {},
+      timer: null,
+    };
+    e.timer = setTimeout(() => {
+      if (map.has(key)) {
+        map.delete(key);
+        warns.push({ key, at: Date.now() });
+        console.warn("[T57] 持久 pending TTL 兖底撤忙：" + key);
+      }
+    }, ttlMs);
+    map.set(key, e);
+    if (e.node) pendBusyNode(e.node, e.busyText);
+    return true;
+  }
+
+  function release(key) {
+    const e = map.get(key);
+    if (!e) return false;
+    clearTimeout(e.timer);
+    map.delete(key);
+    if (e.node) unpendBusyNode(e.node);
+    return true;
+  }
+
+  return {
+    pend, release,
+    has: key => map.has(key),
+    view: key => (map.has(key) ? { busy: true, label: map.get(key).label } : null),
+    setTtl: ms => { ttlMs = Math.max(0, Number(ms) || 0); },
+    map,
+    get warns() { return warns; },
+  };
+})();
+window.__t57Probe = { pending: PendingOps };
+
 // ---------- 全局状态 ----------
 let currentView = "new";
 const opts = { mode: "all", scope: "channel", sort: "date" };
@@ -934,6 +1020,10 @@ const ACTIVE_BADGE_CLS = {
 
 async function refreshActive() {
   const states = await api().active_states();
+  // T57 C7：对账前置（在空态早退之前）——掉组/中止后 active_states
+  // 常返回空数组，abort 键的释放观测必须在此覆盖（不能只挂在
+  // syncActiveList：空态路径不走它）
+  reconcilePendingOps(states);
   const running = states.length > 0;
   document.getElementById("nav-dot").classList.toggle("on", running);
   if (!running) {
@@ -994,14 +1084,24 @@ async function refreshActive() {
 }
 
 function activeItemButtons(tid, it) {
-  const b = (action, glyph, title, cls = "") =>
-    `<button class="mini-action ${cls}" title="${title}" ` +
-    `onclick="event.stopPropagation();activeItem('${esc(tid)}',` +
-    `'${esc(it.src)}',${it.mid},'${action}',this)">${glyph}</button>`;
+  // T57 C7：渲染期读 PendingOps——innerHTML 重建后忙态回填；
+  // busy 时 disabled+is-busy+spinner，title 换忙文案
+  const b = (action, glyph, title, cls = "") => {
+    const pv = PendingOps.view(cardKey(tid, it.src, it.mid) + ":" + action);
+    return `<button class="mini-action ${cls}${pv ? " is-busy" : ""}" ` +
+      `title="${esc(pv ? (pv.label || title) : title)}"` +
+      (pv ? " disabled" : "") +
+      ` onclick="event.stopPropagation();activeItem('${esc(tid)}',` +
+      `'${esc(it.src)}',${it.mid},'${action}',this)">` +
+      (pv ? `<span class="spinner"></span>` : glyph) + `</button>`;
+  };
   const st = it.status;
   if (st === "已暂停" || st === "失败")
     return b("resume", "▶", "继续") + b("remove", "✕", "移除", "danger");
-  if (st === "完成" || st === "已存在" || st === "已跳过")
+  // T57 C9④：已跳过行加行内 ↻（活跃会话单条恢复走既有 item_action）
+  if (st === "已跳过")
+    return b("resume", "↻", "恢复") + b("remove", "✕", "移除", "danger");
+  if (st === "完成" || st === "已存在")
     return b("remove", "✕", "移除", "danger");
   // 下载中 / 等待中
   return b("pause", "⏸", "暂停") + b("skip", "⤼", "跳过") +
@@ -1025,6 +1125,7 @@ function activeCard(tid, it) {
           <span class="sp">${humanSpeed(it.speed)}</span>
           <span class="prog">${human(it.done)} / ${human(it.size)}</span>
           <span class="src-tag">${esc(it.src)}</span>
+          <span class="dl-acct-badge hidden">${esc(T57_LABELS.acctAlt)}</span>
           <span class="badge ${bc}">${esc(it.status)}</span>
         </div>
         <div class="dl-item-actions">${activeItemButtons(tid, it)}</div>
@@ -1145,6 +1246,9 @@ function syncActiveList(states) {
       `${s.task_finished}/${s.task_total} 完成`;
     // T49：组头阶段位同源更新（终态墓碑窗口内即"完成/已中止/失败 · detail"）
     updateGroupPhase(g, s.phase || "", s.phase_detail || "");
+    // T57 C9③：活跃组头“恢复跳过 N 个”按钮（counts.skip>0 时出现；
+    // busy 由 view() 渲染回填，随每拍刷新）
+    updateGroupResumeSkip(g, s);
     syncCards(g.querySelector(".dl-group-body"), s);
   }
   for (const oldG of Array.from(list.children)) {
@@ -1152,6 +1256,92 @@ function syncActiveList(states) {
   }
   // T52：下载中视图组头选号控件（含新建骨架组）填充
   if (madeNew) TgAccounts.renderSegs();
+}
+
+// ============================================================
+// T57 持久 pending 对账 + 活跃组头恢复跳过按钮（C7/C9）
+// ============================================================
+// 释放规则与键族（reconcilePendingOps 每拍由 syncActiveList 调用）：
+//   abort:<tid>        组从 active_states 消失，或 phase=aborted（墓碑同款）
+//   resumeskip:<tid>   !existedBefore 且组出现（非活跃点总按钮拉起新会话），
+//                       或组在线时 resumeCks 任一行已被拉起（离开“已跳过”）
+//   bulk:<action>      全部选中行满足 <action> 规则
+//   <ck>:<action>      pause→已暂停；skip→已跳过；remove→行消失；
+//                       resume→离开 已暂停/失败/已跳过（行消失亦算）
+function reconcilePendingOps(states) {
+  if (PendingOps.map.size === 0) return [];
+  const byTask = new Map(states.map(s => [s.task_id, s]));
+  const byCk = new Map();
+  for (const s of states)
+    for (const it of s.items) byCk.set(cardKey(s.task_id, it.src, it.mid), it);
+  const released = [];
+  for (const [key, e] of Array.from(PendingOps.map)) {
+    const ctx = e.ctx || {};
+    let hit = false;
+    if (key.startsWith("abort:")) {
+      const s = byTask.get(ctx.tid);
+      hit = !s || s.phase === "aborted";
+    } else if (key.startsWith("resumeskip:")) {
+      const s = byTask.get(ctx.tid);
+      if (!s) hit = false;
+      else if (!ctx.existedBefore) hit = true;      // 新会话拉起成功
+      else if (Array.isArray(ctx.resumeCks) && ctx.resumeCks.length)
+        // 组在线：被恢复的 skipped 行任一离开“已跳过”（重进等待/下载）或行消失
+        hit = ctx.resumeCks.every(ck2 => {
+          const it = byCk.get(ck2);
+          return !it || it.status !== "已跳过";
+        });
+    } else if (key.startsWith("bulk:")) {
+      hit = (ctx.keys || []).length > 0 &&
+        ctx.keys.every(k2 => pendReleaseRule(k2, byCk));
+    } else if (ctx.ck) {
+      hit = pendReleaseRule(key, byCk);
+    }
+    if (hit) { released.push(key); PendingOps.release(key); }
+  }
+  return released;
+}
+// 单键规则：pendKey 形如 "<cardKey>:<action>"（cardKey 用 | 分隔无冒号）
+function pendReleaseRule(pendKey, byCk) {
+  const ix = pendKey.lastIndexOf(":");
+  const action = pendKey.slice(ix + 1);
+  const it = byCk.get(pendKey.slice(0, ix));
+  switch (action) {
+    case "pause": return !it || it.status === "已暂停";
+    case "skip": return !it || it.status === "已跳过";
+    case "remove": return !it;
+    case "resume": return !it || !["已暂停", "失败", "已跳过"].includes(it.status);
+    default: return false;
+  }
+}
+// T57 C9③：活跃组头恢复跳过按钮——创建/更新/移除三态；
+// busy 由 view() 渲染回填（spinner 动画不重启：仅状态切换时写 innerHTML）
+function updateGroupResumeSkip(g, s) {
+  const n = (s.counts && s.counts.skip) || 0;
+  let btn = g.querySelector(".dl-group-resume");
+  if (n <= 0) { if (btn) btn.remove(); return; }
+  const pv = PendingOps.view("resumeskip:" + s.task_id);
+  if (!btn) {
+    g.querySelector(".dl-group-head").insertAdjacentHTML("beforeend",
+      `<button class="btn glass-btn sm dl-group-resume" data-skip-now="${n}"` +
+      ` onclick="event.stopPropagation();resumeSkipped('${esc(s.task_id)}',this,${n},'group')"></button>`);
+    btn = g.querySelector(".dl-group-resume");
+    if (!btn) return;
+  }
+  btn.dataset.skipNow = String(n);
+  if (pv) {
+    if (!btn.classList.contains("is-busy")) {
+      btn.disabled = true;
+      btn.classList.add("is-busy");
+      btn.innerHTML = `<span class="spinner"></span>${esc(T57_LABELS.busy.resumeskip)}`;
+    }
+  } else {
+    if (btn.classList.contains("is-busy")) {
+      btn.disabled = false;
+      btn.classList.remove("is-busy");
+    }
+    btn.textContent = resumeSkipLabel(n);
+  }
 }
 
 function syncCards(body, s) {
@@ -1180,6 +1370,13 @@ function updateCard(card, tid, it, ck) {
   setText(card, ".sp", humanSpeed(it.speed));
   setText(card, ".prog", `${human(it.done)} / ${human(it.size)}`);
   setText(card, ".src-tag", it.src);
+  // T57 C1/C3：账号小标签每拍随快照刷新（auto 模式 busy 改派 acct
+  // main→alt1 切换时下一拍即变）；main/等待中不显（后端等待中预置 main）
+  const ab = card.querySelector(".dl-acct-badge");
+  if (ab) {
+    ab.textContent = T57_LABELS.acctAlt;
+    ab.classList.toggle("hidden", it.acct !== "alt1");
+  }
   const bc = ACTIVE_BADGE_CLS[it.status] || "wait";
   const badge = card.querySelector(".badge");
   badge.textContent = it.status;
@@ -1244,71 +1441,97 @@ function activeSelClear() {
   refreshActive();
 }
 
-// T53b P1-2：条目操作失败可见（!ok / 网络异常走统一错误反馈）；
-// P1-3 既有 withBusy 防重保持——双击第二拍的"操作进行中"照旧静默。
+// T53b P1-2：条目操作失败可见（!ok / 网络异常走统一错误反馈）。
+// T57 C7：持久 pending——ACK 不撤忙，观测到真实翻转（暂停→已暂停
+// 等）才撤；二次点击防重零 RPC（PendingOps.has 早退）；!ok/异常立即撤忙。
 async function activeItem(tid, src, mid, action, btn) {
+  const key = cardKey(tid, src, mid) + ":" + action;
+  if (PendingOps.has(key)) return;
+  const label = T57_LABELS.busy[action] || "处理中…";
+  PendingOps.pend(key, { label, busyText: label, node: btn,
+    ctx: { ck: cardKey(tid, src, mid) } });
   let r;
   try {
-    r = await withBusy(btn, null,
-      () => api().item_action(tid, action, [{ src, mid }]));
+    r = await api().item_action(tid, action, [{ src, mid }]);
   } catch (e) {
-    if (isBusyReject(e)) return;
+    PendingOps.release(key);
     return showErr("条目操作失败", e);
   }
-  if (!r || !r.ok)
-    showErr("条目操作失败", (r && r.error) || "操作未生效");
+  if (!r || !r.ok) {
+    PendingOps.release(key);
+    return showErr("条目操作失败", (r && r.error) || "操作未生效");
+  }
+  // ACK 后不撤忙：reconcile 每秒对账观测真实翻转让 / TTL 兖底
   setTimeout(refreshActive, 250);
 }
 
+// T57 C7：批量操作条接入持久 pending（单键 bulk:<action>）；逐组
+// 失败聚合可见（一组失败不中断其余组，既有语义保持）；全组 ack 后
+// 不撤忙，观测全部选中行状态翻转；部分失败立即撤忙可见。
 async function activeBulk(action, btn) {
   if (!activeSel.size) return;
   if (action === "remove" &&
       !confirm(`从任务中移除选中的 ${activeSel.size} 个条目？本地文件不会删除。`))
     return;
+  const key = "bulk:" + action;
+  if (PendingOps.has(key)) return;
+  const selKeys = [...activeSel];
+  const label = T57_LABELS.busy[action] || "处理中…";
+  PendingOps.pend(key, { label, busyText: label, node: btn,
+    ctx: { keys: selKeys.map(ck => ck + ":" + action) } });
   const byTask = {};
-  for (const ck of activeSel) {
+  for (const ck of selKeys) {
     const ix = ck.indexOf("|||");
     const tid = ck.slice(0, ix);
     const [src, mid] = ck.slice(ix + 3).split("|");
     (byTask[tid] ||= []).push({ src, mid: Number(mid) });
   }
-  const labels = { resume: "开始中…", pause: "暂停中…", skip: "跳过中…", remove: "移除中…" };
-  const fails = [];   // T53b P1-2：逐任务组失败聚合可见（一组失败不中断其余组）
-  try {
-    await withBusy(btn, labels[action] || "处理中…", async () => {
-      for (const [tid, ks] of Object.entries(byTask)) {
-        let r;
-        try {
-          r = await api().item_action(tid, action, ks);
-        } catch (e) {
-          fails.push(`${tid}: ${errDetail(e)}`);
-          continue;
-        }
-        if (!r || !r.ok)
-          fails.push(`${tid}: ${(r && r.error) || "操作未生效"}`);
-      }
-    });
-  } catch (e) {
-    if (isBusyReject(e)) return;
-    return showErr("批量操作失败", e);
+  const fails = [];   // T53b P1-2：逐任务组失败聚合可见
+  for (const [tid, ks] of Object.entries(byTask)) {
+    let r;
+    try {
+      r = await api().item_action(tid, action, ks);
+    } catch (e) {
+      fails.push(`${tid}: ${errDetail(e)}`);
+      continue;
+    }
+    if (!r || !r.ok)
+      fails.push(`${tid}: ${(r && r.error) || "操作未生效"}`);
   }
-  if (fails.length) showErr("批量操作部分失败", fails.join("\n"));
+  if (fails.length) {
+    PendingOps.release(key);
+    // T53b-A 回归保真：失败轮同样清选择+补拉（旧行为——防后续交互
+    // 在选择态上叠加 toggle 竞态）
+    activeSel.clear();
+    setTimeout(refreshActive, 250);
+    return showErr("批量操作部分失败", fails.join("\n"));
+  }
+  // 全组 ack：不撤忙，由 reconcile 观测（全部选中行翻转）；防重保持
   activeSel.clear();
   setTimeout(refreshActive, 250);
 }
 
+// T57 C7：中止任务接入持久 pending；撤忙条件＝组从 active_states 消失
+// 或 phase=aborted（墓碑同款，不必等墓碑 3s 过期）。
 async function abortGroup(tid, btn) {
   if (!confirm("中止该任务的全部下载？\n未完成视频状态保留，可随时继续。"))
     return;
+  const key = "abort:" + tid;
+  if (PendingOps.has(key)) return;
+  const label = T57_LABELS.busy.abort;
+  PendingOps.pend(key, { label, busyText: label, node: btn, ctx: { tid } });
   let r;
   try {
-    r = await withBusy(btn, "正在中止…", () => api().abort_task(tid));
+    r = await api().abort_task(tid);
   } catch (e) {
-    if (isBusyReject(e)) return;
+    PendingOps.release(key);
     return showErr("中止任务失败", e);
   }
-  if (!r || !r.ok)
-    showErr("中止任务失败", (r && r.error) || "操作未生效");
+  if (!r || !r.ok) {
+    PendingOps.release(key);
+    return showErr("中止任务失败", (r && r.error) || "操作未生效");
+  }
+  // ACK 后不撤忙：观测组消失/aborted 或 TTL 兑底
   setTimeout(refreshActive, 400);
 }
 
@@ -1412,6 +1635,7 @@ async function renderTasks() {
         <div class="task-actions">
           ${t.pending + t.failed ? `<button class="btn primary sm" onclick="quickResume('${esc(t.id)}',false,this)">继续</button>` : ""}
           ${t.failed ? `<button class="btn glass-btn sm" onclick="quickResume('${esc(t.id)}',true,this)">重试失败</button>` : ""}
+          ${t.skipped ? `<button class="btn glass-btn sm" onclick="event.stopPropagation();resumeSkipped('${esc(t.id)}',this,${t.skipped},'task')">${resumeSkipLabel(t.skipped)}</button>` : ""}
           <button class="btn danger sm" onclick="quickDelete('${esc(t.id)}',this)">删除</button>
         </div>
       </div>`;
@@ -1432,6 +1656,51 @@ function setTaskFilter(f) {
   document.querySelectorAll("#task-filters .seg").forEach(el =>
     el.classList.toggle("active", el.dataset.f === f));
   renderTasks();
+}
+// T57 C9/C10：恢复跳过总入口（任务卡/滑层 footer/活跃组头三处共用；
+// 只拉 skipped，不兼带 pending/failed——“继续下载”仍负责后两者）。
+// RPC：resume_task(id, only_failed=false, only_skipped=true)（BE 冻结
+// 形状：与 only_failed 互斥，同真返回参数错误；FE 永不同真）。
+// 任务非活跃时点恢复可重新拉起下载会话（resume_task 现有能力）。
+async function resumeSkipped(id, btn, n, source) {
+  if (guardRestricted("恢复跳过", () => resumeSkipped(id, btn, n, source))) return;
+  if (!id) return;
+  const key = "resumeskip:" + id;
+  if (PendingOps.has(key)) return;
+  // 观测基线：组在线则记录被恢复的 skipped 行 ck 集合与监控口径 skip 数；
+  // 组不在线（任务库/滑层入口）existedBefore=false，拉起会话组出现即释放
+  const groupNode = document.querySelector(
+    `#active-list .dl-group[data-gid="${qAttr(id)}"]`);
+  const existedBefore = !!groupNode;
+  let resumeCks = null;
+  if (existedBefore) {
+    resumeCks = [];
+    groupNode.querySelectorAll(".dl-card").forEach(c2 => {
+      const bd = c2.querySelector(".badge");
+      if (bd && bd.textContent === "已跳过" && c2.dataset.ck)
+        resumeCks.push(c2.dataset.ck);
+    });
+  }
+  const label = T57_LABELS.busy.resumeskip;
+  PendingOps.pend(key, { label, busyText: "恢复中…", node: btn,
+    ctx: { tid: id, existedBefore, resumeCks } });
+  let r;
+  try {
+    r = await api().resume_task(id, false, true);
+  } catch (e) {
+    PendingOps.release(key);
+    return showErr("恢复跳过失败", e);
+  }
+  const softErr = (r && r.error || "").includes("已在下载");
+  if (!r || !r.ok) {
+    if (!softErr) {
+      PendingOps.release(key);
+      return showErr("恢复跳过失败", (r && r.error) || "操作未生效");
+    }
+    // “已在下载”：会话本就活跃（等观测），保持既有宽松口径
+  }
+  if (r.ok || softErr) switchView("active");
+  setTimeout(refreshActive, 300);
 }
 async function quickResume(id, failed, btn) {
   if (guardRestricted("继续下载", () => quickResume(id, failed, btn))) return;
@@ -1576,6 +1845,22 @@ function renderSheet() {
   resumeBtn.textContent = c.pending > 0 ? "继续下载" : "重试失败";
   resumeBtn.disabled = !hasUn;
   resumeBtn.style.opacity = hasUn ? 1 : .4;
+  // T57 C9②：滑层 footer“恢复跳过 N 个”（skipped>0 时出现；busy 由
+  // view() 回填，spinner 仅状态切换时写 innerHTML 保动画连续）
+  const skipBtn = document.getElementById("sheet-resume-skip");
+  const csk = c.skipped || 0;
+  const pv = PendingOps.view("resumeskip:" + sheet.taskId);
+  skipBtn.classList.toggle("hidden", csk === 0 || sheet.edit);
+  skipBtn.disabled = !!pv;
+  if (pv) {
+    if (!skipBtn.classList.contains("is-busy")) {
+      skipBtn.classList.add("is-busy");
+      skipBtn.innerHTML = `<span class="spinner"></span>${esc(T57_LABELS.busy.resumeskip)}`;
+    }
+  } else {
+    skipBtn.classList.remove("is-busy");
+    skipBtn.textContent = resumeSkipLabel(csk);
+  }
 }
 function setDetailFilter(st) {
   sheet.filter = st;
@@ -1623,7 +1908,9 @@ function renderDetailItems() {
     if (!sheet.edit) {
       if (f.exists)
         acts += `<button class="mini-action" title="播放/打开文件" onclick="dPlay('${esc(src)}',${ti.msg},this)">▶</button>`;
-      if (["pending", "failed"].includes(ti.status))
+      // T57 C9④：skipped 行也显示 ↻（与 pending/failed 行同款置 pending 语义；
+      // 非活跃会话不自动拉起，“继续下载”仍负责总拉起）
+      if (["pending", "failed", "skipped"].includes(ti.status))
         acts += `<button class="mini-action" title="标记重新下载" onclick="dStatus('${esc(src)}',${ti.msg},'pending',this)">↻</button>`;
       if (ti.status !== "skipped")
         acts += `<button class="mini-action" title="标记跳过" onclick="dStatus('${esc(src)}',${ti.msg},'skipped',this)">⤼</button>`;
@@ -1639,6 +1926,7 @@ function renderDetailItems() {
               <span class="badge ${stCls}">${stLabel}</span>
               <span>${esc(ti.date)}</span><span>${human(ti.size)}</span>
               <span class="src-tag">${esc(src)}</span>
+              ${ti.acct === "alt1" ? `<span class="dl-acct-badge">${esc(T57_LABELS.acctAlt)}</span>` : ""}
               ${f.partial ? "<span style='color:#ffb84d'>半成</span>" : ""}
             </div>
           </div>
@@ -1761,6 +2049,8 @@ function toggleEdit(on, force) {
   document.getElementById("sheet-edit-btn").classList.toggle("hidden", on);
   document.getElementById("sheet-done-btn").classList.toggle("hidden", !on);
   document.getElementById("sheet-resume").classList.toggle("hidden", on);
+  // T57 C9②：编辑态同随既有 footer（恢复跳过不参与编辑态）
+  document.getElementById("sheet-resume-skip").classList.toggle("hidden", on);
   if (on && !force) fillEditForm();
   if (on) renderDetailItems();
 }
@@ -2262,7 +2552,7 @@ window.TgBus = TgBus;
 
 const JOB_STATE_LABEL = {
   queued: "排队中", running: "进行中", done: "已完成",
-  error: "失败", cancelled: "已取消",
+  error: "失败", cancelled: "已取消", cancelling: "取消中…",
 };
 // T53b-E F3：通用卡 kind 中文文案映射（缺失则回退原 kind 文本）
 const JOB_KIND_LABEL = {
@@ -2276,8 +2566,11 @@ const TgJobProgress = (() => {
   let syncBusy = false;
   let demoTried = false;
   let dropped = 0;
+  // T57 C4：折叠态（会话内存记忆，重启复位；不持久化到 appearance 契约）
+  let collapsed = false;
+  let dockRO = null;                 // T57 C4：host 高度监听（避让变量写入）
   const seen = new Map();         // job_id -> updated_ts（去重键，移除后保留，
-                                  // 迟到旧事件按 updated_ts 规则丢弃、不复活）
+                                   // 迟到旧事件按 updated_ts 规则丢弃、不复活）
   const renderCount = new Map();  // job_id -> 实际渲染次数
   const hiddenCancel = new Set(); // job_cancel 返回 unsupported 后永久隐藏按钮
   const pendingCancel = new Set();// 取消请求在途（防重复点击）
@@ -2298,6 +2591,44 @@ const TgJobProgress = (() => {
     return null;                    // 双未知 -> 不定进度
   }
 
+  // T57 C4：浮层实际高度写 CSS 变量（#active-list 的 padding-bottom 避让）；
+  // 挂载/高度变化/折叠/淡出移除均由 ResizeObserver 捕捉；无浮层时归零
+  function updateDockHeight() {
+    if (!host) return;
+    const h = host.getBoundingClientRect().height;
+    document.documentElement.style.setProperty(
+      "--job-dock-h", (h > 0 ? Math.round(h) : 0) + "px");
+  }
+
+  // T57 C4/补3：折叠/展开——折叠后仅留一条不遮挡操作的小胶囊（点击
+  // 恢复）；收起仅隐藏浮层，零取消 RPC，作业推进照常，下次有作业可再出现
+  function refreshMiniText() {
+    if (!host) return;
+    const mini = host.querySelector(".job-dock-mini");
+    if (!mini) return;
+    const n = host.querySelectorAll(".job-card").length;
+    mini.classList.toggle("hidden", n === 0);
+    mini.textContent = n === 1 ? "1 个作业" : n > 1 ? `${n} 个作业` : "";
+  }
+
+  function collapseHost(on) {
+    collapsed = !!on;
+    if (!host) return;
+    host.classList.toggle("collapsed", collapsed);
+    let mini = host.querySelector(".job-dock-mini");
+    if (collapsed && !mini) {
+      mini = document.createElement("button");
+      mini.type = "button";
+      mini.className = "job-dock-mini";
+      mini.setAttribute("aria-label", "展开作业进度浮层");
+      mini.addEventListener("click", () => collapseHost(false));
+      host.appendChild(mini);
+    } else if (!collapsed && mini) {
+      mini.remove();
+    }
+    refreshMiniText();
+  }
+
   function buildCard(id) {
     const card = document.createElement("div");
     card.className = "job-card";
@@ -2306,12 +2637,18 @@ const TgJobProgress = (() => {
       <div class="job-head">
         <span class="job-kind"></span>
         <span class="job-state"></span>
-        <button class="job-cancel-btn" type="button">取消</button>
+        <button class="job-collapse-btn" type="button">${esc(T57_LABELS.collapse)}</button>
+        <button class="job-cancel-btn" type="button">${esc(T57_LABELS.cancelDownload)}</button>
       </div>
       <div class="job-phase"><span class="ph"></span><span class="pd"></span></div>
       <div class="job-bar"><div class="job-fill"></div></div>
       <div class="job-count"><span class="c-items"></span><span class="c-bytes"></span></div>
       <div class="job-err hidden"></div>`;
+    // T57 补3：收起＝仅隐藏浮层（零取消 RPC）；浮层下次有作业可再出现
+    card.querySelector(".job-collapse-btn").addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      collapseHost(true);
+    });
     card.querySelector(".job-cancel-btn").addEventListener("click", (ev) => {
       ev.stopPropagation();
       onCancel(id, ev.currentTarget);
@@ -2357,6 +2694,7 @@ const TgJobProgress = (() => {
 
     let card = host.querySelector(`[data-job-id="${qAttr(id)}"]`);
     if (!card) card = buildCard(id);
+    refreshMiniText();   // T57 C4：折叠态胶囊文案随卡片数更新
 
     // T49：download 作业走通用卡——卡片根挂 data-phase（英文枚举仅作
     // CSS/data 属性键）供微动效与各阶段配色；.ph 留空（中文细节由
@@ -2366,8 +2704,14 @@ const TgJobProgress = (() => {
     const state = JOB_STATE_LABEL[job.state] ? job.state : "queued";
     setText(card, ".job-kind", JOB_KIND_LABEL[job.kind] || job.kind || "");
     const st = card.querySelector(".job-state");
-    st.textContent = JOB_STATE_LABEL[state];
-    st.className = "job-state s-" + state;
+    // T57 C6：状态变化才重写 DOM（spinner 动画不因同值重复 set 重启）
+    if (st.dataset.state !== state) {
+      st.dataset.state = state;
+      st.className = "job-state s-" + state;
+      st.textContent = JOB_STATE_LABEL[state];
+      if (state === "cancelling")
+        st.innerHTML = `<span class="spinner"></span>${esc(T57_LABELS.cancelling)}`;
+    }
     setText(card, ".ph",
       job.kind === "download" ? "" : (job.phase || ""));
     setText(card, ".pd", job.phase_detail || "");
@@ -2396,19 +2740,32 @@ const TgJobProgress = (() => {
       errEl.classList.add("hidden");
     }
 
-    // 取消按钮：仅 queued/running 显示；unsupported 后永久隐藏；在途禁用
+    // T57 C6/补3：取消按钮——真取消语义（「取消下载」）；仅
+    // queued/running/cancelling 显示；cancelling 中间态禁用+转圈显
+    // 「取消中…」；终态由真实收尾驱动，不预显“已取消”
     const btn = card.querySelector(".job-cancel-btn");
-    const showBtn = (state === "queued" || state === "running")
-      && !hiddenCancel.has(id);
+    const isCancelling = state === "cancelling";
+    const showBtn = (state === "queued" || state === "running" ||
+                     isCancelling) && !hiddenCancel.has(id);
     btn.style.display = showBtn ? "" : "none";
-    btn.disabled = pendingCancel.has(id);
+    btn.disabled = pendingCancel.has(id) || isCancelling;
+    if (btn.dataset.state !== state) {
+      btn.dataset.state = state;
+      btn.classList.toggle("is-busy", isCancelling);
+      if (isCancelling)
+        btn.innerHTML = `<span class="spinner"></span>${esc(T57_LABELS.cancelling)}`;
+      else btn.textContent = T57_LABELS.cancelDownload;
+    }
 
     // 终态卡片保留 4 秒后淡出移除
     if (JOB_TERMINAL.has(state) && !card.dataset.fade) {
       card.dataset.fade = "1";
       setTimeout(() => {
         card.classList.add("out");
-        setTimeout(() => card.remove(), 500);
+        setTimeout(() => {
+          card.remove();
+          refreshMiniText();   // T57 C4：卡片移除后胶囊计数同步
+        }, 500);
       }, 4000);
     }
     renderCount.set(id, (renderCount.get(id) || 0) + 1);
@@ -2462,6 +2819,12 @@ const TgJobProgress = (() => {
     host = document.getElementById("job-progress-host");
     if (!host) return;
     TgBus.on("job_update", renderJob);
+    // T57 C4：host 高度变化（建卡/多行/折叠/移除）→ 避让变量重写
+    if (typeof ResizeObserver !== "undefined") {
+      dockRO = new ResizeObserver(updateDockHeight);
+      dockRO.observe(host);
+    }
+    updateDockHeight();
     sync();                                   // 挂载即拉一次快照
     setInterval(sync, 5000);                  // 之后每 5 秒轻量同步
     document.addEventListener("visibilitychange", () => {

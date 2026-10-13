@@ -1446,3 +1446,73 @@ body.liquid .sheet { position: fixed; }
   border-color: rgba(20,30,60,.2); background: rgba(255,255,255,.5);
 }
 /* T52 多账号前端 UI（结束） */
+
+/* ============================================================
+   T57 下载中列表交互（账号标签／浮层避让+折叠／取消中／按压反馈）
+   - 玻璃材质复用既有 tokens，不新增配色体系
+   ============================================================ */
+/* ----- C1/C3：实条目账号小标签（仅 alt1 显「小号」，main/等待中不显；
+   配色与设置页 .acct-tag.alt（小号行）同一紫系 ----- */
+.dl-acct-badge {
+  flex-shrink: 0; font-size: 10.5px; font-weight: 700; letter-spacing: .4px;
+  padding: 2px 8px; border-radius: 999px;
+  background: rgba(139,91,255,.16); color: #c8b6ff;
+  border: 1px solid rgba(139,91,255,.38);
+}
+:root[data-theme="light"] .dl-acct-badge {
+  background: rgba(139,91,255,.12); color: #6c3fd4;
+  border-color: rgba(139,91,255,.28);
+}
+
+/* ----- C4：列表滚动容器按作业浮层实际高度动态避让 -----
+   --job-dock-h 由 TgJobProgress ResizeObserver 写入（挂载/高度变化/
+   折叠/移除均触发）；浮层折叠变 mini 或消失时归零，其余视图零影响 */
+#active-list { padding-bottom: calc(var(--job-dock-h, 0px) + 24px); }
+
+/* ----- C4：浮层折叠态——卡片整体隐藏，仅留一条不遮挡操作的小胶囊 ----- */
+.job-progress-host.collapsed .job-card { display: none; }
+.job-dock-mini {
+  pointer-events: auto;                 /* host 容器 none，小条本身可点 */
+  flex: none; border: 1px solid var(--glass-edge);
+  border-radius: 999px; padding: 6px 16px;
+  background: var(--glass-bg-soft); color: var(--ink-dim);
+  font-size: 12px; white-space: nowrap;
+  box-shadow: var(--soft-shadow);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  transition: .25s var(--spring);
+}
+.job-dock-mini:hover { color: var(--ink); transform: translateY(-1px); }
+.job-dock-mini:active { transform: translateY(0) scale(.97); }
+
+/* ----- 补3：收起浮层按钮（中性玻璃——语义是收起通知，非危险操作）；
+   收起按钮靠右起组，取消下载按钮紧随其后 ----- */
+.job-collapse-btn {
+  margin-left: auto; flex-shrink: 0;
+  border: 1px solid var(--glass-edge); border-radius: 999px;
+  background: rgba(255,255,255,.08); color: var(--ink-dim);
+  font-size: 11px; padding: 3px 11px;
+  transition: .2s var(--spring);
+}
+.job-collapse-btn:hover { background: rgba(255,255,255,.16); color: var(--ink); }
+.job-collapse-btn[disabled] { opacity: .55; pointer-events: none; }
+/* 取消按钮不再自撑（原 margin-left:auto 职责移交收起按钮） */
+.job-cancel-btn { margin-left: 0; }
+.job-collapse-btn:active, .job-cancel-btn:active,
+.mini-action:active { transform: translateY(0) scale(.97); }
+
+/* ----- C6：取消中… 中间态（不可点；终态由真实收尾驱动，不预显已取消） ----- */
+.job-state.s-cancelling {
+  background: rgba(255,184,77,.16); color: var(--warn);
+}
+.job-state.s-cancelling .spinner {
+  width: 10px; height: 10px; margin-right: 4px; vertical-align: -1px;
+}
+.job-cancel-btn[disabled] { opacity: .55; pointer-events: none; }
+.job-cancel-btn.is-busy { pointer-events: none; opacity: .8; }
+.job-cancel-btn .spinner {
+  width: 10px; height: 10px; margin-right: 4px; vertical-align: -1px;
+}
+
+/* ----- C9③：活跃组头“恢复跳过 N 个”（与“中止任务”同层玻璃分组） ----- */
+.dl-group-resume { flex-shrink: 0; margin-left: 10px; }
