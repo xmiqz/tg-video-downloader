@@ -2315,6 +2315,22 @@ class Monitor:
                 sys.stdout.flush()
 
 
+def _ctl_or_abort(ctl, state):
+    """T57 根因 B：在途断点统一信号——优先条目自身 ctl（取消>跳过>
+    暂停，原有语义）；无条目信号时查任务级 abort（state["session"].
+    abort），中止升格为 CancelledError 穿出（worker 的 except
+    asyncio.CancelledError 直穿与 schedule 循环顶取消全套同源同一
+    语义，.part/.done 标记保留可续传）。state 为 None/无 session 时
+    退化为纯 ctl（兼容直接调用下载函数的既有夹具）。"""
+    t = ctl.tripped()
+    if t is not None:
+        return t
+    sess_abort = getattr((state or {}).get("session"), "abort", None)
+    if sess_abort is not None and sess_abort.is_set():
+        return asyncio.CancelledError
+    return None
+
+
 async def parallel_download(client, item, target, ctl, state=None):
     """断点续传：完成的分片写一个零字节 .partN.done 标记；重试时只下
     未完成分片（未完成分片从头覆盖重下）。
@@ -2348,7 +2364,7 @@ async def parallel_download(client, item, target, ctl, state=None):
             return
         got = 0
         async with sem:
-            tripped = ctl.tripped()
+            tripped = _ctl_or_abort(ctl, state)
             if tripped:
                 raise tripped
             it = client.iter_download(
@@ -2359,7 +2375,7 @@ async def parallel_download(client, item, target, ctl, state=None):
             with open(work, "r+b") as f:
                 f.seek(off)
                 while True:
-                    tripped = ctl.tripped()
+                    tripped = _ctl_or_abort(ctl, state)
                     if tripped:
                         raise tripped
                     try:
@@ -2417,7 +2433,7 @@ async def simple_download(client, item, target, ctl, state=None):
             client.download_media(msg, file=target, progress_callback=prog)
         )
         while not task.done():
-            tripped = ctl.tripped()
+            tripped = _ctl_or_abort(ctl, state)
             if tripped:
                 task.cancel()
                 try:
@@ -3170,9 +3186,18 @@ class DownloadSession:
         if not self.loop.is_closed():
             self.loop.call_soon_threadsafe(self._apply, action, list(keys))
 
+    def _do_abort(self):
+        # T57 取消双根因 B：abort 与 wake 双事件同置（跑在事件循环内，
+        # 免去跨线程 set 的线程安全限制）——唤醒被 wake.wait() 挂住的
+        # 调度器，使循环顶即有的取消全套（cancel feeder+全部 worker）
+        # 能真正进入；wake 为 None（尚未 open/测试直接构造）防御性跳过。
+        self.abort.set()
+        if self.wake is not None:
+            self.wake.set()
+
     def request_abort(self):
         if not self.loop.is_closed():
-            self.loop.call_soon_threadsafe(self.abort.set)
+            self.loop.call_soon_threadsafe(self._do_abort)
 
     def _apply(self, action, keys):
         # 仅在下载事件循环线程内执行
@@ -4478,10 +4503,26 @@ async def run_download_session(client, task, sess, *, gui=None,
                     await asyncio.gather(*pending, return_exceptions=True)
                 return
             if sess.resume_q or sess.queue:
-                await sem.acquire()
+                # T57 根因 B：sem.acquire 改为与任务级 abort 竞争等待。
+                # 槽位被在途条目占满时 abort 能立即抢占（原 await
+                # sem.acquire() 只能等某 worker 结束释放槽位，取消要等
+                # 空闲时最长整文件下完）；acquire 与 abort 同拍竞态到达
+                # 时归还冗余 permit，信号量平衡不破坏。
+                acq = asyncio.ensure_future(sem.acquire())
+                abt = asyncio.ensure_future(sess.abort.wait())
+                try:
+                    await asyncio.wait({acq, abt},
+                                       return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    if not acq.done():
+                        acq.cancel()
                 if sess.abort.is_set():
-                    sem.release()
+                    if acq.done():
+                        # 竞态：槽位与 abort 同时到达，释放未用槽位
+                        sem.release()
+                    abt.cancel()
                     continue
+                abt.cancel()
                 rec = (sess.resume_q.popleft() if sess.resume_q
                        else sess.queue.popleft())
                 sess.tasks[_rec_key(rec)] = asyncio.create_task(
@@ -4503,7 +4544,11 @@ async def run_download_session(client, task, sess, *, gui=None,
         while True:
             if keys.abort.is_set():
                 keys.abort.clear()
+                # T57 根因 B（TUI 同修）：中止同步置 wake，唤起被
+                # wake.wait() 挂住的调度器进入循环顶取消全套
                 sess.abort.set()
+                if sess.wake is not None:
+                    sess.wake.set()
             if keys.skip.is_set():
                 keys.skip.clear()
                 if sess.ctls:

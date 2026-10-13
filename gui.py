@@ -93,12 +93,21 @@ SEARCH_WS_DELTA_ITEMS = 40
 class JobRegistry:
     """线程安全的作业注册表：创建/更新/取消/快照，并按节流规则外发 job_update。"""
 
-    STATES = frozenset({"queued", "running", "done", "error", "cancelled"})
+    # T57 取消双根因 A：新增中间态 cancelling。取消请求只置
+    # cancel_event + 流转 cancelling（非终态），真终态 cancelled/done/
+    # error 一律由作业 worker 真实收尾 update 驱动；TERMINAL 集合
+    # （done/error/cancelled，终态不可变）不动。
+    STATES = frozenset({"queued", "running", "done", "error",
+                        "cancelled", "cancelling"})
     TERMINAL = frozenset({"done", "error", "cancelled"})
-    # 合法流转：queued->running->终态、queued/running->cancelled；其余拒绝
+    # 合法流转：queued->running->终态、queued/running->（cancelled|
+    # cancelling）、cancelling->{done,error,cancelled}（取消与完成竞态时
+    # 允许诚实显 done）；其余拒绝
     _TRANSITIONS = {
-        "queued": frozenset({"running", "cancelled"}),
-        "running": frozenset({"done", "error", "cancelled"}),
+        "queued": frozenset({"running", "cancelled", "cancelling"}),
+        "running": frozenset({"done", "error", "cancelled",
+                               "cancelling"}),
+        "cancelling": frozenset({"done", "error", "cancelled"}),
         "done": frozenset(),
         "error": frozenset(),
         "cancelled": frozenset(),
@@ -211,7 +220,11 @@ class JobRegistry:
 
     def request_cancel(self, job_id):
         """返回 "ok" | "unsupported" | "not_found"。
-        取消成功：置 cancel_event、原子改 state=cancelled 并立即强制外发。"""
+        取消请求受理（T57）：置 cancel_event、改中间态 cancelling 并
+        立即强制外发——不再提前钉终态 cancelled；真终态只由作业
+        worker 真实收尾 update 驱动（download/aborted→cancelled、
+        search/scan/t45_demo 收尾点收口）。cancelling 重复请求幂等
+        （重发一帧，状态不变）。"""
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
@@ -222,7 +235,7 @@ class JobRegistry:
             ev = self._events.get(job_id)
             if ev is not None:
                 ev.set()
-            job["state"] = "cancelled"
+            job["state"] = "cancelling"
             now = time.time()
             if now <= job["updated_ts"]:
                 now = job["updated_ts"] + 0.001   # 同 update：严格单调递增
@@ -1057,7 +1070,10 @@ class Api:
                 _maybe_push()
             elif kind == "done":
                 if cancel_event.is_set():
-                    return   # 取消竞态：终态已由 registry 直发，不再收敛
+                    # T57：取消竞态收口 cancelling→cancelled（真终态由
+                    # 本收尾驱动，不再依赖 request_cancel 提前钉死）
+                    self.jobs.update(job_id, state="cancelled")
+                    return
                 records, meta = ev["records"], ev["meta"]
                 title = getattr(entity, "title", None) or channel_name
                 # gui 层附加键（与 permalink 同性质，内核 meta 不产）：
@@ -1093,6 +1109,12 @@ class Api:
                 self.jobs.update(job_id, state="done", phase="filter",
                                  phase_detail=f"共 {len(records)} 条",
                                  done=len(records), total=len(records))
+                return
+        # T57：搜索流被取消时内核生成器直接 return（不发 done），
+        # async for 提前结束——作业此时停在 cancelling，必须由本侧
+        # 收口真终态 cancelled，否则卡片永挂取消中
+        if cancel_event.is_set():
+            self.jobs.update(job_id, state="cancelled")
 
     def preview_cancel(self, job_id):
         """取消搜索作业（T48 新 RPC）。返回体与 job_cancel 同构：
@@ -1376,7 +1398,11 @@ class Api:
             for i in range(steps):
                 time.sleep(interval)
                 if cancel_event.is_set():
-                    return   # cancelled 终态已由 request_cancel 直发，不得覆写
+                    # T57：取消收尾（cancelling→cancelled，真终态由
+                    # 本收点驱动；request_cancel 不再提前钉终态；取消帧
+                    # phase/phase_detail 保持原值，与旧直发帧内容一致）
+                    self.jobs.update(job_id, state="cancelled")
+                    return
                 done_n = i + 1
                 if fail and i == steps - 1:
                     self.jobs.update(
@@ -1475,7 +1501,19 @@ class Api:
                 return {"ok": True}
         return {"ok": False, "error": "任务不存在"}
 
-    def resume_task(self, task_id, only_failed=False):
+    def resume_task(self, task_id, only_failed=False, only_skipped=False):
+        """T57 C8：新增 only_skipped（与 only_failed 同构、互斥、bool
+        校验）——True 时仅恢复 skipped 条目（"继续下载"仍负责
+        pending/failed）。默认 False 行为与旧版逐字节一致；任务
+        JSON 零新增字段，白名单 45 零改（kwargs/位置传参同通路）。"""
+        # 入参硬校验（仿 t45_demo_job：类型先行，互斥同真返回参数错误）
+        if (not isinstance(only_failed, bool)
+                or not isinstance(only_skipped, bool)):
+            return {"ok": False,
+                    "error": "only_failed/only_skipped 必须为布尔值"}
+        if only_failed and only_skipped:
+            return {"ok": False,
+                    "error": "only_failed 与 only_skipped 不能同时开启"}
         if self.client is None:
             print("[GUI] need_login: resume_task")
             return {"ok": False, "need_login": True}
@@ -1491,7 +1529,15 @@ class Api:
         # 未注册的窗口；open_download_session 内另有同源兜底）
         if task_id in core.MOVING_TASKS:
             return {"ok": False, "error": "任务目录正在移动中，暂不能开始下载"}
-        statuses = ("failed",) if only_failed else ("pending", "failed")
+        # T57：only_skipped 只拉 skipped（C10：语义单一，不兼带
+        # pending/failed）；pull_records 的 make 确认消息后自动重置
+        # pending 清错，全链复用既有 statuses 通路，零分支新增
+        if only_skipped:
+            statuses = ("skipped",)
+        elif only_failed:
+            statuses = ("failed",)
+        else:
+            statuses = ("pending", "failed")
         n = sum(1 for ti in t["items"] if ti["status"] in statuses)
         if not n:
             return {"ok": False, "error": "没有需要下载的视频"}
@@ -1879,7 +1925,9 @@ class Api:
                     _maybe_push()
             elif kind == "done":
                 if cancel_event.is_set():
-                    return   # 取消竞态：终态已由 registry 直发
+                    # T57：取消竞态收口 cancelling→cancelled
+                    self.jobs.update(job_id, state="cancelled")
+                    return
                 records, meta = ev["records"], ev["meta"]
                 meta["added"] = added_total
                 meta["skipped_dup"] = skipped_dup
@@ -1890,6 +1938,11 @@ class Api:
                 self.jobs.update(job_id, state="done", phase="filter",
                                  phase_detail=f"已追加 {added_total} 条",
                                  done=added_total, total=0)
+                return
+        # T57：扫描流被取消时生成器直接 return（不一致 done），
+        # async for 提前结束——收口 cancelling→cancelled，防卡片永挂取消中
+        if cancel_event.is_set():
+            self.jobs.update(job_id, state="cancelled")
 
     # ---------- 独立编辑窗口（Task 16 将改为应用内全屏路由） ----------
     def open_editor(self, task_id):
