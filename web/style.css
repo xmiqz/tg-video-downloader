@@ -298,21 +298,45 @@ nav { flex: 1; display: flex; flex-direction: column; gap: 5px; }
 .me-name { font-size: 13px; font-weight: 600; }
 .me-user { font-size: 11.5px; color: var(--ink-mute); }
 .me-logout-btn {
+  /* T56 退出标识美化：与深色/液态玻璃语言一致的明确可点形态 */
   margin-left: auto;
-  width: 26px; height: 26px; flex: none;
-  border: 1px solid rgba(255,255,255,.12);
-  border-radius: 50%;
-  background: rgba(255,255,255,.06);
-  color: var(--ink-dim);
-  font-size: 13px; line-height: 1;
+  width: 28px; height: 28px; flex: none;
   display: flex; align-items: center; justify-content: center;
-  transition: .25s var(--spring);
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: linear-gradient(160deg,
+    rgba(255,255,255,.10), rgba(255,255,255,.04));
+  color: var(--ink-dim);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.12),
+              0 2px 8px rgba(0,0,0,.28);
+  cursor: pointer;
+  transition: all .25s var(--spring);
 }
 .me-logout-btn:hover {
   color: #ff8b98;
-  background: rgba(255, 97, 114, .16);
-  border-color: rgba(255, 97, 114, .4);
+  background: linear-gradient(160deg,
+    rgba(255,97,114,.22), rgba(255,97,114,.10));
+  border-color: rgba(255,97,114,.45);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.18),
+              0 4px 14px rgba(255,97,114,.24);
   transform: translateY(-1px);
+}
+.me-logout-btn:active { transform: translateY(0); }
+.me-logout-btn:focus-visible {
+  outline: 2px solid rgba(255,139,152,.55); outline-offset: 2px;
+}
+.me-logout-btn:disabled,
+.me-logout-btn[disabled] {
+  opacity: .45; cursor: not-allowed; transform: none;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+}
+/* 静态亮主题：撞色描边/内高光翻转，保证可读 */
+:root[data-theme="light"] .me-logout-btn {
+  border-color: rgba(20,30,60,.16);
+  background: linear-gradient(160deg,
+    rgba(20,30,60,.06), rgba(20,30,60,.02));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7),
+              0 2px 8px rgba(30,40,80,.10);
 }
 
 /* 设置页：账号行 */
@@ -1026,6 +1050,26 @@ html[data-theme="light"] .job-state.s-running {
 :root[data-theme="light"] #login-notice {
   color: #a86a10;
 }
+/* T56 Bug4：boot 中性态——guest-bar 显"正在连接 Telegram…"且不可点 */
+.guest-bar.booting {
+  cursor: default;
+  pointer-events: none;
+  opacity: .88;
+}
+.guest-bar.booting:hover {
+  /* 中性态屏蔽 hover 提亮（回到静止态） */
+  border-color: rgba(255,184,77,.35);
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.14), rgba(255,138,151,.12));
+}
+/* T56 Bug4：启动连接失败的非阻断小字（显示在 guest-bar 下方） */
+.boot-err {
+  margin: 0 0 12px;
+  font-size: 11.5px;
+  color: var(--ink-mute);
+  letter-spacing: .2px;
+  user-select: none;
+}
 /* ===== T46 游客模式（结束）=====
 
 /* ============================================================
@@ -1318,6 +1362,8 @@ body.liquid .sheet { position: fixed; }
               background: rgba(255,255,255,.06); }
 .acct-state[data-st="ready"] { color: #7ee2a8; }
 .acct-state[data-st="connecting"] { color: #ffc78a; }
+/* T56 Bug3：暖机窗口尽后但仍 has_session（离线/暖机失败）的展示态 */
+.acct-state[data-st="standby"] { color: #9db4ff; }
 .acct-state[data-st="absent"] { color: var(--ink-mute); }
 /* 游客态账号行：点击打开登录卡（暖色系对齐 guest-bar） */
 .acct-guest-row {
@@ -1389,6 +1435,7 @@ body.liquid .sheet { position: fixed; }
 :root[data-theme="light"] .acct-state { background: rgba(20,30,60,.07); }
 :root[data-theme="light"] .acct-state[data-st="ready"] { color: #1d7a4a; }
 :root[data-theme="light"] .acct-state[data-st="connecting"] { color: #a86a10; }
+:root[data-theme="light"] .acct-state[data-st="standby"] { color: #3c56c8; }
 :root[data-theme="light"] .acct-guest-row,
 :root[data-theme="light"] .acct-hint-bar {
   color: #8a5a12; border-color: rgba(180,120,30,.4);

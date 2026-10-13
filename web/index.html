@@ -91,8 +91,15 @@
           <div id="me-name" class="me-name">未登录</div>
           <div id="me-user" class="me-user"></div>
         </div>
+        <!-- T56 退出标识：电源图形（SVG，避开字体缺字）+ 玻璃按钮形态 -->
         <button id="me-logout" class="me-logout-btn" title="退出登录"
-          onclick="doLogout()">⎋</button>
+          aria-label="退出登录" onclick="doLogout(this)">
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"
+            focusable="false">
+            <path fill="currentColor"
+              d="M13 3h-2v10h2V3zm4.83 2.17-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z"/>
+          </svg>
+        </button>
       </div>
     </div>
   </aside>
@@ -101,6 +108,8 @@
 
     <!-- T46 游客模式提示条：仅 guest 态显示，点击打开登录卡 -->
     <div id="guest-bar" class="guest-bar hidden" onclick="openLoginFromGuest()">未登录 · 点此登录</div>
+    <!-- T56 Bug4：启动连接失败的非阻断小字（boot 中性态收口为"点此重试"时显示） -->
+    <div id="boot-err" class="boot-err hidden"></div>
 
     <!-- T52 账号限速提示条：主号被限速且还没有小号时显示，可关闭 -->
     <div id="acct-hint-bar" class="acct-hint-bar hidden">

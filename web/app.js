@@ -93,14 +93,106 @@ function switchView(v) {
 // ============================================================
 // 登录
 // ============================================================
+// T56 Bug4：启动中性态标志（前端内存态，绝不调 set_guest——游客态仍
+// 只在用户显式点"暂不登录"时经 doGuest 进入，T46 语义不变）
+let booting = false;
+// 最小取证探针（风格对齐 __tgJobProbe/__tgGuestProbe；TR-56-4 断言用）
+window.__tgBootProbe = { get booting() { return booting; } };
+
 async function bootLogin() {
-  // 先显示登录卡（带"暂不登录"入口），connect 在途中用户也可立刻点它进入游客态
-  document.getElementById("login").classList.remove("hidden");
-  await tryConnect(false);
+  // T56 Bug4 启动时序：不再先亮登录卡（旧实现已授权用户每次冷启动都被
+  // 登录卡盖住主界面，直到最长 20s 的 connect+鉴权探测返回后才被收起）。
+  // 新时序：主壳先可见（任务库，离线可浏览）→ guest-bar 显中性文案且
+  // 不可点 → 后台静默 connect 按返回 stage 分流（见 bootConnect 注释）。
+  booting = true;
+  switchView("tasks");                 // 任务壳（离线可浏览）
+  const gb = document.getElementById("guest-bar");
+  gb.classList.add("booting");         // 中性不可点态（style.css）
+  gb.textContent = "正在连接 Telegram…";
+  gb.classList.remove("hidden");
+  hideBootErr();
+  await bootConnect();
 }
-// 与 bootLogin 共享的静默连接逻辑：connect + login_state 判定。
-// silent=true（游客态从 guest-bar 打开登录卡）时，connect 的非 ready 结果
-// 不会把已进入主界面的用户强行锁回卡片——卡片的显隐由调用方/用户控制。
+
+// T56 Bug4：启动阶段的静默连接与分流（任何结果都不弹模态卡）：
+//   ready                   → afterLogin 收中性条，全程无卡；
+//   need_phone              → 收中性条，亮登录卡停手机号步（"暂不登录"保留）；
+//   need_code / has_session 已发码 → 卡首现即验证码步（不闪手机号步）；
+//   网络错/超时/busy        → 留在壳内，guest-bar 转"未登录 · 点此重试"，
+//                             错误以非阻断小字呈现（#boot-err）。
+async function bootConnect() {
+  const gb = document.getElementById("guest-bar");
+  let r = null;
+  try {
+    r = await api().connect();
+  } catch (e) {
+    r = { ok: false, error: (e && e.message) || String(e) };
+  }
+  const finish = () => {
+    booting = false;
+    gb.classList.remove("booting");
+  };
+  // 已就绪（stage=ready，或 client 已在场的 {ok:true} 无 stage 形状）
+  if (r && r.ok && (r.stage === "ready" || !r.stage)) {
+    finish();
+    guestMode = false;
+    return afterLogin();
+  }
+  // need_code（含软成功带 warning）直接验证码步；否则复核 login_state
+  // （has_session=服务端已发码，与旧 tryConnect 兜底判定对等保留）
+  let codeStep = !!(r && r.ok && r.stage === "need_code");
+  if (!codeStep) {
+    let st = null;
+    try { st = await api().login_state(); } catch (e) {}
+    if (st && st.logged_in) {
+      finish();
+      return afterLogin();
+    }
+    codeStep = !!(st && st.has_session && !(r && r.busy));
+  }
+  if (codeStep) {
+    finish();
+    hideGuestBar();
+    hideBootErr();
+    document.getElementById("login-notice").textContent = "";
+    loginErr((r && (r.warning || r.error)) || "");
+    // 先切步再亮卡：同步块内 DOM 变更序 = code 步可见 → 卡可见，
+    // MutationObserver 记录可证"卡首现即验证码步、无手机号步闪烁"
+    showLoginStep("code");
+    document.getElementById("login").classList.remove("hidden");
+    return null;
+  }
+  if (r && r.ok && r.stage === "need_phone") {
+    // 真未登录：收中性条，亮登录卡停在手机号步（"暂不登录"入口保留）
+    finish();
+    hideGuestBar();
+    hideBootErr();
+    showLoginCard("");
+    return null;
+  }
+  // 网络错/超时/busy：留在壳内，中性条转可点重试（错误仅非阻断小字）
+  finish();
+  hideBootErr();
+  gb.textContent = "未登录 · 点此重试";
+  gb.classList.remove("hidden");
+  showBootErr((r && (r.warning || r.error)) || "连接 Telegram 失败");
+  return null;
+}
+
+// T56 Bug4：启动连接失败的非阻断小字（#boot-err；不发模态卡）
+function showBootErr(msg) {
+  const el = document.getElementById("boot-err");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.classList.toggle("hidden", !msg);
+}
+function hideBootErr() {
+  const el = document.getElementById("boot-err");
+  if (el) el.classList.add("hidden");
+}
+
+// 打开登录卡/复核连接（游客态或 boot 失败重试入口共用；此处的静默
+// 指非 ready 结果不把已进主界面的用户锁回卡片——显隐由调用方控制）。
 async function tryConnect(silent) {
   const r = await api().connect();
   if (r.ok && r.stage === "ready") {
@@ -118,6 +210,7 @@ async function tryConnect(silent) {
 }
 // 游客态顶栏提示条点击：显示登录卡（phone 步、清提示），并做静默连接尝试
 function openLoginFromGuest() {
+  if (booting) return;                   // T56 Bug4：boot 中性态该条不可点
   showLoginCard("");
   tryConnect(true);
 }
@@ -156,7 +249,14 @@ function showLoginCard(notice) {
   document.getElementById("login").classList.remove("hidden");
   if (guestMode) startGuestPoll();
 }
-function showGuestBar() { document.getElementById("guest-bar").classList.remove("hidden"); }
+function showGuestBar(text) {
+  const gb = document.getElementById("guest-bar");
+  if (!gb) return;
+  // T56 Bug4：boot 失败态可能把文案改写成"未登录 · 点此重试"；进游客态
+  // 时复位为 T46 基线文案
+  gb.textContent = text || "未登录 · 点此登录";
+  gb.classList.remove("hidden");
+}
 function hideGuestBar() { document.getElementById("guest-bar").classList.add("hidden"); }
 // 登录状态轮询：guest 态（卡片或 guest-bar 可见期间）约 2s 一拍，
 // 发现 logged_in:true && guest:false → 走 afterLogin（含续路）；
@@ -174,6 +274,7 @@ function stopGuestPoll() {
   }
 }
 async function guestPollTick() {
+  if (booting) return;         // T56 Bug4：boot 中性态不发轮询、不提前弹卡
   if (guestPollBusy || document.hidden) return;
   guestPollBusy = true;
   try {
@@ -310,47 +411,116 @@ async function afterLogin() {
 }
 
 // ---------- 退出登录（重置账号） ----------
-async function doLogout() {
-  try {
-    if (await api().is_active())
-      return alert("有下载任务正在进行，请先到「下载中」中止下载后再退出。");
-  } catch (e) {}
-  if (!confirm("退出当前账号？\n\n· 本地登录信息将被删除，重新登录需输入手机号与验证码\n· 任务清单与已下载视频不受影响")) return;
-  const r = await api().logout();
-  if (!r.ok) return alert(r.error || "退出登录失败");
+// T56 Bug5：有小号时第一次退出=主号注销+小号提升（后端 logout 返回
+// stage=promoted）；无小号维持既有清光语义（stage=logged_out）。
+// 有小时用自定义确认弹窗（原生 confirm 无法定制按钮文案"退出并提升
+// 小号"）；探不到 account_list 时视作无小号走现流程。
+function askLogoutPromote() {
+  return new Promise(resolve => {
+    const mask = document.createElement("div");
+    mask.className = "modal-mask";
+    mask.id = "logout-promote-modal";
+    mask.innerHTML = `
+      <div class="glass modal">
+        <div class="modal-head"><h3>退出当前主号？</h3></div>
+        <p class="modal-sub">登录中的小号将自动成为主号；本地任务与已下载文件不受影响。</p>
+        <div class="acct-confirm-actions">
+          <button class="btn glass-btn" data-k="cancel">取消</button>
+          <button class="btn danger" data-k="ok">退出并提升小号</button>
+        </div>
+      </div>`;
+    const done = v => { mask.remove(); resolve(v); };
+    mask.querySelector('[data-k="cancel"]')
+      .addEventListener("click", () => done(false));
+    mask.querySelector('[data-k="ok"]')
+      .addEventListener("click", () => done(true));
+    document.body.appendChild(mask);
+  });
+}
 
-  // 收起可能打开的滑层/弹层
-  closeSheetNoRefresh();
-  closeAppend();
-  // 重置预览与向导（T48：同时取消在途搜索作业并清空流式态）
-  cancelSearchJobQuietly();
-  searchJob = null;
-  arrivedKeys = new Set();
-  previewData = { items: [], channel: "", title: "" };
-  selected = new Set();
-  gotoStep(1);
-  // T49：清空下载阶段位缓存与终态清除计时器（logout 前已无活动下载）
-  for (const t of taskPhaseTimers.values()) clearTimeout(t);
-  taskPhaseTimers.clear();
-  dlPhaseByTask.clear();
-  // 重置侧边栏账号信息
-  document.getElementById("me-name").textContent = "未登录";
-  document.getElementById("me-user").textContent = "";
-  document.getElementById("me-avatar").textContent = "·";
-  // 显示登录界面（从手机号开始）
-  guestMode = false;
-  hideGuestBar();
-  stopGuestPoll();
-  document.getElementById("login-notice").textContent = "";
-  loginErr("");
-  document.getElementById("login-phone").value = "";
-  document.getElementById("login-code").value = "";
-  document.getElementById("login-pwd").value = "";
-  showLoginStep("phone");
-  document.getElementById("login").classList.remove("hidden");
-  switchView("new");
-  // T52：退出登录后账号区回落（清空已加载的账号列表并重拉/降级渲染）
+// T56 Bug5：提升后的 UI 收口（stage=promoted / promoted+warning）——
+// 不弹登录卡、不 switchView、不 reset 数据；仅刷新左下角资料与
+// 设置页账号区（alt 行自然消失、主号行=提升后资料），Toast 轻提示，
+// 不卡 UI。
+async function afterPromote(r) {
+  try {
+    const m = await api().me();
+    if (m && m.ok) {
+      document.getElementById("me-name").textContent = m.name || "已登录";
+      document.getElementById("me-user").textContent =
+        m.username ? "@" + m.username : (m.phone || "");
+      document.getElementById("me-avatar").textContent =
+        (m.name || "·").slice(0, 1);
+    }
+  } catch (e) {
+    // warning 形态（重连失败）下 me 可能拿不到：保持原资料不阻断，
+    // Toast 已说明重启后自动恢复
+  }
   TgAccounts.refresh();
+  TgToast.ok("小号已提升为主号",
+             r && r.warning ? "重新连接中，重启后可自动恢复" : null);
+}
+
+async function doLogout(btn) {
+  // T56：左下角按钮在途防重复（btn.enabled 态由 CSS 承接）
+  if (btn && btn.disabled) return;
+  if (btn) btn.disabled = true;
+  try {
+    try {
+      if (await api().is_active())
+        return alert("有下载任务正在进行，请先到「下载中」中止下载后再退出。");
+    } catch (e) {}
+    // T56 Bug5：先探 account_list——有小号（任何在列行）时改用提升语义
+    let hasAlt = false;
+    try {
+      const al = await api().account_list();
+      if (al && al.ok && Array.isArray(al.accounts))
+        hasAlt = al.accounts.some(x => x.id && x.id !== "main");
+    } catch (e) {}
+    if (hasAlt) {
+      if (!await askLogoutPromote()) return;
+    } else if (!confirm("退出当前账号？\n\n· 本地登录信息将被删除，重新登录需输入手机号与验证码\n· 任务清单与已下载视频不受影响")) return;
+    const r = await api().logout();
+    if (!r.ok) return alert(r.error || "退出登录失败");
+    // T56 Bug5：小号提升为主号——UI 不弹卡不重置，资料/账号区刷新
+    if (r.stage === "promoted") return afterPromote(r);
+
+    // ---- 以下为既有清光流程（stage=logged_out）----
+    // 收起可能打开的滑层/弹层
+    closeSheetNoRefresh();
+    closeAppend();
+    // 重置预览与向导（T48：同时取消在途搜索作业并清空流式态）
+    cancelSearchJobQuietly();
+    searchJob = null;
+    arrivedKeys = new Set();
+    previewData = { items: [], channel: "", title: "" };
+    selected = new Set();
+    gotoStep(1);
+    // T49：清空下载阶段位缓存与终态清除计时器（logout 前已无活动下载）
+    for (const t of taskPhaseTimers.values()) clearTimeout(t);
+    taskPhaseTimers.clear();
+    dlPhaseByTask.clear();
+    // 重置侧边栏账号信息
+    document.getElementById("me-name").textContent = "未登录";
+    document.getElementById("me-user").textContent = "";
+    document.getElementById("me-avatar").textContent = "·";
+    // 显示登录界面（从手机号开始）
+    guestMode = false;
+    hideGuestBar();
+    stopGuestPoll();
+    document.getElementById("login-notice").textContent = "";
+    loginErr("");
+    document.getElementById("login-phone").value = "";
+    document.getElementById("login-code").value = "";
+    document.getElementById("login-pwd").value = "";
+    showLoginStep("phone");
+    document.getElementById("login").classList.remove("hidden");
+    switchView("new");
+    // T52：退出登录后账号区回落（清空已加载的账号列表并重拉/降级渲染）
+    TgAccounts.refresh();
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ============================================================
@@ -2520,11 +2690,20 @@ const TgAccounts = (() => {
   }
 
   // ---------- 数据源 ----------
+  // T51 → UI 三态归一（T56 保留 rawState：adding=添加流程中、
+  // has_session=有授权待暖机，两者 UI 均显"连接中"，暖机补刷窗口尽后
+  // has_session 收敛显示"待连接"；logged_out/error -> 未授权弹兜底）
+  const normAccounts = (arr) => arr.map(x => ({
+    ...x,
+    rawState: x.state || "",
+    state: RPC_STATE_MAP[x.state] || x.state,
+  }));
   async function refresh() {
     if (stubOn()) {
       // 桩模式：零 bridge/HTTP；probe 未注入按空态渲染
       const probe = window.__tgAcctProbe;
-      _accounts = (probe && Array.isArray(probe.accounts)) ? probe.accounts : [];
+      _accounts = (probe && Array.isArray(probe.accounts))
+        ? normAccounts(probe.accounts) : [];
       _source = "stub";
       _busy = !!(probe && probe.busy);
       if (probe && probe.tasks_acct)
@@ -2536,14 +2715,7 @@ const TgAccounts = (() => {
       try {
         const r = await api().account_list();
         if (r && r.ok && Array.isArray(r.accounts)) {
-          // T51 真实状态枚举归一到 UI 三态（ready/connecting/absent）：
-          // adding=添加流程中、has_session=有授权待懒连接 -> 连接中；
-          // logged_out/error -> 未授权（真实快照中这两态 alt 不在列，
-          // 映射为防御性兜底）
-          _accounts = r.accounts.map(a => ({
-            ...a,
-            state: RPC_STATE_MAP[a.state] || a.state,
-          }));
+          _accounts = normAccounts(r.accounts);
           _source = "rpc";
         } else {
           _accounts = [];
@@ -2560,6 +2732,7 @@ const TgAccounts = (() => {
     render();
     renderSegs();
     renderHint();
+    scheduleWarmRefresh();   // T56 Bug3：存在 connecting 行时按节拍补刷
   }
 
   const list = () => _accounts;
@@ -2568,31 +2741,74 @@ const TgAccounts = (() => {
   const altAccounts = () =>
     _accounts.filter(a => a.id && a.id !== "main" && a.state !== "absent");
 
-  const ACCT_STATE_TEXT = { ready: "在线", connecting: "连接中", absent: "未授权" };
+  const ACCT_STATE_TEXT = { ready: "在线", connecting: "连接中",
+                            standby: "待连接", absent: "未授权" };
   // T51 AccountPool.snapshot() 真实状态枚举 -> UI 三态
   const RPC_STATE_MAP = {
     ready: "ready",
     adding: "connecting",      // 小号添加三步进行中
-    has_session: "connecting", // 已有授权、按需懒连接前
+    has_session: "connecting", // 已有授权、待暖机（warm/懒连接前）
     logged_out: "absent",
     error: "absent",
   };
+  // ---------- T56 Bug3：connecting 行有限补刷 ----------
+  // 3s 节拍 × 上限 6 次（约 18s 对齐后端 warm_alt 暖机）；全部非
+  // connecting 提前停；document.hidden 拍跳过（不发不计数，链保持——
+  // activePollTick 口径）；窗口尽后仍 has_session 的行转"待连接"。
+  // account_list 纯内存+stat 不触网（收割备忘§5），补刷开销可忽略。
+  const WARM_TICK_MS = 3000;
+  const WARM_MAX_TICKS = 6;
+  let _warmTicks = 0;
+  let _warmTimer = null;
+  let _warmDone = false;   // 本轮暖机窗口已尽（has_session 行显"待连接"）
+
+  function resetWarmWindow() {
+    // 新暖机会话：页面加载（mount）/ 用户显式开始添加小号（openAdd）
+    _warmTicks = 0;
+    _warmDone = false;
+    if (_warmTimer) { clearTimeout(_warmTimer); _warmTimer = null; }
+  }
+  function scheduleWarmRefresh() {
+    const hasConnecting = _accounts.some(a => a.state === "connecting");
+    if (!hasConnecting || _warmDone || _warmTimer) return;
+    _warmTimer = setTimeout(warmTick, WARM_TICK_MS);
+  }
+  async function warmTick() {
+    _warmTimer = null;
+    if (document.hidden) {            // 隐藏拍：不发不计数，改期保链
+      _warmTimer = setTimeout(warmTick, WARM_TICK_MS);
+      return;
+    }
+    _warmTicks++;
+    if (_warmTicks >= WARM_MAX_TICKS) _warmDone = true;   // 先置满再落图
+    await refresh();
+  }
+
+  // T56 Bug3：UI 展示态——暖机窗口尽后仍 has_session（离线/暖机失败）
+  // 的行转 standby（"待连接"，仅前端展示态，后端枚举不动）；
+  // adding 恒"连接中"（用户正在输入流程中）
+  function uiState(a) {
+    if (a && a.state === "connecting" && a.rawState !== "adding" && _warmDone)
+      return "standby";
+    return a ? a.state : "";
+  }
   function stateText(a) {
     if (!a) return "";
     if (_hint && _hint.account_id === a.id && _hint.reason)
       return "限速中";
-    return ACCT_STATE_TEXT[a.state] || a.state || "";
+    return ACCT_STATE_TEXT[uiState(a)] || a.state || "";
   }
   function nameOf(a) {
     if (!a) return "";
     const me = a.me || {};
     // T51 me 缓存字段为 name（桩/旧稿用 first_name，二者兼容）
-    const given = me.first_name || me.name || "";
     if (me.username) return "@" + me.username;
-    if (given) return given;
-    return a.label || a.id || "";
+    if (me.first_name || me.name) return me.first_name || me.name;
+    // T56 Bug3：me 未到位的中性兑底（不再回落 id，免渲染成 "alt1 · alt1"）
+    return a.id === "main" ? "主号（未获取资料）" : "小号（未获取资料）";
   }
-  const subOf = a => (a && (a.phone || a.id)) || "";
+  // T56 Bug3：phone 缺失时 sub 兑底空串（alt 行模板另补 "—" 占位）
+  const subOf = a => (a && a.phone) || "";
 
   // ---------- 设置页账号区渲染 ----------
   function render() {
@@ -2636,7 +2852,7 @@ const TgAccounts = (() => {
             <div class="acct-name">${esc(nameOf(main))}</div>
             <div class="acct-sub">${esc(subOf(main))}</div>
           </div>
-          <span class="acct-state" data-st="${esc(main.state || "")}">${esc(stateText(main))}</span>
+          <span class="acct-state" data-st="${esc(uiState(main))}">${esc(stateText(main))}</span>
           <button class="btn danger sm" onclick="TgAccounts.logout(this)"${_busy ? " disabled" : ""}>退出登录</button>
         </div>`);
     }
@@ -2646,9 +2862,9 @@ const TgAccounts = (() => {
           <span class="acct-tag alt">小号</span>
           <div class="acct-info">
             <div class="acct-name">${esc(nameOf(a))}</div>
-            <div class="acct-sub">${esc(a.id)} · ${esc(subOf(a))}</div>
+            <div class="acct-sub">${esc(a.id)} · ${esc(subOf(a) || "—")}</div>
           </div>
-          <span class="acct-state" data-st="${esc(a.state || "")}">${esc(stateText(a))}</span>
+          <span class="acct-state" data-st="${esc(uiState(a))}">${esc(stateText(a))}</span>
           <button class="btn glass-btn sm" onclick="TgAccounts.askRemove('${esc(a.id)}')">移除</button>
         </div>`);
     }
@@ -2663,6 +2879,7 @@ const TgAccounts = (() => {
         .classList.toggle("hidden", x !== step));
   }
   function openAdd() {
+    resetWarmWindow();   // T56 补充②：显式添加=新暖机会话（当次必收敛，不永久 connecting）
     // 下一个可用小号 id：alt1、alt2…（跳过已占用）
     let i = 1;
     const ids = new Set(_accounts.map(a => a.id));
@@ -2903,6 +3120,7 @@ const TgAccounts = (() => {
 
   // ---------- 挂载 ----------
   function mount() {
+    resetWarmWindow();    // T56 Bug3：页面加载=新暖机会话（3s×6 上限）
     TgBus.on("acct_hint", onAcctHint);
     refresh();
   }
@@ -3006,6 +3224,50 @@ const TgToast = (() => {
     h.appendChild(buildCard(summary || "操作失败", detail));
     return true;
   }
+
+  // ---------- T56 Bug5：轻提示（成功/信息） ----------
+  // 绿色描边 + ✓ 标记；detail 直接以次要行呈现（无"详情"按钮）；
+  // 4s 自动消失（信息类无需持续可见；error 卡"不自动消失"约定不变）
+  function buildOkCard(summary, detail) {
+    const card = document.createElement("div");
+    card.dataset.t53bToast = "ok";
+    card.style.cssText =
+      "pointer-events:auto;background:var(--glass-bg-strong);" +
+      "border:1px solid var(--glass-edge);border-left:3px solid var(--ok);" +
+      "border-radius:var(--r-md);box-shadow:var(--depth-shadow);" +
+      "padding:12px 14px;font-size:13px;color:var(--ink);" +
+      "backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);";
+    const head = document.createElement("div");
+    head.style.cssText = "display:flex;align-items:center;gap:10px;";
+    const mark = document.createElement("span");
+    mark.textContent = "✓";
+    mark.style.cssText = "color:var(--ok);font-size:14px;flex-shrink:0;";
+    const sum = document.createElement("span");
+    sum.textContent = summary;
+    sum.style.cssText =
+      "flex:1;font-weight:650;line-height:1.45;word-break:break-all;";
+    const closeBtn = mkPill("关闭");
+    closeBtn.addEventListener("click", () => card.remove());
+    head.append(mark, sum, closeBtn);
+    card.append(head);
+    if (detail) {
+      const body = document.createElement("div");
+      body.style.cssText =
+        "margin-top:8px;color:var(--ink-dim);font-size:12px;" +
+        "line-height:1.5;word-break:break-all;";
+      body.textContent = detail;
+      card.append(body);
+    }
+    return card;
+  }
+  function ok(summary, detail) {
+    const h = ensureHost();
+    const card = buildOkCard(summary || "完成", detail);
+    h.appendChild(card);
+    setTimeout(() => { if (card.isConnected) card.remove(); }, 4000);
+    return true;
+  }
+
   function count() {
     return host ? host.querySelectorAll("[data-t53b-toast]").length : 0;
   }
@@ -3013,7 +3275,7 @@ const TgToast = (() => {
     if (host) host.querySelectorAll("[data-t53b-toast]")
       .forEach(c => c.remove());
   }
-  return { error, count, dismissAll };
+  return { error, ok, count, dismissAll };
 })();
 // 暴露到 window（供 CDP 断言/测试驱动；命名与 __tgJobProbe 风格一致）
 window.TgToast = TgToast;
