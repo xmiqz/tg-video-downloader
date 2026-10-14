@@ -360,6 +360,10 @@ class Api:
             push(name, [payload])
         self._acct_sink = _acct_sink
         self._pool = core.AccountPool(event_cb=_acct_sink)
+        # T58 2.1：本进程内是否已成功发出“待验证”验证码（phone_code_hash
+        # 在 client 内存中）。纯内存态：不写盘、不进 JSON、不加配置键。
+        # 唯一信号——connect 早退分支与 login_state 的 has_session 共用。
+        self._code_sent = False
 
     # ---------- 外观模式 ----------
     def get_appearance(self):
@@ -400,7 +404,11 @@ class Api:
         )
 
     def _discard_client(self, client):
-        """断开并丢弃一个（可能半连接的）client，任何失败都吞掉。"""
+        """断开并丢弃一个（可能半连接的）client，任何失败都吞掉。
+        T58 2.1：client 一经丢弃，其内存中的 phone_code_hash 随之消亡，
+        _code_sent 复位（集中覆盖 connect/_ensure_client/send_code/
+        logout_promote 全部丢弃调用点）。"""
+        self._code_sent = False
         if client is None:
             return
 
@@ -500,6 +508,7 @@ class Api:
         except Exception:
             pass
         self.client = None
+        self._code_sent = False
         if self.guest:
             print("[GUI] guest=False（logout）")
         self.guest = False
@@ -526,6 +535,8 @@ class Api:
         adopt+me 缓存。返回 {ok, stage:"promoted"}（重连失败仍 promoted
         +warning，不回滚——服务端主号已注销，回滚只会得到死会话）。"""
         client = self.client
+        # T58 2.1：退出/提升路径无待验证码
+        self._code_sent = False
 
         async def _main_do():
             # 主号 Telegram 授权注销；限时 20s 防挂死，失败/超时降级
@@ -663,11 +674,14 @@ class Api:
         return {"ok": True, "guest": self.guest}
 
     def login_state(self):
+        # T58 2.3：新三态口径（has_session 不再读 .session 文件）。
+        # has_session 新语义=“本轮已发码待验证”，仅在 _code_sent 时为 true。
         if self.client is not None:
+            if self._code_sent:
+                return {"logged_in": False, "has_session": True,
+                        "guest": bool(self.guest)}
             return {"logged_in": True, "guest": False}
-        # 已存在会话则尝试静默连接
-        return {"logged_in": False,
-                "has_session": pathlib.Path(core.SESSION_PATH + ".session").exists(),
+        return {"logged_in": False, "has_session": False,
                 "guest": bool(self.guest)}
 
     def _adopt_and_cache_me(self):
@@ -703,26 +717,30 @@ class Api:
             pass
 
     def connect(self):
+        # T58 2.2：早退分支按 _code_sent 区分——已发码待验证 → need_code；
+        # 已授权就绪 → {"ok":True}（前端等同 ready）。
         if self.client is not None:
+            if self._code_sent:
+                return {"ok": True, "stage": "need_code"}
             return {"ok": True}
         core.ensure_dirs_and_migrate()
         # T56 Bug1：GUI 改用非交互补凭证（绝不 input；phone 缺失由
         # need_phone 步骤补），消除 windowed GUI 无控制台时的冻结风险
         self.cfg = core.ensure_builtin_credentials()
         client = self._new_client()
+        # T58 2.1：新建探测 client → 本轮无待验证码
+        self._code_sent = False
 
         async def _do():
             # 连接 + 鉴权探测整体限时：网络不通 / 同一 session 被另一实例
             # 占用导致服务端反复重置时，快速失败而不是在启动时长时间挂起。
+            # T58 A1：未授权一律 need_phone——connect 全路径零发码（只有
+            # 用户主动点“发送”才走 send_code）。
             async def _connect_and_check():
                 await client.connect()
                 if await client.is_user_authorized():
                     return "ok"
-                phone = self.cfg.get("phone") or ""
-                if not phone:
-                    return "need_phone"
-                await client.send_code_request(phone)
-                return "need_code"
+                return "need_phone"
 
             return await asyncio.wait_for(_connect_and_check(), timeout=20.0)
 
@@ -730,13 +748,6 @@ class Api:
             status = self.engine.submit(_do())
         except Exception as e:
             msg = f"{type(e).__name__}: {e}"
-            if type(e).__name__ == "SendCodeUnavailableError":
-                # 首次 SendCodeRequest 已成功（验证码已通过 App 内消息送达，
-                # phone_code_hash 已在 client 内存），失败的只是升级重发。
-                # 保留 client，直接进入输入验证码步骤
-                self.client = client
-                return {"ok": True, "stage": "need_code",
-                        "warning": "验证码已通过 Telegram App 消息发送，请直接查看并输入最新验证码；无需重复点击发送。"}
             # 半成品 client 不能保留，否则后续 send_code 会拿到死连接/None
             self._discard_client(client)
             if type(e).__name__ == "AuthKeyDuplicatedError":
@@ -752,17 +763,65 @@ class Api:
                 return {"ok": False, "busy": True,
                         "error": "会话正被其它程序占用（桌面版还在运行？），请先关闭后重试。"}
             return {"ok": False, "error": msg}
-        self.client = client
         if status == "ok":
+            self.client = client
             if self.guest:
                 print("[GUI] guest=False（connect 就绪）")
             self.guest = False
             self._adopt_and_cache_me()       # T51：主号就绪交池托管
             return {"ok": True, "stage": "ready"}
-        return {"ok": True, "stage": status}
+        # need_phone：探测 client 未授权，丢弃（不留半成品——否则
+        # login_state 会误判 logged_in，且下次 connect 早退返 ready）。
+        # cfg phone 仅作 phone_prefill 预填，绝不触发任何发送。
+        self._discard_client(client)
+        return {"ok": True, "stage": "need_phone",
+                "phone_prefill": self.cfg.get("phone") or ""}
+
+    def _map_send_code_exc(self, e):
+        """T58 2.4：send_code/account_add_start 共用的异常→返回形状映射。
+
+        纯映射，不做任何状态清理；AuthKeyDuplicated 由调用方单独处理，
+        不进本辅助。按异常类名匹配（不新增 telethon import 依赖）。"""
+        ename = type(e).__name__
+        if ename == "SendCodeUnavailableError":
+            # 首次 SendCodeRequest 已成功（验证码已经 App 内消息送达）；
+            # 失败的只是升级重发 → 由调用方按软成功解释。
+            return {"__soft__": True}
+        if ename == "FloodWaitError":
+            secs = getattr(e, "seconds", None)
+            if secs is None:
+                err = "发送验证码过于频繁，请稍后再试"
+            else:
+                err = f"发送验证码过于频繁，请等待 {int(secs)}s 后再试"
+            return {"ok": False, "code": "flood_wait",
+                    "retry_after": (int(secs) if secs is not None else None),
+                    "error": err}
+        if ename == "PhoneNumberInvalidError":
+            return {"ok": False, "code": "bad_phone",
+                    "error": "手机号格式不正确，请检查国家区号与号码"}
+        if ename == "PhoneNumberBannedError":
+            return {"ok": False, "code": "banned",
+                    "error": "该手机号已被 Telegram 封禁，无法登录"}
+        if ename in ("ApiIdInvalidError", "ApiIdPublishedFloodError"):
+            return {"ok": False, "code": "api_invalid",
+                    "error": "内置 API 凭证失效，请更换凭证后重试"}
+        if (ename in ("TimeoutError", "ConnectionError", "OSError")
+                or "Timeout" in ename or "Connection" in ename
+                or isinstance(e, (asyncio.TimeoutError, TimeoutError,
+                                  ConnectionError, OSError))):
+            return {"ok": False, "recoverable": True,
+                    "error": "网络异常，验证码可能已发送到你的 Telegram；"
+                             "如已收到可直接点下方入口输入"}
+        # 其余未知异常：同样可恢复（附带原始 type:message；phone_code_hash
+        # 不在时 verify 只会返回 invalid code，无害）
+        return {"ok": False, "recoverable": True,
+                "error": "网络异常，验证码可能已发送到你的 Telegram；"
+                         "如已收到可直接点下方入口输入"
+                         f"（{ename}: {e}）"}
 
     def send_code(self, phone):
-        # connect() 失败后 self.client 可能为 None，先补建连接
+        # connect() 失败后 self.client 可能为 None，先补建连接。
+        # _ensure_client 失败（连接都没建成、无 hash）时不带 recoverable。
         err = self._ensure_client()
         if err:
             return {"ok": False, "error": err}
@@ -775,19 +834,25 @@ class Api:
         except Exception as e:
             ename = type(e).__name__
             if ename == "AuthKeyDuplicatedError":
+                # T58 2.4：维持现行清理（discard+置空+删会话文件），
+                # 且强制无 recoverable
                 self._discard_client(self.client)
                 self.client = None
                 self._remove_session_files()
+                self._code_sent = False
                 return {"ok": False, "error": f"{ename}: {e}"}
-            if ename == "SendCodeUnavailableError":
+            mapped = self._map_send_code_exc(e)
+            if mapped.get("__soft__"):
                 # 首次发送已成功，验证码已到 App；失败的只是短信升级重发
                 self.cfg["phone"] = phone
                 core.save_config(self.cfg)
+                self._code_sent = True
                 return {"ok": True, "stage": "need_code",
                         "warning": "验证码已通过 Telegram App 消息发送，请直接查看并输入最新验证码；无需重复点击发送。"}
-            return {"ok": False, "error": f"{ename}: {e}"}
+            return mapped
         self.cfg["phone"] = phone
         core.save_config(self.cfg)
+        self._code_sent = True
         return {"ok": True}
 
     def verify_code(self, code):
@@ -801,7 +866,11 @@ class Api:
                 return f"__err__{type(e).__name__}: {e}"
         r = self.engine.submit(_do())
         if r.startswith("__err__"):
+            # PhoneCodeInvalid/Expired：仍在 code 步，_code_sent 保持 True
             return {"ok": False, "error": r[len("__err__"):]}
+        if r in ("ready", "need_password"):
+            # T58 2.5：代码已核验（need_password 时代码也已通过）→ 清标志
+            self._code_sent = False
         if r == "ready" and self.guest:
             print("[GUI] guest=False（verify_code 就绪）")
             self.guest = False
@@ -835,9 +904,14 @@ class Api:
             return {"name": (u.first_name or ""), "username": u.username or "",
                     "phone": u.phone or ""}
         try:
-            return {"ok": True, **self.engine.submit(_do())}
+            r = self.engine.submit(_do())
         except Exception as e:
             return {"ok": False, "error": str(e)}
+        # T58 2.6：成功同步回填主号 me 缓存（account_list 只读该缓存）
+        self._pool.me_cache[core.ACCT_MAIN] = {
+            "name": r["name"], "username": r["username"],
+            "phone": r["phone"]}
+        return {"ok": True, **r}
 
     # ---------- T51 账号池 RPC（5 个；除 account_list 外主号就绪+非游客闸门） ----------
 
@@ -871,18 +945,28 @@ class Api:
         phone = (phone or "").strip()
         if not phone:
             return {"ok": False, "error": "手机号不能为空"}
+        # T58 2.7 重入回收：上次向导取消/返回留下的半成品（前端"取消"
+        # 不调后端，池 _adding 残留会让下次添加永远报"正在添加中"）——
+        # 先丢弃旧半成品（断旧 client），再走正常 add_start。"正在添加中"
+        # 只留作下方防御性兜底，正常重入不透传给用户。
+        if self._pool.alt_adding():
+            self.engine.submit(self._pool._cleanup_add())
         try:
             stage = self.engine.submit(
                 self._pool.add_start(account_id, phone))
         except Exception as e:
-            if type(e).__name__ == "SendCodeUnavailableError":
-                # 首次 SendCodeRequest 已成功（验证码经 App 内消息送达），
-                # 失败的只是升级重发——沿用 send_code 同款映射
-                return {"ok": True, "stage": "need_code",
-                        "warning": "验证码已通过 Telegram App 消息发送，请直接查看并输入最新验证码；无需重复点击发送。"}
+            # 池域逻辑错误（已存在/正在添加中）优先按原语义返回，不走
+            # 网络异常映射（避免把池错误误判为可恢复）
             if "已存在" in str(e):
                 return {"ok": False, "error": "小号已存在"}
-            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            if "正在添加中" in str(e):
+                return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            # T58 2.7：与 send_code 同一辅助映射（软成功/网络族/未知…）
+            mapped = self._map_send_code_exc(e)
+            if mapped.get("__soft__"):
+                return {"ok": True, "stage": "need_code",
+                        "warning": "验证码已通过 Telegram App 消息发送，请直接查看并输入最新验证码；无需重复点击发送。"}
+            return mapped
         return {"ok": True, "stage": stage}
 
     def account_verify_code(self, account_id, code):
