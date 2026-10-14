@@ -3484,7 +3484,11 @@ class AccountPool:
     async def add_start(self, account_id, phone):
         """alt1 添加第 1 步：构造+connect+(已授权即 ready)否则发码。
         返回 "need_code"|"ready"；异常原样上抛由调用方映射（gui
-        connect/send_code 同款语义）。"""
+        connect/send_code 同款语义）。
+        T58：connect/授权阶段异常维持 _cleanup_add 后 re-raise（码绝无
+        发出）；send_code_request 阶段异常保留 _adding 与 client 原样
+        上抛（码可能已在途，add_verify_code 仍可续走），由 gui 层
+        _map_send_code_exc 统一分类。"""
         if account_id != ACCT_ALT:
             raise ValueError(f"不支持添加账号：{account_id!r}（仅 alt1）")
         if self._adding.get(ACCT_ALT) is not None:
@@ -3500,11 +3504,14 @@ class AccountPool:
             if await client.is_user_authorized():
                 await self._finish_add()
                 return "ready"
-            await client.send_code_request(phone)
-            return "need_code"
         except Exception:
             await self._cleanup_add()   # 断开半成品；不删可能已授权的 session
             raise
+        # T58 发码阶段分流：异常保留 _adding 与 client 原样上抛（不
+        # disconnect、不 pop）；半成品回收只靠三处既有路径（verify 成功
+        # _finish_add / gui 重入 _cleanup_add / shutdown_alts 等拆除）。
+        await client.send_code_request(phone)
+        return "need_code"
 
     async def add_verify_code(self, account_id, code):
         """alt1 添加第 2 步：sign_in(phone, code)；2FA 返回
