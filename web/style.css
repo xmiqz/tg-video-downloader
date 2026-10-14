@@ -298,21 +298,45 @@ nav { flex: 1; display: flex; flex-direction: column; gap: 5px; }
 .me-name { font-size: 13px; font-weight: 600; }
 .me-user { font-size: 11.5px; color: var(--ink-mute); }
 .me-logout-btn {
+  /* T56 退出标识美化：与深色/液态玻璃语言一致的明确可点形态 */
   margin-left: auto;
-  width: 26px; height: 26px; flex: none;
-  border: 1px solid rgba(255,255,255,.12);
-  border-radius: 50%;
-  background: rgba(255,255,255,.06);
-  color: var(--ink-dim);
-  font-size: 13px; line-height: 1;
+  width: 28px; height: 28px; flex: none;
   display: flex; align-items: center; justify-content: center;
-  transition: .25s var(--spring);
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: linear-gradient(160deg,
+    rgba(255,255,255,.10), rgba(255,255,255,.04));
+  color: var(--ink-dim);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.12),
+              0 2px 8px rgba(0,0,0,.28);
+  cursor: pointer;
+  transition: all .25s var(--spring);
 }
 .me-logout-btn:hover {
   color: #ff8b98;
-  background: rgba(255, 97, 114, .16);
-  border-color: rgba(255, 97, 114, .4);
+  background: linear-gradient(160deg,
+    rgba(255,97,114,.22), rgba(255,97,114,.10));
+  border-color: rgba(255,97,114,.45);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.18),
+              0 4px 14px rgba(255,97,114,.24);
   transform: translateY(-1px);
+}
+.me-logout-btn:active { transform: translateY(0); }
+.me-logout-btn:focus-visible {
+  outline: 2px solid rgba(255,139,152,.55); outline-offset: 2px;
+}
+.me-logout-btn:disabled,
+.me-logout-btn[disabled] {
+  opacity: .45; cursor: not-allowed; transform: none;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+}
+/* 静态亮主题：撞色描边/内高光翻转，保证可读 */
+:root[data-theme="light"] .me-logout-btn {
+  border-color: rgba(20,30,60,.16);
+  background: linear-gradient(160deg,
+    rgba(20,30,60,.06), rgba(20,30,60,.02));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7),
+              0 2px 8px rgba(30,40,80,.10);
 }
 
 /* 设置页：账号行 */
@@ -885,3 +909,618 @@ nav { flex: 1; display: flex; flex-direction: column; gap: 5px; }
   * { animation-duration: .01ms !important;
       transition-duration: .01ms !important; }
 }
+
+/* ============================================================
+   T45 通用作业进度组件（#job-progress-host / .job-card）
+   - 视口右下角悬浮玻璃卡（不遮挡左侧边栏）；容器 pointer-events:none，
+     仅卡片本身可交互（取消按钮）
+   - 材质复用设计 tokens；刻意不新增 backdrop-filter 面
+     （液态玻璃模式禁加滤镜层，静态模式卡片本就无滤镜）
+   ============================================================ */
+.job-progress-host {
+  position: fixed;
+  right: 18px; bottom: 18px;
+  z-index: 55;                 /* 低于登录(60)/滑层(71)/模态(80) */
+  display: flex; flex-direction: column; gap: 10px;
+  width: min(340px, 86vw);
+  max-height: 62vh; overflow-y: auto;
+  pointer-events: none;        /* 仅卡片可点，不挡下方内容 */
+}
+.job-card {
+  pointer-events: auto;
+  background: linear-gradient(155deg,
+    rgba(255,255,255,.14) 0%, rgba(255,255,255,.05) 100%);
+  border: 1px solid rgba(255,255,255,.22);
+  border-radius: var(--r-lg);
+  box-shadow: var(--soft-shadow);
+  padding: 13px 16px 14px;
+  font-size: 12.5px;
+  animation: rise .3s var(--ease);
+  transition: opacity .45s var(--ease), transform .45s var(--ease);
+}
+.job-card.out { opacity: 0; transform: translateY(8px); }
+.job-head { display: flex; align-items: center; gap: 9px; }
+.job-kind {
+  font-weight: 650; font-size: 12.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.job-state {
+  flex-shrink: 0; font-size: 11px; font-weight: 600;
+  padding: 2px 10px; border-radius: 999px;
+  background: rgba(255,184,77,.16); color: var(--warn);   /* queued/running */
+}
+.job-state.s-running { background: rgba(91,134,255,.2); color: #a8bcff; }
+.job-state.s-done { background: rgba(52,217,160,.16); color: var(--ok); }
+.job-state.s-error { background: rgba(255,97,114,.16); color: var(--danger); }
+.job-state.s-cancelled { background: rgba(150,160,190,.16); color: #aeb8d8; }
+.job-cancel-btn {
+  margin-left: auto; flex-shrink: 0;
+  border: 1px solid rgba(255,97,114,.42); border-radius: 999px;
+  background: rgba(255,97,114,.12); color: #ff8a97;
+  font-size: 11px; padding: 3px 11px;
+  transition: .2s var(--spring);
+}
+.job-cancel-btn:hover { background: rgba(255,97,114,.24); }
+.job-cancel-btn[disabled] { opacity: .55; pointer-events: none; }
+.job-phase {
+  margin-top: 7px; color: var(--ink-dim); font-size: 12px;
+  display: flex; gap: 7px; align-items: baseline;
+  overflow: hidden;
+}
+.job-phase .pd { color: var(--ink-mute); overflow: hidden;
+                 text-overflow: ellipsis; white-space: nowrap; }
+.job-bar {
+  position: relative; height: 6px; margin-top: 9px;
+  background: rgba(7,9,20,.55); border-radius: 6px; overflow: hidden;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,.5);
+}
+.job-fill {
+  height: 100%; width: 0; border-radius: 6px;
+  background: var(--brand-grad);
+  transition: width .4s var(--ease);
+}
+.job-fill.f-done { background: linear-gradient(90deg, #2bc48e, #34d9a0); }
+.job-fill.f-error { background: linear-gradient(90deg, #e6485d, #ff6172); }
+.job-fill.f-cancelled { background: rgba(150,160,190,.6); }
+/* 不定进度：total/bytes 未知时左右往复滑块 */
+.job-fill.indet { position: absolute; width: 38%; animation: jobindet 1.15s var(--ease) infinite alternate; }
+@keyframes jobindet { from { left: -38%; } to { left: 100%; } }
+.job-count {
+  margin-top: 7px; display: flex; justify-content: space-between; gap: 10px;
+  color: var(--ink-mute); font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.job-err { margin-top: 7px; color: var(--danger); font-size: 12px;
+           word-break: break-word; }
+
+/* 浅色主题覆写 */
+html[data-theme="light"] .job-card {
+  background: linear-gradient(155deg,
+    rgba(255,255,255,.78), rgba(255,255,255,.55));
+  border-color: rgba(20,30,60,.12);
+}
+html[data-theme="light"] .job-bar { background: rgba(20,30,60,.12);
+  box-shadow: inset 0 1px 2px rgba(20,30,60,.12); }
+html[data-theme="light"] .job-state.s-running {
+  background: rgba(80,110,240,.14); color: #3c56c8; }
+
+/* ============================================================
+   T46 游客模式（离线受限）：登录卡"暂不登录"入口、受控提示位、
+   主界面顶部 guest-bar 提示条。样式复用既有 glass/btn 体系，
+   暗/亮/液态三主题均可读（开始）
+   ============================================================ */
+/* 登录卡受控提示位（"该功能需要登录…"）：与登录错误 login-err 互不残留 */
+#login-notice {
+  color: #ffb84d; font-size: 12px; margin: 8px 0 2px;
+  min-height: 16px; text-align: center; line-height: 1.5;
+}
+/* 暂不登录按钮与登录卡同宽，置于提示位下方 */
+#guest-btn { margin-top: 6px; }
+
+/* 游客态顶栏提示条：主界面可见，点击打开登录卡 */
+.guest-bar {
+  display: flex; align-items: center; justify-content: center;
+  gap: 6px; margin: 0 0 12px; padding: 8px 12px;
+  border-radius: var(--r-lg); cursor: pointer;
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.14), rgba(255,138,151,.12));
+  border: 1px solid rgba(255,184,77,.35);
+  color: #ffc78a; font-size: 12.5px; font-weight: 600;
+  letter-spacing: .3px; user-select: none;
+  transition: border-color .2s var(--ease), background .2s var(--ease);
+}
+.guest-bar:hover {
+  border-color: rgba(255,184,77,.65);
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.22), rgba(255,138,151,.18));
+}
+.guest-bar::before {
+  content: "·"; font-size: 15px; line-height: 1;
+  color: #ffb84d; margin-right: 2px;
+}
+/* 静态亮主题：加深文字与底（复用 light 变量写法） */
+:root[data-theme="light"] .guest-bar {
+  color: #8a5a12; border-color: rgba(180,120,30,.4);
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.22), rgba(255,200,160,.18));
+}
+:root[data-theme="light"] .guest-bar:hover {
+  border-color: rgba(180,120,30,.6);
+}
+:root[data-theme="light"] #login-notice {
+  color: #a86a10;
+}
+/* T56 Bug4：boot 中性态——guest-bar 显"正在连接 Telegram…"且不可点 */
+.guest-bar.booting {
+  cursor: default;
+  pointer-events: none;
+  opacity: .88;
+}
+.guest-bar.booting:hover {
+  /* 中性态屏蔽 hover 提亮（回到静止态） */
+  border-color: rgba(255,184,77,.35);
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.14), rgba(255,138,151,.12));
+}
+/* T56 Bug4：启动连接失败的非阻断小字（显示在 guest-bar 下方） */
+.boot-err {
+  margin: 0 0 12px;
+  font-size: 11.5px;
+  color: var(--ink-mute);
+  letter-spacing: .2px;
+  user-select: none;
+}
+/* ===== T46 游客模式（结束）=====
+
+/* ============================================================
+   T48 大频道流式搜索（新增页进度区 / 引用来源标签）——仅尾部追加
+   （文件历史字节零改动；复用 .job-fill.indet 不定进度视觉语言与
+   既有 --ink-mute/--warn/--danger token，不新增滤镜面）
+   ============================================================ */
+.search-progress {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 12px 14px; margin-bottom: 12px;
+  background: var(--glass-bg-soft);
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--r-md);
+}
+.search-progress-head {
+  display: flex; align-items: center; gap: 12px;
+}
+.search-progress-bar {
+  position: relative; flex: 1; height: 6px;
+  background: rgba(7, 9, 20, .55); border-radius: 6px; overflow: hidden;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, .5);
+}
+.search-phase-text {
+  font-size: 12.5px; color: var(--ink); font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.search-counts {
+  font-size: 11.5px; color: var(--ink-mute);
+  font-variant-numeric: tabular-nums;
+}
+.search-note { font-size: 11.5px; color: var(--ink-mute); word-break: break-word; }
+.search-note.warn { color: var(--warn); }
+.search-note.error { color: var(--danger); }
+html[data-theme="light"] .search-progress-bar {
+  background: rgba(20, 30, 60, .12);
+  box-shadow: inset 0 1px 2px rgba(20, 30, 60, .12);
+}
+/* 引用来源小标签：与 .src-tag 同族视觉，紫系区分外部来源（self 不显示） */
+.ref-tag {
+  display: inline-block; margin-right: 6px;
+  font-size: 10px; padding: 2px 7px; border-radius: 6px;
+  color: #cdb9ff; background: rgba(154, 107, 255, .16);
+  border: 1px solid rgba(154, 107, 255, .25);
+  vertical-align: 1px;
+}
+/* ref_text 行内单行截断展示（title 属性承载全文悬浮） */
+.ref-inline {
+  display: inline-block; max-width: 340px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  vertical-align: bottom; color: var(--ink-mute);
+}
+html[data-theme="light"] .ref-tag {
+  color: #5b3fc7; background: rgba(120, 90, 255, .12);
+  border-color: rgba(120, 90, 255, .2);
+}
+
+/* ============================================================
+   T49 下载全阶段进度（仅尾部追加段；前 46539 字节基线零改动）
+   - .dl-phase：下载中视图组头阶段位（dot + 文本）；data-phase 取
+     英文枚举仅作属性键，文本全部来自后端 phase_text 同源产物，
+     前端不拼第二份中文文案
+   - .task-phase：任务库卡片阶段位（终态条 3s 由 JS 清除后重渲染）
+   - .job-card[data-phase]：通用作业卡按阶段挂左边线弱强调
+   - .fetch-dot：读取清单横幅脉冲点（fetch-banner 结构化后新增）
+   微动效周期全部 >=0.8s；prefers-reduced-motion 时全部停用
+   ============================================================ */
+.dl-phase {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12px; font-weight: 600; color: var(--ink-dim);
+  max-width: 44%; overflow: hidden; white-space: nowrap;
+  text-overflow: ellipsis; flex-shrink: 0;
+}
+.dl-phase-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  background: var(--brand-2);
+  animation: tg49-phase-pulse 1.6s ease-in-out infinite;
+}
+.dl-phase-text { min-width: 0; }
+
+/* 进行中阶段：点脉冲 + 阶段色文本 */
+.dl-phase[data-phase="fetching"] { color: #6ea8fe; }
+.dl-phase[data-phase="fetching"] .dl-phase-dot {
+  background: #6ea8fe; animation-duration: 1.2s;
+}
+.dl-phase[data-phase="downloading"] { color: var(--ok); }
+.dl-phase[data-phase="downloading"] .dl-phase-dot {
+  background: var(--ok); animation-duration: .9s;
+}
+.dl-phase[data-phase="refreshing"] { color: var(--warn); }
+.dl-phase[data-phase="refreshing"] .dl-phase-dot {
+  background: var(--warn); animation-duration: 1.2s;
+}
+.dl-phase[data-phase="flood_wait"] { color: var(--warn); }
+.dl-phase[data-phase="flood_wait"] .dl-phase-dot {
+  background: var(--warn); animation-duration: 2s;
+}
+/* 终态：点熄灭静态，不再动效 */
+.dl-phase[data-phase="done"] { color: var(--ok); }
+.dl-phase[data-phase="done"] .dl-phase-dot {
+  background: var(--ok); animation: none; opacity: .55;
+}
+.dl-phase[data-phase="aborted"] { color: var(--ink-mute); }
+.dl-phase[data-phase="aborted"] .dl-phase-dot {
+  background: var(--ink-mute); animation: none; opacity: .55;
+}
+.dl-phase[data-phase="error"] { color: var(--danger); }
+.dl-phase[data-phase="error"] .dl-phase-dot {
+  background: var(--danger); animation: none; opacity: .55;
+}
+
+@keyframes tg49-phase-pulse {
+  0%, 100% { opacity: .35; transform: scale(.8); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+/* 任务库卡片阶段位：细窄条，与组头同源配色 */
+.task-phase {
+  font-size: 11px; font-weight: 600; line-height: 1;
+  padding: 4px 9px; border-radius: 999px; width: fit-content;
+  max-width: 100%; overflow: hidden; white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-dim);
+  background: rgba(255, 255, 255, .08);
+  border: 1px solid rgba(255, 255, 255, .14);
+  margin-bottom: 8px;
+}
+.task-phase[data-phase="fetching"] { color: #6ea8fe; }
+.task-phase[data-phase="downloading"] { color: var(--ok); }
+.task-phase[data-phase="flood_wait"],
+.task-phase[data-phase="refreshing"] { color: var(--warn); }
+.task-phase[data-phase="done"] { color: var(--ok); }
+.task-phase[data-phase="aborted"] { color: var(--ink-mute); }
+.task-phase[data-phase="error"] { color: var(--danger); }
+html[data-theme="light"] .task-phase {
+  background: rgba(20, 30, 60, .07);
+  border-color: rgba(20, 30, 60, .12);
+}
+
+/* 通用作业卡阶段强调：左边线随阶段换色（保留既有软阴影，弱强调不闪烁） */
+.job-card[data-phase="fetching"] {
+  box-shadow: var(--soft-shadow), inset 3px 0 0 #6ea8fe;
+}
+.job-card[data-phase="downloading"] {
+  box-shadow: var(--soft-shadow), inset 3px 0 0 var(--ok);
+}
+.job-card[data-phase="flood_wait"],
+.job-card[data-phase="refreshing"] {
+  box-shadow: var(--soft-shadow), inset 3px 0 0 var(--warn);
+}
+.job-card[data-phase="error"] {
+  box-shadow: var(--soft-shadow), inset 3px 0 0 var(--danger);
+}
+.job-card[data-phase="done"] {
+  box-shadow: var(--soft-shadow), inset 3px 0 0 var(--ok);
+}
+
+/* 读取清单横幅脉冲点 */
+.fetch-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: #6ea8fe; margin-right: 8px; flex-shrink: 0;
+  vertical-align: 1px;
+  animation: tg49-phase-pulse 1.2s ease-in-out infinite;
+}
+
+/* 减少动效：阶段点/横幅点全部停用动画（既有全局降级之外的显式兜底） */
+@media (prefers-reduced-motion: reduce) {
+  .dl-phase-dot, .fetch-dot { animation: none; }
+}
+
+
+/* ============================================================
+   T50 移动目录进度弹层（一窗 T50Move / 二窗 editor.js 动态建层共用）
+   遮罩全屏锁定：运行中无取消按钮、无关闭 X、点遮罩不关（作业不可
+   取消，跨卷半态无安全回滚）；层体玻璃风格与 .modal/.job-card 同源，
+   文字/渐变/圆角/阴影全部走既有 CSS 变量，明暗两主题自动适配。
+   ============================================================ */
+.t50-move-mask {
+  position: fixed; inset: 0; z-index: 90;      /* 高于模态(80)/滑层(71) */
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(4, 6, 18, 0.55);
+  backdrop-filter: blur(4px);
+  animation: fadeIn .25s;
+}
+.t50-move-layer {
+  width: min(430px, 92vw);
+  padding: 20px 22px 18px;
+  border-radius: var(--r-lg);
+  background: linear-gradient(155deg,
+    rgba(255,255,255,.14) 0%, rgba(255,255,255,.05) 100%);
+  border: 1px solid rgba(255,255,255,.22);
+  box-shadow: var(--depth-shadow);
+  animation: rise .3s var(--ease);
+}
+.t50-move-title {
+  font-size: 15.5px; font-weight: 650; color: var(--ink);
+  margin-bottom: 14px;
+}
+.t50-move-name {
+  font-size: 12.5px; color: var(--ink-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-height: 17px;
+}
+.t50-move-count {
+  margin-top: 4px; font-size: 11.5px; color: var(--ink-mute);
+  min-height: 15px;
+}
+.t50-move-bar {
+  position: relative; height: 6px; margin-top: 10px;
+  background: rgba(7,9,20,.55); border-radius: 6px; overflow: hidden;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,.5);
+}
+.t50-move-fill {
+  height: 100%; width: 0; border-radius: 6px;
+  background: var(--brand-grad);
+  transition: width .4s var(--ease);
+}
+.t50-move-bytes {
+  margin-top: 7px; font-size: 11.5px; color: var(--ink-mute);
+  min-height: 15px;
+}
+.t50-move-err { margin-top: 12px; }
+.t50-move-err-text {
+  font-size: 12px; color: var(--danger); line-height: 1.55;
+  word-break: break-all;
+  max-height: 140px; overflow-y: auto;
+}
+.t50-move-err-hint {
+  margin-top: 8px; font-size: 11.5px; color: var(--ink-mute);
+}
+.t50-move-close {
+  margin-top: 12px; width: 100%;
+}
+/* 亮色主题微调（沿用既有 light 覆写段风格） */
+:root[data-theme="light"] .t50-move-mask { background: rgba(30, 42, 80, 0.35); }
+:root[data-theme="light"] .t50-move-layer {
+  background: rgba(255, 255, 255, 0.72);
+  border-color: rgba(20, 30, 60, 0.14);
+}
+:root[data-theme="light"] .t50-move-bar {
+  background: rgba(20, 30, 60, 0.12);
+  box-shadow: inset 0 1px 2px rgba(20, 30, 60, 0.12);
+}
+
+/* ============================================================
+   T52 D-LIQ 修复：liquid 主题下详情滑层恢复 fixed 定位。
+   缺陷（6db985a 实证）：body.liquid .glass{position:relative}
+   （本文件 "玻璃材质" 段，特异性 0,2,1）压过 .sheet{position:fixed}
+   （"详情滑层" 段，0,1,0）——#sheet 同时持有 sheet/glass 双类
+   （index.html），liquid 下滑层落文档流：基线探针 rect y=697、
+   中心 elementFromPoint=null（EV\logs\tr52_3_baseline.log）。
+   修法：等量特异性（0,2,1）+ 更晚源序恢复 fixed；top/right/bottom
+   沿用 .sheet 基规则（未被 liquid 规则覆盖，无需重申）；
+   不动 .glass 其它视觉规则、零删除行。
+   ============================================================ */
+body.liquid .sheet { position: fixed; }
+
+/* ============================================================
+   T52 多账号前端 UI（开始）
+   设置页账号区（主号卡/小号行/添加三步卡/移除确认）、任务选号
+   分段控件（新建页/任务库卡片/下载中组头）、acct_hint 限速提示
+   条与小字状态行。全部为追加规则：复用 .segmented/.seg/.btn/
+   .login-err/.modal-mask 既有体系与既有 CSS 变量，暗/亮/液态
+   三主题可读；窄宽（≤900px）随 flex-wrap 收敛不溢出。
+   ============================================================ */
+/* 设置页账号行（主号/小号） */
+.acct-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 2px; border-bottom: 1px solid rgba(255,255,255,.06);
+  flex-wrap: wrap;
+}
+.acct-row:last-child { border-bottom: none; }
+.acct-tag {
+  flex-shrink: 0; font-size: 11px; font-weight: 700; letter-spacing: .5px;
+  padding: 3px 9px; border-radius: 999px;
+  background: rgba(91,134,255,.18); color: #9db4ff;
+  border: 1px solid rgba(91,134,255,.4);
+}
+.acct-tag.alt {
+  background: rgba(139,91,255,.16); color: #c8b6ff;
+  border-color: rgba(139,91,255,.38);
+}
+.acct-info { flex: 1; min-width: 0; }
+.acct-name { font-size: 13.5px; font-weight: 600;
+             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-sub { font-size: 11.5px; color: var(--ink-mute); margin-top: 2px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-state { flex-shrink: 0; font-size: 11.5px; color: var(--ink-dim);
+              padding: 2px 8px; border-radius: 6px;
+              background: rgba(255,255,255,.06); }
+.acct-state[data-st="ready"] { color: #7ee2a8; }
+.acct-state[data-st="connecting"] { color: #ffc78a; }
+/* T56 Bug3：暖机窗口尽后但仍 has_session（离线/暖机失败）的展示态 */
+.acct-state[data-st="standby"] { color: #9db4ff; }
+.acct-state[data-st="absent"] { color: var(--ink-mute); }
+/* T58 3.4：主号"待连接"行重连按钮旁的行内错误小字（不弹 toast；
+   随行重渲染自然清除，窄宽随 flex-wrap 收敛） */
+.acct-reconn-err {
+  flex-shrink: 0; max-width: 160px; font-size: 11px; color: var(--danger);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 游客态账号行：点击打开登录卡（暖色系对齐 guest-bar） */
+.acct-guest-row {
+  padding: 10px 12px; border-radius: var(--r-md); cursor: pointer;
+  text-align: center; font-size: 12.5px; font-weight: 600;
+  color: #ffc78a; letter-spacing: .3px; user-select: none;
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.14), rgba(255,138,151,.12));
+  border: 1px solid rgba(255,184,77,.35);
+  transition: border-color .2s var(--ease), background .2s var(--ease);
+}
+.acct-guest-row:hover { border-color: rgba(255,184,77,.65); }
+/* 添加小号三步卡（复用登录卡输入/按钮风格） */
+.acct-add-card {
+  margin-top: 12px; padding: 14px 14px 6px;
+  border-radius: var(--r-md);
+  border: 1px dashed rgba(255,255,255,.18);
+  background: rgba(255,255,255,.04);
+}
+.acct-add-card label { display: block; margin: 8px 0 6px; }
+/* 移除确认弹层按钮行 */
+.acct-confirm-actions { display: flex; gap: 10px; margin-top: 14px; }
+.acct-confirm-actions .btn { flex: 1; }
+/* 任务选号行（任务库卡片 / 新建任务页） */
+.task-acct {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 10px 0 2px;
+}
+.task-acct-label, .task-acct-note { font-size: 11.5px; color: var(--ink-mute); }
+.task-acct-note { flex-basis: 100%; opacity: .85; }
+/* 选号分段控件：host 上叠加 .segmented 类（既有胶囊样式+亮色覆写
+   全量复用），此处只做紧凑化 */
+.acct-seg-host .seg { padding: 4px 11px; font-size: 11.5px; }
+/* 下载中组头：选号控件靠右（中止按钮前） */
+.dl-group-head .acct-seg-host { margin-left: auto; }
+.dl-group-head .btn { flex-shrink: 0; }
+/* acct_hint 顶部大条（无小号）：可关闭，样式对齐 guest-bar 暖色系 */
+.acct-hint-bar {
+  display: flex; align-items: center; justify-content: center;
+  gap: 10px; margin: 0 0 12px; padding: 8px 12px;
+  border-radius: var(--r-lg);
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.14), rgba(255,138,151,.12));
+  border: 1px solid rgba(255,184,77,.35);
+  color: #ffc78a; font-size: 12.5px; font-weight: 600;
+  letter-spacing: .3px; user-select: none;
+  transition: border-color .2s var(--ease), background .2s var(--ease);
+}
+.acct-hint-close {
+  border: none; background: transparent; cursor: pointer;
+  color: inherit; font-size: 13px; opacity: .7;
+  padding: 2px 6px; border-radius: 6px;
+}
+.acct-hint-close:hover { opacity: 1; }
+/* acct_hint 小字状态行（已有 ≥1 小号时降级） */
+.acct-hint-line {
+  margin: 0 0 10px; font-size: 11.5px; color: var(--ink-mute);
+  letter-spacing: .2px; user-select: none;
+}
+/* 静态亮主题可读性覆写 */
+:root[data-theme="light"] .acct-tag {
+  background: rgba(59,107,255,.12); color: #2c4bd8;
+  border-color: rgba(59,107,255,.3);
+}
+:root[data-theme="light"] .acct-tag.alt {
+  background: rgba(139,91,255,.12); color: #6c3fd4;
+  border-color: rgba(139,91,255,.28);
+}
+:root[data-theme="light"] .acct-state { background: rgba(20,30,60,.07); }
+:root[data-theme="light"] .acct-state[data-st="ready"] { color: #1d7a4a; }
+:root[data-theme="light"] .acct-state[data-st="connecting"] { color: #a86a10; }
+:root[data-theme="light"] .acct-state[data-st="standby"] { color: #3c56c8; }
+/* T58 3.4：亮色主题下重连行内错误保持可读 */
+:root[data-theme="light"] .acct-reconn-err { color: #c22b3d; }
+:root[data-theme="light"] .acct-guest-row,
+:root[data-theme="light"] .acct-hint-bar {
+  color: #8a5a12; border-color: rgba(180,120,30,.4);
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.22), rgba(255,200,160,.18));
+}
+:root[data-theme="light"] .acct-add-card {
+  border-color: rgba(20,30,60,.2); background: rgba(255,255,255,.5);
+}
+/* T52 多账号前端 UI（结束） */
+
+/* ============================================================
+   T57 下载中列表交互（账号标签／浮层避让+折叠／取消中／按压反馈）
+   - 玻璃材质复用既有 tokens，不新增配色体系
+   ============================================================ */
+/* ----- C1/C3：实条目账号小标签（仅 alt1 显「小号」，main/等待中不显；
+   配色与设置页 .acct-tag.alt（小号行）同一紫系 ----- */
+.dl-acct-badge {
+  flex-shrink: 0; font-size: 10.5px; font-weight: 700; letter-spacing: .4px;
+  padding: 2px 8px; border-radius: 999px;
+  background: rgba(139,91,255,.16); color: #c8b6ff;
+  border: 1px solid rgba(139,91,255,.38);
+}
+:root[data-theme="light"] .dl-acct-badge {
+  background: rgba(139,91,255,.12); color: #6c3fd4;
+  border-color: rgba(139,91,255,.28);
+}
+
+/* ----- C4：列表滚动容器按作业浮层实际高度动态避让 -----
+   --job-dock-h 由 TgJobProgress ResizeObserver 写入（挂载/高度变化/
+   折叠/移除均触发）；浮层折叠变 mini 或消失时归零，其余视图零影响 */
+#active-list { padding-bottom: calc(var(--job-dock-h, 0px) + 24px); }
+
+/* ----- C4：浮层折叠态——卡片整体隐藏，仅留一条不遮挡操作的小胶囊 ----- */
+.job-progress-host.collapsed .job-card { display: none; }
+.job-dock-mini {
+  pointer-events: auto;                 /* host 容器 none，小条本身可点 */
+  flex: none; border: 1px solid var(--glass-edge);
+  border-radius: 999px; padding: 6px 16px;
+  background: var(--glass-bg-soft); color: var(--ink-dim);
+  font-size: 12px; white-space: nowrap;
+  box-shadow: var(--soft-shadow);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  transition: .25s var(--spring);
+}
+.job-dock-mini:hover { color: var(--ink); transform: translateY(-1px); }
+.job-dock-mini:active { transform: translateY(0) scale(.97); }
+
+/* ----- 补3：收起浮层按钮（中性玻璃——语义是收起通知，非危险操作）；
+   收起按钮靠右起组，取消下载按钮紧随其后 ----- */
+.job-collapse-btn {
+  margin-left: auto; flex-shrink: 0;
+  border: 1px solid var(--glass-edge); border-radius: 999px;
+  background: rgba(255,255,255,.08); color: var(--ink-dim);
+  font-size: 11px; padding: 3px 11px;
+  transition: .2s var(--spring);
+}
+.job-collapse-btn:hover { background: rgba(255,255,255,.16); color: var(--ink); }
+.job-collapse-btn[disabled] { opacity: .55; pointer-events: none; }
+/* 取消按钮不再自撑（原 margin-left:auto 职责移交收起按钮） */
+.job-cancel-btn { margin-left: 0; }
+.job-collapse-btn:active, .job-cancel-btn:active,
+.mini-action:active { transform: translateY(0) scale(.97); }
+
+/* ----- C6：取消中… 中间态（不可点；终态由真实收尾驱动，不预显已取消） ----- */
+.job-state.s-cancelling {
+  background: rgba(255,184,77,.16); color: var(--warn);
+}
+.job-state.s-cancelling .spinner {
+  width: 10px; height: 10px; margin-right: 4px; vertical-align: -1px;
+}
+.job-cancel-btn[disabled] { opacity: .55; pointer-events: none; }
+.job-cancel-btn.is-busy { pointer-events: none; opacity: .8; }
+.job-cancel-btn .spinner {
+  width: 10px; height: 10px; margin-right: 4px; vertical-align: -1px;
+}
+
+/* ----- C9③：活跃组头“恢复跳过 N 个”（与“中止任务”同层玻璃分组） ----- */
+.dl-group-resume { flex-shrink: 0; margin-left: 10px; }

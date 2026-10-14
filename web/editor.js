@@ -59,7 +59,16 @@ const STATUS_LABEL = {
 
 // ---------- 数据加载 ----------
 async function edLoad() {
-  const r = await api().editor_data(TASK_ID);
+  let r;
+  try {
+    r = await api().editor_data(TASK_ID);
+  } catch (e) {
+    // P1-2：首拉被 reject（桥接断链/服务端异常）与 r.ok=false 同形的
+    // 内联可见反馈，不产生 unhandled rejection。
+    document.body.innerHTML =
+      `<div style="padding:40px">加载失败：${esc(e && e.message || e)}</div>`;
+    return;
+  }
   if (!r || !r.ok) {
     document.body.innerHTML =
       `<div style="padding:40px">加载失败：${esc(r && r.error)}</div>`;
@@ -78,22 +87,46 @@ async function edLoad() {
 
   edRender();
 
-  // 有缺失 text/duration 时，后台补全完成后延时静默回捞一次（不触发新的
-  // 网络补全）；用户正在搜索则跳过，避免打断输入。
-  const needEnrich = (state.items || []).some(
-    (it) => !it.text || !it.duration);
-  if (needEnrich) {
-    setTimeout(async () => {
-      try {
-        const q = document.getElementById("ed2-q");
-        if (document.activeElement === q) return;
-        const r2 = await api().editor_data(TASK_ID, false);
-        if (!r2 || !r2.ok) return;
-        state.items = r2.items || state.items;
-        edRender();
-      } catch (e) {}
-    }, 3500);
-  }
+  if (_edNeedEnrich()) _edRefetchStart();
+}
+
+// ---------- 补全回捞（P1-7：单飞收敛式轮询）----------
+// 仅当条目确有缺失 text/duration 时启动一条轮询链：间隔递增
+// （1.5s→3s→4.5s），editor_data 第二参数传 false 仅取本地、不触发新的
+// 网络补全；条目补齐即停，至多 3 拍兜底即停；用户正在搜索框输入的拍
+// 跳过（保留旧语义，不打断输入）；新链启动时代际号 +1 使旧链作废，
+// 任何时刻至多一条链在飞。替代旧的固定 setTimeout(…, 3500) 一次性回捞。
+let _edRefetchGen = 0;
+
+function _edNeedEnrich() {
+  return (state.items || []).some((it) => !it.text || !it.duration);
+}
+
+function _edRefetchStart() {
+  const gen = ++_edRefetchGen;
+  const DELAYS = [1500, 3000, 4500];
+  const tick = () => {
+    if (gen !== _edRefetchGen) return;   // 已被新链作废
+    if (!DELAYS.length) return;           // 至多 3 拍兜底即停
+    const wait = DELAYS.shift();
+    setTimeout(() => {
+      if (gen !== _edRefetchGen) return;
+      const q = document.getElementById("ed2-q");
+      if (document.activeElement === q) { tick(); return; }  // 聚焦跳过本拍
+      api().editor_data(TASK_ID, false).then((r) => {
+        if (gen !== _edRefetchGen) return;
+        if (r && r.ok) {
+          state.items = r.items || state.items;
+          edRender();
+          if (!_edNeedEnrich()) return;    // 条目补齐即停
+        }
+        tick();                            // 仍缺失：下一拍
+      }).catch(() => {                     // 回捞失败非首屏主路径，静默续拍
+        if (gen === _edRefetchGen) tick();
+      });
+    }, wait);
+  };
+  tick();
 }
 
 // ---------- 筛选 ----------
@@ -201,18 +234,44 @@ function edToggleExpand(k) {
 }
 
 // ---------- 单条操作 ----------
+// P1-2：失败路径 alert 可见（文案含后端 error / reject 原因）。
+// P1-7：成功后不再全量重拉 editor_data（edReload），改为本地 state
+// 最小变更 + edRender()——操作本身那 1 次 RPC 之外 0 次 editor_data。
 function edOneStatus(k, status) {
-  api().editor_set_status(TASK_ID, [keyObj(k)], status).then(() => edReload());
+  api().editor_set_status(TASK_ID, [keyObj(k)], status)
+    .then((r) => {
+      if (!r || !r.ok)
+        return alert("标记失败：" + ((r && r.error) || ""));
+      const ti = state.items.find((it) => keyOf(it) === k);
+      if (ti) ti.status = status;
+      edRender();
+    })
+    .catch((e) => alert("标记失败：" + (e && e.message || e)));
 }
 
 function edOneRemove(k) {
   if (!confirm("从任务清单移除该条目？不会删除本地视频文件。")) return;
-  api().editor_remove(TASK_ID, [keyObj(k)]).then(() => edReload());
+  api().editor_remove(TASK_ID, [keyObj(k)])
+    .then((r) => {
+      if (!r || !r.ok)
+        return alert("移除失败：" + ((r && r.error) || ""));
+      state.items = state.items.filter((it) => keyOf(it) !== k);
+      state.selected.delete(k);
+      state.expanded.delete(k);
+      edRender();
+    })
+    .catch((e) => alert("移除失败：" + (e && e.message || e)));
 }
 
 function edOpenFile(k) {
   const o = keyObj(k);
-  api().open_item_file(TASK_ID, o.src, o.mid);
+  // P1-2（QA 复核：此点为无 .then 的 fire-and-forget 形态）——补返回体
+  // 检查 + rejection 兜底：{ok:false, error:"文件不存在"} 不再静默。
+  api().open_item_file(TASK_ID, o.src, o.mid)
+    .then((r) => {
+      if (!r || !r.ok) alert("打开失败：" + ((r && r.error) || ""));
+    })
+    .catch((e) => alert("打开失败：" + (e && e.message || e)));
 }
 
 // ---------- 批量操作 ----------
@@ -220,27 +279,164 @@ function selectedKeys() {
   return [...state.selected].map(keyObj);
 }
 
+// P1-2/P1-7 同单条操作：失败可见；成功本地最小变更（含清空选中）。
 function edBulkStatus(status) {
   api().editor_set_status(TASK_ID, selectedKeys(), status)
-    .then(() => { state.selected.clear(); edReload(); });
+    .then((r) => {
+      if (!r || !r.ok)
+        return alert("批量标记失败：" + ((r && r.error) || ""));
+      const keys = new Set(state.selected);
+      for (const ti of state.items)
+        if (keys.has(keyOf(ti))) ti.status = status;
+      state.selected.clear();
+      edRender();
+    })
+    .catch((e) => alert("批量标记失败：" + (e && e.message || e)));
 }
 
 function edBulkRemove() {
   if (!confirm(`从任务清单移除选中的 ${state.selected.size} 个条目？\n不会删除本地视频文件。`))
     return;
   api().editor_remove(TASK_ID, selectedKeys())
-    .then(() => { state.selected.clear(); edReload(); });
+    .then((r) => {
+      if (!r || !r.ok)
+        return alert("批量移除失败：" + ((r && r.error) || ""));
+      const keys = new Set(state.selected);
+      state.items = state.items.filter((it) => !keys.has(keyOf(it)));
+      state.selected.clear();
+      for (const k of [...state.expanded])
+        if (keys.has(k)) state.expanded.delete(k);
+      edRender();
+    })
+    .catch((e) => alert("批量移除失败：" + (e && e.message || e)));
 }
 
 // ---------- 任务设置 ----------
+// P1-5 修复：后端 choose_folder 返回形为 {"ok": true, "path": p}
+// （gui.Api.choose_folder），旧码误读返回体的 folder 键（其值为
+// undefined）致勾选目录后回填永不生效——统一以后端实际返参 path 为准。
+// P1-3（B 包顺带）：浏览按钮 busy 防重——pending 期间按钮 disabled，
+// 连点只发 1 次 choose_folder；成功回填 / 用户取消（path=""）不动 /
+// 失败（含 reject）alert 可见，三者后按钮复位。
+let _edChoosing = false;
+
 function edChooseFolder() {
+  const btn = document.querySelector(".path-row .glass-btn");
+  if (_edChoosing) return;                 // JS 锁兜底（disabled 之外）
+  _edChoosing = true;
+  if (btn) btn.disabled = true;
+  const settle = () => {
+    _edChoosing = false;
+    if (btn) btn.disabled = false;
+  };
   api().choose_folder().then((r) => {
-    if (r && r.ok && r.folder)
-      document.getElementById("ed2-folder").value = r.folder;
+    settle();
+    if (!r || !r.ok)
+      return alert("选择目录失败：" + ((r && r.error) || ""));
+    if (r.path) document.getElementById("ed2-folder").value = r.path;
+  }).catch((e) => {
+    settle();
+    alert("选择目录失败：" + (e && e.message || e));
   });
 }
 
+// T50：二窗搬运作业弹层（editor.html 零改，DOM 由 JS 动态建；class 与
+// 主窗 T50Move 共用 style.css 的 t50-move-* 样式）。运行中无取消/关闭
+// X/点遮罩关闭；done → 收层刷新；error → 错误全文 + 固定提示 + "关闭"
+// 按钮收层并恢复保存按钮。事件源：原生 tg:job_update 监听（editor.js
+// 无 TgBus）+ 挂载时 job_state 快照兜底；按 updated_ts 去重幂等。
+let _edMove = null;   // {jobId, dom, handler, lastTs, ended, onDone, onClose}
+
+function _edMoveBuildDom() {
+  const mask = document.createElement("div");
+  mask.className = "t50-move-mask";
+  const box = document.createElement("div");
+  box.className = "t50-move-layer";
+  box.innerHTML = `
+    <div class="t50-move-title">正在移动文件…</div>
+    <div class="t50-move-name">准备移动…</div>
+    <div class="t50-move-count"></div>
+    <div class="t50-move-bar"><div class="t50-move-fill"></div></div>
+    <div class="t50-move-bytes"></div>
+    <div class="t50-move-err hidden">
+      <div class="t50-move-err-text"></div>
+      <div class="t50-move-err-hint">可再次执行，已存在文件自动跳过</div>
+      <button class="btn primary t50-move-close" type="button">关闭</button>
+    </div>`;
+  mask.appendChild(box);
+  document.body.appendChild(mask);
+  return {
+    mask, box,
+    name: box.querySelector(".t50-move-name"),
+    count: box.querySelector(".t50-move-count"),
+    fill: box.querySelector(".t50-move-fill"),
+    bytes: box.querySelector(".t50-move-bytes"),
+    err: box.querySelector(".t50-move-err"),
+    errText: box.querySelector(".t50-move-err-text"),
+    closeBtn: box.querySelector(".t50-move-close"),
+  };
+}
+
+function _edMoveTeardown() {
+  if (!_edMove) return;
+  window.removeEventListener("tg:job_update", _edMove.handler);
+  if (_edMove.dom && _edMove.dom.mask && _edMove.dom.mask.parentNode)
+    _edMove.dom.mask.remove();
+  _edMove = null;
+}
+
+function _edMoveHandle(job) {
+  const st = _edMove;
+  if (!st || !job || job.job_id !== st.jobId) return;
+  const ts = Number(job.updated_ts) || 0;
+  if (st.lastTs !== null && ts <= st.lastTs) return;    // 迟到/同值帧
+  st.lastTs = ts;
+  const d = Number(job.done) || 0, t = Number(job.total) || 0;
+  const bd = Number(job.bytes_done) || 0, bt = Number(job.bytes_total) || 0;
+  st.dom.name.textContent = job.phase_detail || "";
+  st.dom.count.textContent = t > 0 ? `${d}/${t}` : "";
+  st.dom.bytes.textContent = bt > 0
+    ? `${humanSize(bd)} / ${humanSize(bt)}` : "";
+  st.dom.fill.style.width =
+    (bt > 0 ? Math.max(0, Math.min(100, bd * 100 / bt)) : 0).toFixed(1) + "%";
+  if (job.state === "done" && !st.ended) {
+    st.ended = true;
+    const cb = st.onDone;
+    _edMoveTeardown();
+    if (cb) cb();
+  } else if ((job.state === "error" || job.state === "cancelled")
+             && !st.ended) {
+    st.ended = true;
+    st.dom.err.classList.remove("hidden");
+    st.dom.errText.textContent = job.error || "移动失败";
+  }
+}
+
+function edWatchMove(jobId, onDone, onClose) {
+  if (_edMove) _edMoveTeardown();
+  const dom = _edMoveBuildDom();
+  _edMove = { jobId, dom, lastTs: null, ended: false, onDone, onClose };
+  _edMove.handler = (ev) => _edMoveHandle(ev && ev.detail);
+  window.addEventListener("tg:job_update", _edMove.handler);
+  dom.closeBtn.addEventListener("click", () => {
+    _edMoveTeardown();
+    if (onClose) onClose();
+  });
+  // 挂载即拉一次快照兜底（防 WS 漏帧；终态外幂等）
+  api().job_state(jobId).then((r) => {
+    if (r && r.ok && r.job) _edMoveHandle(r.job);
+  }).catch(() => {});
+}
+
 function edSave() {
+  // T50：保存按钮状态机——点击即锁；瞬时/失败/need_login 恢复；搬运
+  // 作业保持锁定到终态（错误弹层"关闭"后恢复，允许重试）。
+  const btn = document.querySelector('.editor-head button.primary');
+  const oldText = btn ? btn.textContent : "";
+  const unlock = () => {
+    if (btn) { btn.disabled = false; btn.textContent = oldText; }
+  };
+  if (btn) { btn.disabled = true; btn.textContent = "保存中…"; }
   const fields = {
     title: document.getElementById("ed2-title").value,
     folder: document.getElementById("ed2-folder").value,
@@ -248,8 +444,29 @@ function edSave() {
     move_files: document.getElementById("ed2-move").checked,
   };
   api().editor_save(TASK_ID, fields).then((r) => {
-    if (r && r.ok) alert("已保存");
-    else alert("保存失败：" + ((r && r.error) || ""));
+    if (r && r.need_login) {
+      unlock();
+      return alert("该功能需要登录，请在主窗口登录后重试");
+    }
+    if (!r || !r.ok) {
+      unlock();
+      return alert("保存失败：" + ((r && r.error) || ""));
+    }
+    if (r.job_id) {
+      edWatchMove(r.job_id,
+        async () => {
+          unlock();
+          await edLoad();
+          alert("已保存");
+        },
+        unlock);
+      return;
+    }
+    unlock();
+    alert("已保存");
+  }).catch((e) => {
+    unlock();
+    alert("保存失败：" + (e && e.message || e));
   });
 }
 
@@ -261,9 +478,8 @@ function edSetFilter(f) {
   edRender();
 }
 
-// 操作后重新拉取最新数据
-function edReload() {
-  edLoad();
-}
+// P1-7：条目操作后的刷新已改本地 state 最小变更 + edRender()，
+// 全量 edReload()/editor_data 重拉路径移除；全量 edLoad 仅保留在
+// 首屏与 T50 搬运 done 回调（edSave 内）。
 
 window.addEventListener("pywebviewready", edLoad);

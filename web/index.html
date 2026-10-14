@@ -45,6 +45,10 @@
       <label>手机号（含国家区号，不带 +）</label>
       <input id="login-phone" type="text" placeholder="8613800000000">
       <button class="btn primary block" onclick="doSendCode()">发送验证码</button>
+      <!-- T58 3.2：发送报错但码可能已到（可恢复错误）时的明示入口；
+           仅用户主动点击才进码步，默认隐藏，回 phone 步即重置 -->
+      <button class="btn glass-btn block hidden" id="login-recover-btn"
+        onclick="loginRecover()">已收到验证码？直接输入</button>
     </div>
     <div id="login-step-code" class="login-step hidden">
       <label>Telegram 发来的验证码</label>
@@ -58,6 +62,8 @@
       <button class="btn primary block" onclick="doVerifyPassword()">确认</button>
     </div>
     <p id="login-err" class="login-err"></p>
+    <p id="login-notice" class="login-notice"></p>
+    <button class="btn glass-btn block" id="guest-btn" onclick="doGuest()">暂不登录（游客模式）</button>
   </div>
 </div>
 
@@ -89,13 +95,37 @@
           <div id="me-name" class="me-name">未登录</div>
           <div id="me-user" class="me-user"></div>
         </div>
+        <!-- T56 退出标识：电源图形（SVG，避开字体缺字）+ 玻璃按钮形态 -->
         <button id="me-logout" class="me-logout-btn" title="退出登录"
-          onclick="doLogout()">⎋</button>
+          aria-label="退出登录" onclick="doLogout(this)">
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"
+            focusable="false">
+            <path fill="currentColor"
+              d="M13 3h-2v10h2V3zm4.83 2.17-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z"/>
+          </svg>
+        </button>
       </div>
+      <!-- T58 3.3：me() 获取资料失败后的手动重试入口（默认隐藏；
+           重试成功后自动收起，不再要求重启应用） -->
+      <button id="me-retry" class="btn glass-btn block hidden">重试获取资料</button>
     </div>
   </aside>
 
   <main class="main">
+
+    <!-- T46 游客模式提示条：仅 guest 态显示，点击打开登录卡 -->
+    <div id="guest-bar" class="guest-bar hidden" onclick="openLoginFromGuest()">未登录 · 点此登录</div>
+    <!-- T56 Bug4：启动连接失败的非阻断小字（boot 中性态收口为"点此重试"时显示） -->
+    <div id="boot-err" class="boot-err hidden"></div>
+
+    <!-- T52 账号限速提示条：主号被限速且还没有小号时显示，可关闭 -->
+    <div id="acct-hint-bar" class="acct-hint-bar hidden">
+      <span id="acct-hint-text">当前账号下载较慢（服务器限速），登录小号可自动分流提速</span>
+      <button class="btn primary sm" id="acct-hint-add" onclick="TgAccounts.hintAddAlt()">添加小号</button>
+      <button class="acct-hint-close" onclick="TgAccounts.dismissHint()" title="关闭">✕</button>
+    </div>
+    <!-- T52 限速小字状态行：已有 ≥1 个小号时同类提示降级显示，不弹大条 -->
+    <div id="acct-hint-line" class="acct-hint-line hidden"></div>
 
     <!-- 下载中 -->
     <section id="view-active" class="view hidden">
@@ -137,7 +167,7 @@
         </div>
       </div>
 
-      <div id="active-fetch" class="fetch-banner hidden"></div>
+      <div id="active-fetch" class="fetch-banner hidden"><span class="fetch-dot"></span><span class="fetch-text"></span></div>
       <div id="active-list" class="dl-list"></div>
       <div id="active-empty" class="empty-state">
         <div class="empty-ico">🫧</div>
@@ -255,6 +285,14 @@
             </div>
           </div>
 
+          <!-- T52 任务选号：新任务的账号策略（默认自动）。任务创建成功后
+               随 edit_task({acct}) 下发（T51 契约；桩模式由 probe 应答） -->
+          <div class="task-acct">
+            <span class="task-acct-label">本任务后续下载使用</span>
+            <span class="acct-seg-host segmented" id="new-acct-seg"></span>
+            <span class="task-acct-note">进行中的条目不受影响</span>
+          </div>
+
           <div class="wizard-actions">
             <button class="btn primary" id="preview-btn" onclick="doPreview()">开始搜索</button>
           </div>
@@ -264,6 +302,16 @@
       </div>
 
       <div id="wizard-2" class="wizard-panel hidden">
+        <!-- T48 流式搜索进度区：不定进度动效 + 阶段/计数文案 + 取消按钮 + 终态提示 -->
+        <div id="search-progress" class="search-progress hidden">
+          <div class="search-progress-head">
+            <div class="search-progress-bar"><div class="job-fill indet" id="search-progress-fill"></div></div>
+            <button class="btn glass-btn sm" id="search-cancel-btn" onclick="cancelSearch()">停止搜索</button>
+          </div>
+          <div id="search-phase-text" class="search-phase-text"></div>
+          <div id="search-counts" class="search-counts"></div>
+          <div id="search-note" class="search-note"></div>
+        </div>
         <div class="sel-toolbar">
           <div class="search-box">
             <span class="search-ico">⌕</span>
@@ -276,7 +324,7 @@
         </div>
         <div id="preview-list" class="video-list"></div>
         <div class="wizard-actions between">
-          <button class="btn glass-btn" onclick="gotoStep(1)">上一步</button>
+          <button class="btn glass-btn" onclick="backToStep1()">上一步</button>
           <div class="start-box">
             <button class="btn primary" onclick="doStart(this)">开始下载 (<span id="sel-count">0</span>)</button>
           </div>
@@ -287,13 +335,58 @@
     <!-- 设置 -->
     <section id="view-settings" class="view hidden">
       <header class="page-head"><div><h2>设置</h2><p class="page-sub">外观、下载目录与数据</p></div></header>
-      <div class="glass form-card narrow">
-        <label>当前账号</label>
-        <div class="account-row">
-          <div id="set-account" class="account-info">未登录</div>
-          <button class="btn danger sm" onclick="doLogout()">退出登录</button>
+      <!-- T52 账号区：主号卡 + 小号列表 + 添加小号三步卡。
+           数据源见 app.js TgAccounts：正常路径 account_list RPC（T51 契约，
+           未接入前安静降级）；t52demo=1 桩模式读 window.__tgAcctProbe。
+           游客态只显示"未登录 · 点此登录"，不显示添加小号控件（T46 口径）。 -->
+      <div class="glass form-card narrow" id="acct-card">
+        <label>账号</label>
+        <div id="acct-region"></div>
+        <p id="acct-err" class="login-err"></p>
+        <button class="btn glass-btn block hidden" id="acct-add-btn"
+          onclick="TgAccounts.openAdd()">＋ 添加小号</button>
+        <div id="acct-add-card" class="acct-add-card hidden">
+          <div id="acct-add-step-phone">
+            <label>小号手机号（含国家区号，不带 +）</label>
+            <input id="acct-add-phone" type="text" placeholder="8613800000000">
+            <button class="btn primary block" id="acct-add-send" onclick="TgAccounts.addStart(this)">发送验证码</button>
+            <!-- T58 补充1：小号向导同口径可恢复入口（主卡 #login-recover-btn
+                 同文案同行为，默认隐藏，回 phone 步即重置） -->
+            <button class="btn glass-btn block hidden" id="acct-add-recover-btn"
+              onclick="TgAccounts.addRecover()">已收到验证码？直接输入</button>
+            <button class="btn glass-btn block" onclick="TgAccounts.closeAdd()">取消</button>
+          </div>
+          <div id="acct-add-step-code" class="hidden">
+            <label>Telegram 发来的验证码</label>
+            <input id="acct-add-code" type="text" placeholder="如 12345">
+            <button class="btn primary block" id="acct-add-verify" onclick="TgAccounts.verifyCode(this)">验证并登录</button>
+            <!-- T58 r2 契约 3.2 + 补充1②：“返回”纯前端切回手机号步（不调 RPC、
+                 不清输入/addingId）；与“取消”（closeAdd）语义区分 -->
+            <button class="btn glass-btn block" id="acct-add-code-back" onclick="TgAccounts.addCodeBack()">返回</button>
+            <button class="btn glass-btn block" onclick="TgAccounts.closeAdd()">取消</button>
+          </div>
+          <div id="acct-add-step-pwd" class="hidden">
+            <label>两步验证密码</label>
+            <input id="acct-add-pwd" type="password" placeholder="2FA 密码">
+            <button class="btn primary block" id="acct-add-pwd-btn" onclick="TgAccounts.verifyPassword(this)">确认</button>
+            <!-- T58 r2：“返回”纯前端切回验证码步（保留已输入值） -->
+            <button class="btn glass-btn block" id="acct-add-pwd-back" onclick="TgAccounts.addPwdBack()">返回</button>
+            <button class="btn glass-btn block" onclick="TgAccounts.closeAdd()">取消</button>
+          </div>
+          <p id="acct-add-err" class="login-err"></p>
         </div>
         <p class="hint">退出后本地登录授权将被删除，重新登录需输入手机号与验证码；任务清单和已下载视频不会被删除。下载进行中无法退出。</p>
+      </div>
+      <!-- T52 移除小号二次确认弹层（文案说明仅移除本地登录授权） -->
+      <div id="acct-remove-confirm" class="modal-mask hidden">
+        <div class="glass modal">
+          <div class="modal-head"><h3>移除小号？</h3></div>
+          <p class="modal-sub" id="acct-remove-text">仅移除本地登录授权，不影响已下载任务。</p>
+          <div class="acct-confirm-actions">
+            <button class="btn glass-btn" onclick="TgAccounts.cancelRemove()">取消</button>
+            <button class="btn danger" id="acct-remove-ok" onclick="TgAccounts.confirmRemove(this)">移除</button>
+          </div>
+        </div>
       </div>
       <div class="glass form-card narrow">
         <label>界面外观</label>
@@ -318,6 +411,9 @@
 
   </main>
 </div>
+
+<!-- T45 通用作业进度挂载点（事件总线渲染；无作业时为空） -->
+<div id="job-progress-host" class="job-progress-host" aria-live="polite"></div>
 
 <!-- 任务详情滑层 -->
 <div id="sheet-mask" class="sheet-mask hidden" onclick="closeSheet()"></div>
@@ -381,6 +477,8 @@
     <button class="btn glass-btn hidden" id="sheet-done-btn" onclick="toggleEdit(false)">完成编辑</button>
     <button class="btn glass-btn" onclick="sheetOpenFolder()">目录</button>
     <button class="btn primary" id="sheet-resume" onclick="sheetResume()">继续下载</button>
+    <!-- T57 C9②：恢复跳过 N 个（skipped>0 时由 renderSheet 切显） -->
+    <button class="btn glass-btn hidden" id="sheet-resume-skip" onclick="resumeSkipped(sheet.taskId,this,sheet.counts.skipped,'sheet')">恢复跳过</button>
     <button class="btn danger" onclick="sheetDelete()">删除任务</button>
   </div>
 </aside>
