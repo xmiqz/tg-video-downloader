@@ -1365,6 +1365,12 @@ body.liquid .sheet { position: fixed; }
 /* T56 Bug3：暖机窗口尽后但仍 has_session（离线/暖机失败）的展示态 */
 .acct-state[data-st="standby"] { color: #9db4ff; }
 .acct-state[data-st="absent"] { color: var(--ink-mute); }
+/* T58 3.4：主号"待连接"行重连按钮旁的行内错误小字（不弹 toast；
+   随行重渲染自然清除，窄宽随 flex-wrap 收敛） */
+.acct-reconn-err {
+  flex-shrink: 0; max-width: 160px; font-size: 11px; color: var(--danger);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 /* 游客态账号行：点击打开登录卡（暖色系对齐 guest-bar） */
 .acct-guest-row {
   padding: 10px 12px; border-radius: var(--r-md); cursor: pointer;
@@ -1436,6 +1442,8 @@ body.liquid .sheet { position: fixed; }
 :root[data-theme="light"] .acct-state[data-st="ready"] { color: #1d7a4a; }
 :root[data-theme="light"] .acct-state[data-st="connecting"] { color: #a86a10; }
 :root[data-theme="light"] .acct-state[data-st="standby"] { color: #3c56c8; }
+/* T58 3.4：亮色主题下重连行内错误保持可读 */
+:root[data-theme="light"] .acct-reconn-err { color: #c22b3d; }
 :root[data-theme="light"] .acct-guest-row,
 :root[data-theme="light"] .acct-hint-bar {
   color: #8a5a12; border-color: rgba(180,120,30,.4);

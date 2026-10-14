@@ -45,6 +45,10 @@
       <label>手机号（含国家区号，不带 +）</label>
       <input id="login-phone" type="text" placeholder="8613800000000">
       <button class="btn primary block" onclick="doSendCode()">发送验证码</button>
+      <!-- T58 3.2：发送报错但码可能已到（可恢复错误）时的明示入口；
+           仅用户主动点击才进码步，默认隐藏，回 phone 步即重置 -->
+      <button class="btn glass-btn block hidden" id="login-recover-btn"
+        onclick="loginRecover()">已收到验证码？直接输入</button>
     </div>
     <div id="login-step-code" class="login-step hidden">
       <label>Telegram 发来的验证码</label>
@@ -101,6 +105,9 @@
           </svg>
         </button>
       </div>
+      <!-- T58 3.3：me() 获取资料失败后的手动重试入口（默认隐藏；
+           重试成功后自动收起，不再要求重启应用） -->
+      <button id="me-retry" class="btn glass-btn block hidden">重试获取资料</button>
     </div>
   </aside>
 
@@ -343,18 +350,27 @@
             <label>小号手机号（含国家区号，不带 +）</label>
             <input id="acct-add-phone" type="text" placeholder="8613800000000">
             <button class="btn primary block" id="acct-add-send" onclick="TgAccounts.addStart(this)">发送验证码</button>
+            <!-- T58 补充1：小号向导同口径可恢复入口（主卡 #login-recover-btn
+                 同文案同行为，默认隐藏，回 phone 步即重置） -->
+            <button class="btn glass-btn block hidden" id="acct-add-recover-btn"
+              onclick="TgAccounts.addRecover()">已收到验证码？直接输入</button>
             <button class="btn glass-btn block" onclick="TgAccounts.closeAdd()">取消</button>
           </div>
           <div id="acct-add-step-code" class="hidden">
             <label>Telegram 发来的验证码</label>
             <input id="acct-add-code" type="text" placeholder="如 12345">
             <button class="btn primary block" id="acct-add-verify" onclick="TgAccounts.verifyCode(this)">验证并登录</button>
+            <!-- T58 r2 契约 3.2 + 补充1②：“返回”纯前端切回手机号步（不调 RPC、
+                 不清输入/addingId）；与“取消”（closeAdd）语义区分 -->
+            <button class="btn glass-btn block" id="acct-add-code-back" onclick="TgAccounts.addCodeBack()">返回</button>
             <button class="btn glass-btn block" onclick="TgAccounts.closeAdd()">取消</button>
           </div>
           <div id="acct-add-step-pwd" class="hidden">
             <label>两步验证密码</label>
             <input id="acct-add-pwd" type="password" placeholder="2FA 密码">
             <button class="btn primary block" id="acct-add-pwd-btn" onclick="TgAccounts.verifyPassword(this)">确认</button>
+            <!-- T58 r2：“返回”纯前端切回验证码步（保留已输入值） -->
+            <button class="btn glass-btn block" id="acct-add-pwd-back" onclick="TgAccounts.addPwdBack()">返回</button>
             <button class="btn glass-btn block" onclick="TgAccounts.closeAdd()">取消</button>
           </div>
           <p id="acct-add-err" class="login-err"></p>

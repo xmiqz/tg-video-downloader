@@ -224,8 +224,10 @@ async function bootConnect() {
     guestMode = false;
     return afterLogin();
   }
-  // need_code（含软成功带 warning）直接验证码步；否则复核 login_state
-  // （has_session=服务端已发码，与旧 tryConnect 兜底判定对等保留）
+  // need_code（含软成功带 warning）直接验证码步；否则复核 login_state。
+  // T58 契约 2.3：has_session 新语义=后端内存标志“本轮已发码待验证”
+  // （_code_sent），不再读 .session 文件——只信后端“本轮已发码”信号，
+  // 全链路零“本地猜已发码”推断。
   let codeStep = !!(r && r.ok && r.stage === "need_code");
   if (!codeStep) {
     let st = null;
@@ -249,11 +251,15 @@ async function bootConnect() {
     return null;
   }
   if (r && r.ok && r.stage === "need_phone") {
-    // 真未登录：收中性条，亮登录卡停在手机号步（"暂不登录"入口保留）
+    // 真未登录：收中性条，亮登录卡停在手机号步（“暂不登录”入口保留）。
+    // T58 契约 3.1：connect 全路径零发码；cfg 旧手机号仅作 phone_prefill
+    // 预填输入框，不触发任何发送。
     finish();
     hideGuestBar();
     hideBootErr();
     showLoginCard("");
+    if (r.phone_prefill)
+      document.getElementById("login-phone").value = r.phone_prefill;
     return null;
   }
   // 网络错/超时/busy：留在壳内，中性条转可点重试（错误仅非阻断小字）
@@ -286,10 +292,18 @@ async function tryConnect(silent) {
     return afterLogin();
   }
   const st = await api().login_state();
-  // 后端已确认验证码发出（软成功）时直接进入输码步骤，否则按会话状态判断
-  showLoginStep(
-    (r.ok && r.stage === "need_code") || (st.has_session && !r.busy)
-      ? "code" : "phone");
+  // 后端已确认验证码发出（stage=need_code）时直接进入输码步骤，否则按
+  // 会话状态判断。T58 契约 2.3：has_session 新语义=后端内存标志“本轮
+  // 已发码待验证”（_code_sent），不再读 .session 文件——只信后端信号，
+  // 零“本地猜已发码”推断。
+  const codeStep =
+    (r.ok && r.stage === "need_code") || (st.has_session && !r.busy);
+  showLoginStep(codeStep ? "code" : "phone");
+  if (!codeStep && r.ok && r.stage === "need_phone" && r.phone_prefill) {
+    // T58 契约 3.1：未授权一律停 phone 步；cfg 旧手机号仅预填输入框，
+    // 不触发任何发送
+    document.getElementById("login-phone").value = r.phone_prefill;
+  }
   if (r.warning) loginErr(r.warning);
   if (!r.ok) loginErr(r.error);
   return null;
@@ -303,9 +317,27 @@ function openLoginFromGuest() {
 function showLoginStep(s) {
   ["phone", "code", "pwd"].forEach(x =>
     document.getElementById("login-step-" + x).classList.toggle("hidden", x !== s));
+  // T58 契约 3.2：每次进入 phone 步重置“直接输入”恢复按钮（含
+  // showLoginCard/loginBack 等全部入口）
+  if (s === "phone") hideLoginRecover();
 }
 const loginBack = () => showLoginStep("phone");
 const loginErr = m => (document.getElementById("login-err").textContent = m || "");
+// T58 契约 3.2（P2 主修）：发送报错但码可能已到时的明示恢复入口——
+// 仅可恢复错误（后端 recoverable:true）显示；点击=用户主动进码步，
+// 绝不自动跳步（批准书补充2：明示动作不是自动跳转）。
+function showLoginRecover() {
+  const el = document.getElementById("login-recover-btn");
+  if (el) el.classList.remove("hidden");
+}
+function hideLoginRecover() {
+  const el = document.getElementById("login-recover-btn");
+  if (el) el.classList.add("hidden");
+}
+function loginRecover() {
+  hideLoginRecover();
+  showLoginStep("code");
+}
 
 // ---------- T46 游客模式 ----------
 // 受限功能守卫：游客态点击受限入口时→不发任何 RPC、记意图、弹登录卡。
@@ -414,6 +446,7 @@ async function doGuest() {
 // 零改，onclick 不传参）。
 async function doSendCode() {
   loginErr("");
+  hideLoginRecover();   // T58 3.2：新一轮发送即重置恢复按钮
   const phone = document.getElementById("login-phone").value.trim();
   if (!phone) return loginErr("请输入手机号");
   const btn = document.querySelector("#login-step-phone button.btn.primary");
@@ -427,7 +460,17 @@ async function doSendCode() {
   if (r.ok) {
     showLoginStep("code");
     if (r.warning) loginErr(r.warning);
-  } else loginErr(r.error);
+  } else if (r.recoverable) {
+    // T58 契约 3.2：可恢复错误（网络抖动等，码可能已发出但响应回程
+    // 失败）——停 phone 步显错 + 明示“已收到验证码？直接输入”入口；
+    // 进码步仍由用户主动点击
+    loginErr(r.error);
+    showLoginRecover();
+  } else {
+    // flood_wait（文案含秒数，由后端拼好透传）/bad_phone/banned/
+    // api_invalid/其余：显错无恢复按钮；发送按钮不停用（后端管 flood）
+    loginErr(r.error);
+  }
 }
 async function doVerifyCode() {
   loginErr("");
@@ -463,30 +506,21 @@ async function afterLogin() {
   stopGuestPoll();
   document.getElementById("login").classList.add("hidden");
   document.getElementById("login-notice").textContent = "";
-  // T53b P1-2：me() 失败不再静默空白/未捕获 rejection——异常与
-  // !ok 都给可见错误反馈；侧栏置"已登录"保底（资料缺失但状态真实）
+  // T53b P1-2 + T58 契约 3.3（R5/R7）：me() 失败（异常与 !ok 两支）
+  // 统一走 showMeError——侧栏置“已登录”保底 + 内联“重试获取资料”
+  // 手动入口（不再要求重启应用）；成功渲染统一走 renderMe。
   let m = null;
   try {
     m = await api().me();
   } catch (e) {
-    document.getElementById("me-name").textContent = "已登录";
-    document.getElementById("me-user").textContent = "";
-    document.getElementById("me-avatar").textContent = "·";
-    showErr("获取账号资料失败（已登录，稍后可重启应用重试）", e);
+    showMeError(retryMe, e);
+    m = null;
   }
-  if (m) {
-    if (m.ok) {
-      document.getElementById("me-name").textContent = m.name || "已登录";
-      document.getElementById("me-user").textContent =
-        m.username ? "@" + m.username : m.phone || "";
-      document.getElementById("me-avatar").textContent = (m.name || "?").slice(0, 1);
-    } else {
-      document.getElementById("me-name").textContent = "已登录";
-      document.getElementById("me-user").textContent = "";
-      document.getElementById("me-avatar").textContent = "·";
-      showErr("获取账号资料失败（已登录，稍后可重启应用重试）",
-              m.error || "未能获取账号信息");
-    }
+  if (m && m.ok) {
+    renderMe(m);
+    hideMeRetry();
+  } else if (m) {
+    showMeError(retryMe, m.error || "未能获取账号信息");
   }
   // T46 续路：按 FIFO 依次执行全部受限意图（此时 guestMode=false 真实执行）
   const intents = pendingIntents.splice(0);
@@ -494,6 +528,54 @@ async function afterLogin() {
     try { await it.run(); }
     catch (e) { console.debug("[T46] 续路失败：", it.label, e); }
   }
+}
+
+// T58 契约 3.3（R5）：me 渲染统一出口（afterLogin 成功支与 retryMe
+// 复用；原 afterLogin 内联渲染原样迁移）
+function renderMe(m) {
+  document.getElementById("me-name").textContent = m.name || "已登录";
+  document.getElementById("me-user").textContent =
+    m.username ? "@" + m.username : m.phone || "";
+  document.getElementById("me-avatar").textContent = (m.name || "?").slice(0, 1);
+}
+function hideMeRetry() {
+  const el = document.getElementById("me-retry");
+  if (el) el.classList.add("hidden");
+}
+// T58 契约 3.3（R5/R7）：me() 失败统一入口——侧栏“已登录”保底 +
+// 错误 Toast（指引点侧栏重试）+ 内联重试按钮（动态绑定 retryFn；
+// 成功后由 retryFn 负责渲染与清错误 UI）。文案不再出现“重启应用重试”。
+function showMeError(retryFn, detail) {
+  document.getElementById("me-name").textContent = "已登录";
+  document.getElementById("me-user").textContent = "";
+  document.getElementById("me-avatar").textContent = "·";
+  showErr("获取账号资料失败（已登录，可点侧栏「重试获取资料」）", detail);
+  const el = document.getElementById("me-retry");
+  if (el) {
+    el.classList.remove("hidden");
+    el.onclick = () => retryFn(el);
+  }
+}
+// T58 契约 3.3：手动重试——重新 api().me()；成功→复用 renderMe、
+// 清错误 UI（隐藏按钮 + 移除错误 Toast 卡）、触发账号区刷新（R7：
+// me 成功回填 me_cache 后 account_list 主号名同步）。
+async function retryMe(btn) {
+  const el = btn || document.getElementById("me-retry");
+  let m = null;
+  try {
+    m = await withBusy(el, "重试中…", () => api().me());
+  } catch (e) {
+    if (isBusyReject(e)) return;
+    return showErr("重试获取资料失败", e);
+  }
+  if (!m || !m.ok)
+    return showErr("重试获取资料失败",
+                    (m && m.error) || "未能获取账号信息");
+  renderMe(m);
+  hideMeRetry();
+  document.querySelectorAll('[data-t53b-toast="error"]')
+    .forEach(c => c.remove());
+  TgAccounts.refresh();
 }
 
 // ---------- 退出登录（重置账号） ----------
@@ -590,6 +672,7 @@ async function doLogout(btn) {
     document.getElementById("me-name").textContent = "未登录";
     document.getElementById("me-user").textContent = "";
     document.getElementById("me-avatar").textContent = "·";
+    hideMeRetry();   // T58 3.3：退出登录收起可能残留的资料重试入口
     // 显示登录界面（从手机号开始）
     guestMode = false;
     hideGuestBar();
@@ -3208,6 +3291,7 @@ const TgAccounts = (() => {
     const alts = altAccounts();
     const rows = [];
     if (main) {
+      const standby = uiState(main) === "standby";
       rows.push(`
         <div class="acct-row" data-aid="${esc(main.id)}">
           <span class="acct-tag">主号</span>
@@ -3216,6 +3300,9 @@ const TgAccounts = (() => {
             <div class="acct-sub">${esc(subOf(main))}</div>
           </div>
           <span class="acct-state" data-st="${esc(uiState(main))}">${esc(stateText(main))}</span>
+          ${standby ? `<button class="btn glass-btn sm" id="acct-main-reconnect"
+            onclick="TgAccounts.reconnectMain(this)">重试连接</button>
+            <span id="acct-main-reconn-err" class="acct-reconn-err"></span>` : ""}
           <button class="btn danger sm" onclick="TgAccounts.logout(this)"${_busy ? " disabled" : ""}>退出登录</button>
         </div>`);
     }
@@ -3236,10 +3323,14 @@ const TgAccounts = (() => {
   }
 
   // ---------- 添加小号三步卡 ----------
-  function setAddStep(step) {
+  // T58 r2：第二参数 keepRecover=true 仅用于“返回”切步——保持返回前
+  // 恢复按钮实况、不额外复位；既有调用（openAdd/addStart/addRecover/
+  // verifyCode 等不传第二参）行为不变（进 phone 步即重置）
+  function setAddStep(step, keepRecover) {
     ["phone", "code", "pwd"].forEach(x =>
       document.getElementById("acct-add-step-" + x)
         .classList.toggle("hidden", x !== step));
+    if (step === "phone" && !keepRecover) hideAddRecover();  // T58 补充1：回 phone 步即重置
   }
   function openAdd() {
     resetWarmWindow();   // T56 补充②：显式添加=新暖机会话（当次必收敛，不永久 connecting）
@@ -3270,8 +3361,33 @@ const TgAccounts = (() => {
   const addErr = m =>
     (document.getElementById("acct-add-err").textContent = m || "");
 
+  // T58 批准书补充1：小号向导“已收到验证码？直接输入”恢复入口
+  // （与主卡 #login-recover-btn 同口径；仅 recoverable 显示，点击才
+  // 进码步，flood_wait 不显示）
+  function showAddRecover() {
+    const el = document.getElementById("acct-add-recover-btn");
+    if (el) el.classList.remove("hidden");
+  }
+  function hideAddRecover() {
+    const el = document.getElementById("acct-add-recover-btn");
+    if (el) el.classList.add("hidden");
+  }
+  function addRecover() {
+    hideAddRecover();
+    setAddStep("code");
+  }
+
+  // T58 r2 契约 3.2 + 批准书补充1②：小号三步“返回”——纯前端切步，
+  // 不调任何 RPC、不清 addingId、不清已输入的手机号/验证码/密码、
+  // 不触发错误清空与 openAdd/closeAdd 的“重开向导”复位语义
+  // （code 步返回→phone 步；pwd 步返回→code 步；setAddStep 第二参
+  // keepRecover 保持返回前恢复按钮实况）。
+  function addCodeBack() { setAddStep("phone", true); }
+  function addPwdBack() { setAddStep("code"); }
+
   async function addStart(btn) {
     addErr("");
+    hideAddRecover();   // T58 补充1：新一轮发送即重置恢复按钮
     const phone = document.getElementById("acct-add-phone").value.trim();
     if (!phone) return addErr("请输入手机号");
     let r;
@@ -3281,8 +3397,19 @@ const TgAccounts = (() => {
     } catch (e) {
       return addErr("发送失败：" + ((e && e.message) || e));
     }
-    if (r.ok) setAddStep("code");
-    else addErr(r.error || "发送验证码失败");
+    if (r.ok) {
+      // T58 契约 3.2（r2 修复）：软成功 warning 原句先落 acct-add-err
+      // 再切码步（与主卡 doSendCode 同口径；warning 来自后端、只透传
+      // 不改写，且随卡内错误行带到码步可见）
+      if (r.warning) addErr(r.warning);
+      setAddStep("code");
+    }
+    else if (r.recoverable) {
+      // T58 契约 3.2/2.7（补充1）：可恢复错误停 phone 步 + 明示入口，
+      // 点击才进码步；flood/其余形状只显错（分支同主卡）
+      addErr(r.error);
+      showAddRecover();
+    } else addErr(r.error || "发送验证码失败");
   }
   async function verifyCode(btn) {
     addErr("");
@@ -3344,6 +3471,34 @@ const TgAccounts = (() => {
     const errEl = document.getElementById("acct-err");
     if (errEl) errEl.textContent =
       r.busy ? "该小号正被任务使用，暂不能移除" : (r.error || "移除失败");
+  }
+
+  // ---------- T58 契约 3.4（R6）：主号“待连接”行重试连接 ----------
+  // 仅 standby（raw has_session 且暖机窗口尽）渲染按钮；withBusy 防重；
+  // 成功→afterLogin 收口 + 账号区刷新（行重建后按钮自然消失）；
+  // 失败→行内内联错误（不弹 toast）、按钮恢复可点。小号行不加（范围外）。
+  async function reconnectMain(btn) {
+    let r;
+    try {
+      r = await withBusy(btn, "重试中…", () => acctCall("connect"));
+    } catch (e) {
+      if (isBusyReject(e)) return;
+      return showReconnErr((e && e.message) || e);
+    }
+    if (r && r.ok) {
+      // stage=ready 或 client 已在场无 stage：走 afterLogin（me 渲染、
+      // 收卡）+ 账号区刷新
+      await afterLogin();
+      refresh();
+      return;
+    }
+    showReconnErr((r && (r.error || r.warning)) || "连接失败");
+  }
+  function showReconnErr(msg) {
+    const slot = document.getElementById("acct-main-reconn-err");
+    if (slot) { slot.textContent = msg || ""; return; }
+    const errEl = document.getElementById("acct-err");
+    if (errEl) errEl.textContent = msg || "";
   }
 
   // ---------- 退出登录（接现有 logout RPC；busy 时禁用）----------
@@ -3490,9 +3645,11 @@ const TgAccounts = (() => {
 
   return {
     mount, refresh, render, renderSegs, pickSeg,
-    openAdd, closeAdd, addStart, verifyCode, verifyPassword,
+    openAdd, closeAdd, addStart, addRecover, addCodeBack, addPwdBack,
+    verifyCode, verifyPassword,
     askRemove, cancelRemove, confirmRemove, logout,
     dismissHint, hintAddAlt, applyNewTaskAcct, noteTaskAcct,
+    reconnectMain,
     list, altAccounts, stateText,
     get source() { return _source; },
     get newAcct() { return newTaskAcct; },
