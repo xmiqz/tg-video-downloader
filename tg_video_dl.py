@@ -103,6 +103,13 @@ ACCT_HINT_MIN_INTERVAL = 30.0
 # 无权限频道错误类名钉死集合（用 type(e).__name__ 与真 telethon 类比较）。
 PRIVATE_ERROR_NAMES = {"ChannelPrivateError"}
 
+# ---- T21 持久化防抖与 .bak 轮转（FR-8 / AC-8）----
+PERSIST_DEBOUNCE_SECS = 1.0      # 合并窗口（FR-8 要求 1–2s，取 1.0）
+PERSIST_MAX_WAIT_SECS = 2.0      # 自首次脏起的保底落盘上限
+PERSIST_BAK_COUNT = 3            # .bak 轮转保留份数
+# 终态状态词集合（判定 force 落盘；沿用既有状态词，不新造）
+PERSIST_FORCE_STATUSES = ("done", "exists", "failed", "skipped", "cancelled")
+
 
 # ---------------- 配置与登录 ----------------
 
@@ -197,6 +204,16 @@ def ensure_dirs_and_migrate():
 
     # T56 Bug5：提升流程中断对账（零网络；正常态零动作）
     reconcile_session_promotion()
+
+    # T21：tasks 目录原子写残留 .*.json.tmp 清理（只清 tmp，绝不碰 bak）
+    try:
+        for tmp_task in TASK_ROOT.glob("*.json.tmp"):
+            try:
+                tmp_task.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 # 内置凭证：Telegram 官方桌面客户端公开使用的 api_id/api_hash，
@@ -2626,23 +2643,272 @@ def task_file_path(task):
     return TASK_ROOT / f"{task['id']}.json"
 
 
-def save_task(task):
-    """原子写入任务清单：先写 .tmp 再改名，断电也不会写坏"""
-    TASK_ROOT.mkdir(parents=True, exist_ok=True)
+def save_task(task, *, force=False):
+    """保存任务清单（T21 防抖合卷 + .bak 轮转）。
+
+    force=False：默认合卷。若该任务正处于合并窗口（冷启动后 1s 内），本次
+    只把最新值入队合并、不阻塞调用方、返回 None；若窗口已关（冷启动），
+    本次同步落盘最新值（durable）后返回 None，保证“冷启动单次写”调用方
+    视角立即可见（兼容既有 保存→load 同进程读）。latest 值胜出；窗口由
+    周期兜底，自最近一次冷启动起 ≤ PERSIST_DEBOUNCE_SECS 必有新写。
+    force=True：走同一有序原子落盘路径并完成 .bak 轮转后同步返回；成功
+    返回 True、失败返回 False（不抛异常）。
+
+    并发一致性：入队即 deepcopy 一致快照（锁内），序列化期间调用方改原
+    dict 无影响；force 与合卷走同一通道、按任务 id 只留最新值。
+    """
+    if force:
+        return _persist_force(task)
+    return _persist_coalesce(task)
+
+
+# ===================== T21 合卷落盘器（模块级） =====================
+# 单 daemon writer 线程 + 每任务锁；按 task id 维护"最新待写 dict"；
+# 最新值胜出；线程在首次脏写时懒启动。全部写盘异常在持久化层捕获并
+# 输出机读日志（前缀 [persist]），绝不向 worker 调用栈抛异常。
+
+import copy as _copy
+import atexit as _atexit
+
+_PERSIST_LOCK = threading.Lock()        # 保护下方全部 _PERSIST_* 状态
+_PERSIST_PENDING = {}                  # task_id -> (snapshot, seq, force)
+_PERSIST_WINDOW = {}                   # task_id -> 合并窗口截止（monotonic）
+_PERSIST_WRITTEN = {}                  # task_id -> 已写 seq（同步等待用）
+_PERSIST_WRITTEN_OK = {}               # task_id -> 该次写是否成功
+_PERSIST_SEQ = 0                       # 单调递增请求序号（newest-only）
+_PERSIST_REPLACE_COUNT = 0             # 机读：实际 os.replace 成功次数（测试）
+_PERSIST_THREAD = None                 # daemon writer 线程
+_PERSIST_STOP = threading.Event()
+_PERSIST_COND = threading.Condition(_PERSIST_LOCK)
+_PERSIST_EXITING = False               # 解释器退出中：抑制 [persist] 打印
+
+
+def _persist_log(msg):
+    if _PERSIST_EXITING:
+        return
+    print(f"[persist] {msg}", flush=True)
+
+
+def _persist_snapshot(task):
+    """锁外 deepcopy 一致快照：worker 序列化期间调用方改 dict 无影响。"""
+    return _copy.deepcopy(task)
+
+
+def _persist_ensure_writer():
+    global _PERSIST_THREAD
+    with _PERSIST_LOCK:
+        if _PERSIST_THREAD is None or not _PERSIST_THREAD.is_alive():
+            _PERSIST_STOP.clear()
+            _PERSIST_THREAD = threading.Thread(
+                target=_persist_writer_main, name="t21-persist-writer",
+                daemon=True)
+            _PERSIST_THREAD.start()
+
+
+def _persist_coalesce(task):
+    """非 force 默认合卷。冷启动（窗口已关）本次同步 durable 落盘；
+    窗口内只合并最新值不阻塞。返回 None。"""
+    global _PERSIST_SEQ
+    tid = task["id"]
+    snap = _persist_snapshot(task)
+    _persist_ensure_writer()
+    with _PERSIST_LOCK:
+        _PERSIST_SEQ += 1
+        seq = _PERSIST_SEQ
+        now = time.monotonic()
+        if now < _PERSIST_WINDOW.get(tid, 0):
+            # 窗口内：只更新最新值，不阻塞调用方
+            _PERSIST_PENDING[tid] = (snap, seq, False)
+            _PERSIST_COND.notify_all()
+            return None
+        # 冷启动：开本轮窗口，本次同步写（durable）
+        _PERSIST_WINDOW[tid] = now + PERSIST_DEBOUNCE_SECS
+        _PERSIST_PENDING[tid] = (snap, seq, True)
+        _PERSIST_COND.notify_all()
+    _persist_wait_seq(tid, seq)
+    return None
+
+
+def _persist_force(task):
+    """force 同步落盘：走同一通道并等待该 seq 真正写出。"""
+    global _PERSIST_SEQ
+    tid = task["id"]
+    snap = _persist_snapshot(task)
+    _persist_ensure_writer()
+    with _PERSIST_LOCK:
+        _PERSIST_SEQ += 1
+        seq = _PERSIST_SEQ
+        _PERSIST_PENDING[tid] = (snap, seq, True)
+        _PERSIST_WINDOW[tid] = time.monotonic()   # 重开窗口：下一次视为冷
+        _PERSIST_COND.notify_all()
+    return _persist_wait_seq(tid, seq)
+
+
+def _persist_wait_seq(tid, seq):
+    """有界等待该 seq 的写入。成功返回 True、失败/超时返回 False。"""
+    with _PERSIST_LOCK:
+        deadline = time.monotonic() + PERSIST_MAX_WAIT_SECS * 2 + 2.0
+        while True:
+            if _PERSIST_WRITTEN.get(tid, -1) >= seq:
+                return bool(_PERSIST_WRITTEN_OK.get(tid, False))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            _PERSIST_COND.wait(remaining)
+
+
+def _persist_writer_main():
+    while True:
+        with _PERSIST_COND:
+            while True:
+                now = time.monotonic()
+                ready = [tid for tid, (_snap, _sq, force)
+                         in _PERSIST_PENDING.items()
+                         if force or now >= _PERSIST_WINDOW.get(tid, 0)]
+                if ready or _PERSIST_STOP.is_set():
+                    break
+                _PERSIST_COND.wait(0.05)
+            if _PERSIST_STOP.is_set() and not _PERSIST_PENDING:
+                break
+            if not ready:
+                continue
+            batch = [(tid, _PERSIST_PENDING.pop(tid)) for tid in ready]
+        # 锁外逐个写；失败保留最新快照（以非 force 重新入队、重开窗口）
+        for tid, (snap, seq, force) in batch:
+            ok = _persist_write_one(snap, force)
+            with _PERSIST_LOCK:
+                _PERSIST_WRITTEN[tid] = seq
+                _PERSIST_WRITTEN_OK[tid] = ok
+                if not ok:
+                    cur = _PERSIST_PENDING.get(tid)
+                    if cur is None or cur[1] <= seq:
+                        _PERSIST_PENDING[tid] = (snap, seq, False)
+                        _PERSIST_WINDOW[tid] = (time.monotonic()
+                                                 + PERSIST_DEBOUNCE_SECS)
+                _PERSIST_COND.notify_all()
+
+
+def _bak_rotate(path, tid):
+    """best-effort 3 份 .bak 轮转：replace 成功后把上一版正式内容滚入
+    bak1（copy 而非 move，绝不删/截断当前正式文件），bak1→bak2→bak3，
+    删 bak4。轮转失败只记机读日志、不影响正式写成功。"""
+    p = str(path)
+    b1, b2, b3, b4 = p + ".bak1", p + ".bak2", p + ".bak3", p + ".bak4"
+    if os.path.exists(b3):
+        os.replace(b3, b4)
+    if os.path.exists(b2):
+        os.replace(b2, b3)
+    if os.path.exists(b1):
+        os.replace(b1, b2)
+    if os.path.exists(b4):
+        os.remove(b4)
+    if os.path.exists(path):
+        shutil.copyfile(path, b1)
+
+
+def _persist_write_one(task, force):
+    """单任务原子落盘：json.dumps 预检 → 写 .tmp(flush+fsync) →
+    os.replace 12×25ms → replace 成功后再轮转备份。返回是否成功。"""
     path = task_file_path(task)
+    tid = task["id"]
+    try:
+        data = json.dumps(task, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError, RecursionError) as e:
+        # 不可序列化：丢弃该次脏值，正式与 bak 一律不动，不阻塞后续好写
+        _persist_log(f"serialize_error id={tid} "
+                     f"force={1 if force else 0} "
+                     f"exc={type(e).__name__} msg={e}")
+        return False
+    try:
+        TASK_ROOT.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        _persist_log(f"write_error id={tid} force={1 if force else 0} "
+                     f"attempt=0 exc={type(e).__name__} msg={e}")
+        return False
     tmp = str(path) + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(task, f, ensure_ascii=False, indent=2)
-    # Windows：目标文件被并发读（server 轮询/任务库渲染正打开同一 json）
-    # 时 os.replace 报拒绝访问；短退避重试即可恢复，用尽仍失败才上抛。
-    for _try in range(12):
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError as e:
+        _persist_log(f"write_error id={tid} force={1 if force else 0} "
+                     f"attempt=0 exc={type(e).__name__} msg={e}")
+        return False
+    ok = False
+    # 先轮转（把 replace 前正式内容滚入 bak1，bak1→bak2→bak3，绝不碰正式）
+    try:
+        _bak_rotate(path, tid)
+    except OSError as e:
+        _persist_log(f"rotate_error id={tid} exc={type(e).__name__} "
+                     f"msg={e}")
+    for attempt in range(12):
         try:
             os.replace(tmp, path)
-            return
+            ok = True
+            break
         except PermissionError:
-            if _try == 11:
-                raise
+            if attempt == 11:
+                _persist_log(
+                    f"write_error id={tid} force={1 if force else 0} "
+                    f"attempt={attempt + 1} exc=PermissionError "
+                    f"msg=replace 12 次仍被占用")
+                return False
             time.sleep(0.025)
+        except OSError as e:
+            _persist_log(f"write_error id={tid} force={1 if force else 0} "
+                         f"attempt={attempt + 1} exc={type(e).__name__} "
+                         f"msg={e}")
+            return False
+    global _PERSIST_REPLACE_COUNT
+    _PERSIST_REPLACE_COUNT += 1
+    return ok
+
+
+def reset_persistence():
+    """测试复位钩子：停 writer、清待写、join、复位状态（生产代码不调用）。"""
+    global _PERSIST_THREAD, _PERSIST_SEQ, _PERSIST_REPLACE_COUNT
+    _PERSIST_STOP.set()
+    with _PERSIST_LOCK:
+        _PERSIST_COND.notify_all()
+    t = _PERSIST_THREAD
+    if t is not None:
+        t.join(timeout=PERSIST_MAX_WAIT_SECS + 1.0)
+    with _PERSIST_LOCK:
+        _PERSIST_PENDING.clear()
+        _PERSIST_WINDOW.clear()
+        _PERSIST_WRITTEN.clear()
+        _PERSIST_WRITTEN_OK.clear()
+        _PERSIST_SEQ = 0
+        _PERSIST_REPLACE_COUNT = 0
+    _PERSIST_STOP.clear()
+
+
+def _persist_flush_on_exit():
+    """解释器退出有界 flush：先停 daemon writer（防 finalize 期其继续
+    打印/写盘），再兜底把剩余待写同步写掉（退出期静默，出错即丢）。"""
+    global _PERSIST_EXITING
+    try:
+        _PERSIST_EXITING = True
+        _PERSIST_STOP.set()
+        with _PERSIST_LOCK:
+            _PERSIST_COND.notify_all()
+        if _PERSIST_THREAD is not None:
+            _PERSIST_THREAD.join(timeout=PERSIST_MAX_WAIT_SECS + 1.0)
+        if _PERSIST_PENDING:
+            with _PERSIST_LOCK:
+                batch = list(_PERSIST_PENDING.items())
+                _PERSIST_PENDING.clear()
+            for tid, (snap, seq, force) in batch:
+                try:
+                    _persist_write_one(snap, force)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+_atexit.register(_persist_flush_on_exit)
 
 
 def load_tasks():
@@ -2808,13 +3074,13 @@ def rename_task(task, title):
     title = (title or "").strip()
     if title:
         task["channel_title"] = title[:80]
-        save_task(task)
+        save_task(task, force=True)
 
 
 def set_parallel(task, n):
     n = max(1, min(int(n), 8))
     task.setdefault("params", {})["parallel"] = n
-    save_task(task)
+    save_task(task, force=True)
 
 
 def _norm_dir(p):
@@ -2934,7 +3200,7 @@ def change_folder(task, new_path, move_files=False, progress=None):
     if not move_files:
         # 纯路径修改：不搬任何文件，一次 save_task（行为与旧版一致）
         task["folder"] = new_path
-        save_task(task)
+        save_task(task, force=True)
         return {"ok": True, "unchanged": False, "moved": [], "skipped": [],
                 "pending": [], "error": ""}
 
@@ -3029,7 +3295,7 @@ def change_folder(task, new_path, move_files=False, progress=None):
             _emit(done, n, bytes_done, total_bytes, disp)  # 文件完成帧
         # 全部确认到目标：folder 一次性更新落盘（仍在 MOVING_TASKS 内）
         task["folder"] = new_path
-        save_task(task)
+        save_task(task, force=True)
         return {"ok": True, "unchanged": False, "moved": moved,
                 "skipped": skipped, "pending": [], "error": ""}
     finally:
@@ -3044,7 +3310,7 @@ def set_item_status(task, key, status):
         return False
     ti["status"] = status
     ti.pop("error", None)
-    save_task(task)
+    save_task(task, force=True)
     return True
 
 
@@ -3060,7 +3326,7 @@ def set_items_status(task, keys, status):
             ti.pop("error", None)
             n += 1
     if n:
-        save_task(task)
+        save_task(task, force=True)
     return n
 
 
@@ -3103,7 +3369,7 @@ async def enrich_task_items(client, task):
                 ti["duration"] = dur
                 changed = True
     if changed:
-        save_task(task)
+        save_task(task, force=True)
 
 
 def remove_items(task, keys):
@@ -3113,7 +3379,7 @@ def remove_items(task, keys):
     task["items"] = [
         ti for ti in task["items"] if item_key(ti) not in ks
     ]
-    save_task(task)
+    save_task(task, force=True)
     return before - len(task["items"])
 
 
@@ -3157,7 +3423,7 @@ def append_records(task, records, status="pending"):
         content.add((r["name"], r["size"]))
         added += 1
     if added:
-        save_task(task)
+        save_task(task, force=True)
     return added
 
 
@@ -3236,7 +3502,7 @@ class DownloadSession:
             if ti is not None and ti["status"] != "pending":
                 ti["status"] = "pending"
                 ti.pop("error", None)
-                save_task(self.task)
+                save_task(self.task, force=True)
             mode = rec.get("_mode") or (
                 "parallel" if rec["size"] > 4 * 1024 * 1024
                 else "simple")
@@ -3258,7 +3524,7 @@ class DownloadSession:
             self.task["items"] = [
                 x for x in self.task["items"] if item_key(x) != key
             ]
-            save_task(self.task)
+            save_task(self.task, force=True)
         await self.mon.remove(key)
         self.wake.set()
 
@@ -4175,6 +4441,9 @@ async def _close_session(task_id, phase, detail, error=""):
     st = sess.state()
     ACTIVE_SESSIONS.pop(task_id, None)
     SESSION_TOMBSTONES[task_id] = (st, time.monotonic())
+    # T21 终态收口：显式 flush 该任务（force），终态 durably 可见
+    if getattr(sess, "task", None) is not None:
+        save_task(sess.task, force=True)
 
 
 async def run_download_session(client, task, sess, *, gui=None,
@@ -4198,7 +4467,7 @@ async def run_download_session(client, task, sess, *, gui=None,
             ti["error"] = error
         else:
             ti.pop("error", None)
-        save_task(task)
+        save_task(task, force=(status in PERSIST_FORCE_STATUSES))
 
     # ---- b. TUI 按键/显示任务（照现状创建：keys.start() 延后到磁盘
     #      y/N 询问之后——msvcrt 与 input 同抢控制台输入会把用户的
@@ -4232,7 +4501,7 @@ async def run_download_session(client, task, sess, *, gui=None,
     if do_reconcile:
         changed = reconcile_task(task)
         if changed > 0:
-            save_task(task)
+            save_task(task, force=True)
             await mon.set_phase("reconciling", f"重置 {changed} 条缺失记录")
 
     # 磁盘检查的交互输入结束后再启动按键监听（现状语义）
@@ -4378,7 +4647,7 @@ async def run_download_session(client, task, sess, *, gui=None,
                         ti["acct"] = ACCT_ALT
                     else:
                         ti.pop("acct", None)
-                    save_task(task)
+                    save_task(task, force=True)
                 try:
                     raw_client = await pool.aclient(acct)
                 except AccountUnavailable as ex:
@@ -4391,7 +4660,7 @@ async def run_download_session(client, task, sess, *, gui=None,
                         ment["acct"] = ACCT_MAIN
                     if ti is not None and "acct" in ti:
                         ti.pop("acct", None)
-                        save_task(task)
+                        save_task(task, force=True)
                     raw_client = client
                 # 客户端视图：FloodWait note_flood 后原样上抛（download_one
                 # 严格等待——FR-9 不变）；alt 上 ChannelPrivate 转池内
@@ -4441,7 +4710,7 @@ async def run_download_session(client, task, sess, *, gui=None,
                     ti2 = find_item(task, key)
                     if ti2 is not None and "acct" in ti2:
                         ti2.pop("acct", None)
-                        save_task(task)
+                        save_task(task, force=True)
                     # main 接续 alt 的条目（跨号）：先刷新引用再重下
                     try:
                         await refresh_record(client, sess, it)
@@ -4812,7 +5081,7 @@ async def pull_records(client, task, statuses, progress=None, mon=None):
                     continue
                 batch_recs.append(make(ti, m, src))
             if dirty:
-                save_task(task)
+                save_task(task, force=True)
             done += len(grp)
             if progress:
                 progress(done, len(wanted))
@@ -5046,10 +5315,10 @@ def _ask_acct_pref(pool, task):
     params = task.setdefault("params", {})
     if pref in ("main", "alt1"):
         params["acct_pref"] = pref
-        save_task(task)
+        save_task(task, force=True)
     elif "acct_pref" in params:
         params.pop("acct_pref", None)
-        save_task(task)
+        save_task(task, force=True)
 
 
 async def resume_flow(client, task, statuses, pool=None):
@@ -5254,7 +5523,7 @@ async def task_edit_flow(client, task):
 async def task_menu(client, task, pool=None):
     changed = reconcile_task(task)
     if changed:
-        save_task(task)
+        save_task(task, force=True)
         print(paint(f"（{changed} 个已完成视频本地文件缺失，已重置为未下载）",
                     YELLOW))
 
@@ -5547,7 +5816,7 @@ async def main_menu(client, pool=None):
         opts = [("1", "新建下载任务", True)]
         for i, t in enumerate(tasks, 2):
             if reconcile_task(t):
-                save_task(t)
+                save_task(t, force=True)
             c = task_counts(t)
             if c["unfinished"]:
                 state = paint(f"未完成 {c['unfinished']}（失败 {c['failed']}）", YELLOW)
@@ -5920,7 +6189,7 @@ async def new_task_flow(client, args=None, pool=None):
         str(folder), items,
     )
     for t in tasks:
-        save_task(t)
+        save_task(t, force=True)
     # T51：账号偏好问在任务落盘前（params 已并入首个任务 dict 时写键）；
     # 仅当已配置 alt 才问，无小号不问不写
     _ask_acct_pref(pool, tasks[0])
