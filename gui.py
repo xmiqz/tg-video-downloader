@@ -1714,6 +1714,32 @@ class Api:
                     sp.pop("acct_pref", None)
                 else:
                     sp["acct_pref"] = pref
+        # T22：任务级重试次数（不加新 RPC；可选字段 params.retries，
+        # 位于 acct_pref 块之后、folder 块之前）。字段存在才处理：
+        # 仅接受 0..8 整数（bool/float/字符串均拒绝且不落盘）；
+        # null/空串=恢复默认（pop 键）。合法值写 params、force 落盘、
+        # live sess.task 同步——正在下载的条目下次重试生效
+        # （download_one 每个 attempt 头经 sess.task 重取）。
+        if "retries" in fields:
+            raw = fields["retries"]
+            if raw is None or raw == "":
+                params = t.setdefault("params", {})
+                params.pop("retries", None)
+                core.save_task(t, force=True)
+                sess = core.ACTIVE_SESSIONS.get(task_id)
+                if sess is not None:
+                    sess.task.setdefault("params", {}).pop("retries", None)
+            elif (isinstance(raw, int) and not isinstance(raw, bool)
+                    and 0 <= raw <= 8):
+                params = t.setdefault("params", {})
+                params["retries"] = raw
+                core.save_task(t, force=True)
+                sess = core.ACTIVE_SESSIONS.get(task_id)
+                if sess is not None:
+                    sess.task.setdefault("params", {})["retries"] = raw
+            else:
+                return {"ok": False,
+                        "error": "retries 仅支持 0..8 的整数"}
         folder = (fields.get("folder") or "").strip()
         if not folder:
             return {"ok": True, "warnings": []}

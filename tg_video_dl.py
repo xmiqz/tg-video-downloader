@@ -110,6 +110,38 @@ PERSIST_BAK_COUNT = 3            # .bak 轮转保留份数
 # 终态状态词集合（判定 force 落盘；沿用既有状态词，不新造）
 PERSIST_FORCE_STATUSES = ("done", "exists", "failed", "skipped", "cancelled")
 
+# ---- T22 错误分类重试与 file_reference 刷新（FR-9 / AC-6）----
+# 瞬时退避序列钉死 3s/6s/12s，超过 3 次间隔后一律封顶 12s（§2 契约）。
+RETRY_BACKOFF = (3.0, 6.0, 12.0)
+RETRY_BACKOFF_CAP = 12.0       # 越界取此封顶值
+FILE_REFRESH_MAX = 3           # file_reference 单条刷新上限（第 4 次过期=确定性失败）
+RETRIES_MIN = 0                # 任务级/全局 retries 合法区间（0..8；
+                               # 0=不重试即仅 1 次尝试，由 download_one 兑现）
+RETRIES_MAX = 8
+RETRY_FLOOD_SPARE = 32         # flood 不计次的有界安全阀（§2“任何路径
+                               # 不得无限重试”）；一次性会话远达不到，
+                               # 仅防极端 flood 背靠背导致循环无界续转。
+# 确定性错误名集合（按 type(e).__name__ 判定，不硬 import；与
+# PRIVATE_ERROR_NAMES 同风格）。三件均已在当前 telethon 1.45.0
+# 验证存在（t22_result.md 形状备忘逐项证明）：
+#   ChannelPrivateError——频道私有/无权限（该账号永不可访问此频道）
+#   MediaEmptyError——引用消息无文档/无媒体
+#   MessageIdInvalidError——消息 ID 无效/已删除
+# 候选剔除记录（不存在或非永久无效，终版不入集）：DiscussionGroup
+# UnavailableError / EntitySizeKnownError（当前 telethon 无此类）；
+# ChatWriteForbiddenError / SlowModeWaitError（存在但下载场景非永久
+# 无效/属等待语义）；MsgIdInvalidError（存在但为旧别名，避免双名歧义）。
+DETERMINISTIC_ERROR_NAMES = frozenset({
+    "ChannelPrivateError", "MediaEmptyError", "MessageIdInvalidError",
+})
+# 控制类名集合（分类器归档 control；download_one 侧维持现状
+# 穿透（AccountDenied/CancelledError 走 BaseException）或经专属
+# except 原样返回 paused/removed/skipped——分类器不得截留）。
+CONTROL_ERROR_NAMES = frozenset({
+    "PauseFile", "RemoveFile", "SkipFile",
+    "AccountDenied", "CancelledError",
+})
+
 
 # ---------------- 配置与登录 ----------------
 
@@ -2464,11 +2496,96 @@ async def simple_download(client, item, target, ctl, state=None):
     await asyncio.wait_for(pump(), timeout=1800)
 
 
+# ============ T22 重试分类公共件（FR-9 / AC-6，refresh/download 邻域） ============
+
+class DeterministicDownloadError(Exception):
+    """永久无效下载错误（消息已删除/无文档/评论组不可用）：
+    重试无意义，download_one 收到即零 sleep 快失败（§2 契约）。"""
+
+
+# 测试缝（照 _CLIENT_FACTORY 注释风格）：模块级可覆盖 sleep 句柄。
+# 生产恒为 asyncio.sleep；测试 monkeypatch 为即退收集器（TR 不得
+# 真实等 3+6+12 秒）。download_one 的瞬时退避与 FloodWait 无 mon
+# 等待统一走此句柄；其他路径（pump 轮询 0.2s 等）不经句柄。
+_RETRY_SLEEP = asyncio.sleep
+
+
+def _retry_log(line):
+    """T22 机读日志：固定前缀 [retry]，一行一条，字段稳定可 grep；
+    只含 msg id/异常类名/秒数，禁带手机号/密钥/会话串。"""
+    print(f"[retry] {line}", flush=True)
+
+
+def classify_download_error(exc) -> str:
+    """T22 五档分类：control | flood | reference | deterministic | transient。
+    - control（PauseFile/RemoveFile/SkipFile/AccountDenied/CancelledError，
+      名字+isinstance 双保险）；AccountDenied/CancelledError 为
+      BaseException 本就穿出 except Exception——分类器只归档不截留。
+    - flood（FloodWaitError）/ reference（FileReferenceExpiredError）：
+      名字判定优先，兜底真类 isinstance。
+    - deterministic：DeterministicDownloadError，或名字命中
+      DETERMINISTIC_ERROR_NAMES（三件均已在 telethon 1.45.0 验证存在，
+      见常量区注释；T22/1.45+ 若更名按报告铁则剔除并记录）。
+    - 其余（TimeoutError/ConnectionError/OSError/asyncio.TimeoutError/
+      5xx/未知）一律 transient（保守，维持现行重试行为）。"""
+    name = type(exc).__name__
+    if (name in CONTROL_ERROR_NAMES
+            or isinstance(exc, (PauseFile, RemoveFile, SkipFile,
+                                AccountDenied))
+            or isinstance(exc, asyncio.CancelledError)):
+        return "control"
+    if name == "FloodWaitError" or isinstance(exc, FloodWaitError):
+        return "flood"
+    if (name == "FileReferenceExpiredError"
+            or isinstance(exc, FileReferenceExpiredError)):
+        return "reference"
+    if isinstance(exc, DeterministicDownloadError):
+        return "deterministic"
+    if name in DETERMINISTIC_ERROR_NAMES:
+        return "deterministic"
+    return "transient"
+
+
+def _valid_retries(v):
+    """retries 合法值：0..8 整数（bool 排除；float/str/越界均非法）。"""
+    return (isinstance(v, int) and not isinstance(v, bool)
+            and RETRIES_MIN <= v <= RETRIES_MAX)
+
+
+def _exec_cap(tries) -> int:
+    """retries 配置值 → 总尝试次数上限（§2/TR-22.5 联合锁定）：
+    0→1（不重试即仅 1 次尝试）；1→2（允许一次退避重试）；
+    >=2→retries 自身（2→2，默认 3→3，8→8）。由任务书 TR-22.5
+    （0→1 次尝试、1→2 次尝试）与 TR-22.2（默认 3 次执行、5 次执行）、
+    TR-22.5（cfg=2→2 次尝试）四点共同钉死，唯一自洽公式。"""
+    if tries <= 0:
+        return 1
+    return max(2, tries)
+
+
+def resolve_retries(task, cfg=None) -> int:
+    """T22 有效重试次数（总尝试次数上限；0=仅 1 次尝试由 download_one
+    兑现）：params.retries 合法→其值；否则 cfg['retries']（tg_config
+    可选键，仅读取无写入口）合法→其值；否则模块常量 RETRIES(=3)。
+    非法值一律回落不抛（核心侧读到无效值忽略回默认——§2）。"""
+    params = task.get("params") if isinstance(task, dict) else None
+    if isinstance(params, dict):
+        v = params.get("retries")
+        if _valid_retries(v):
+            return v
+    if isinstance(cfg, dict):
+        v2 = cfg.get("retries")
+        if _valid_retries(v2):
+            return v2
+    return RETRIES
+
+
 async def refresh_record(client, sess, item):
     """file_reference 过期刷新：按条目来源重取该条消息并**原地**更新
     item/rec 的 msg/doc/size（sess.records 与队列中的是同一对象引用），
     任务清单持久条目 size 同步（make_task_item 字段集不变，无 phase 键）。
-    消息已删除/无文档按确定性错误抛 RuntimeError。返回新 msg。"""
+    T22：消息已删除/无文档/评论组不可用按确定性错误抛
+    DeterministicDownloadError（原 RuntimeError，消息文本保留）。返回新 msg。"""
     task = sess.task
     src = item.get("src", SRC_CHANNEL)
     key = (src, item["msg"].id)
@@ -2480,13 +2597,15 @@ async def refresh_record(client, sess, item):
         else:
             ent = await get_discuss_entity(client, chan)
             if ent is None:
-                raise RuntimeError("评论组不可用，无法刷新引用")
+                # T22：评论组不可用=永久无效（重试无意义）
+                raise DeterministicDownloadError("评论组不可用，无法刷新引用")
         sess.entities[src] = ent
     m = await client.get_messages(ent, ids=item["msg"].id)
     if isinstance(m, list):
         m = m[0] if m else None
     if m is None or not getattr(m, "document", None):
-        raise RuntimeError(f"#{item['msg'].id} 消息已删除或无文档")
+        # T22：消息已删除/无文档=永久无效（重试无意义）
+        raise DeterministicDownloadError(f"#{item['msg'].id} 消息已删除或无文档")
     new_size = getattr(m.document, "size", 0) or item["size"]
     item["msg"] = m
     item["doc"] = m.document
@@ -2507,10 +2626,26 @@ async def refresh_record(client, sess, item):
 
 
 async def download_one(client, item, target, ctl, state=None):
-    """返回 ok / skipped / skip-exists / paused / removed / ('fail', reason)"""
+    """返回 ok / skipped / skip-exists / paused / removed / ('fail', reason)
+
+    T22 重试分类（§2 行为契约，入口/返回词表与现状一致）：
+      - flood：严格等待（UI 走 mon.enter_flood；无 mon 时句柄 sleep
+        seconds+1），不消耗任何重试预算，等待后原 attempt 重新执行；
+      - reference：独立刷新预算（单条上限 FILE_REFRESH_MAX=3），成功
+        刷新后重下且不占瞬时次数；第 4 次过期=确定性失败；刷新动作
+        异常按分类落入 deterministic（立即失败）/transient（占一次
+        瞬时预算并按退避）口径；
+      - deterministic：立即 fail（零 sleep）；
+      - transient：RETRY_BACKOFF 3/6/12 封顶 12s，总尝试次数=有效
+        retries（默认 RETRIES=3；params.retries 0..8 任务级可配，
+        cfg['retries'] 全局可选），上限即 failed（不自动重入队）。
+    机读日志前缀 [retry]（一行一条，仅 msg id/异常类名/秒数）。"""
     size = item["size"]
     mon = state["monitor"] if state else None
     key = (item.get("src", SRC_CHANNEL), item["msg"].id)
+    mid = item["msg"].id
+    sess = (state or {}).get("session")
+    cfg = (state or {}).get("cfg") if state else None
 
     if os.path.exists(target):
         if size and os.path.getsize(target) == size:
@@ -2520,7 +2655,20 @@ async def download_one(client, item, target, ctl, state=None):
         except OSError:
             pass
 
-    for attempt in range(RETRIES):
+    def _task_for_retries():
+        return getattr(sess, "task", None) if sess is not None else None
+
+    # T22：两类独立计数（flood/成功刷新不占任何预算）；有界 for——
+    # 界 = 执行上限 + 刷新上限 + flood 安全阀（§2：任何路径不得无限重试）。
+    transient_attempt = 0
+    ref_refresh = 0
+    base_tries = _exec_cap(resolve_retries(_task_for_retries(), cfg))
+    for _round in range(base_tries + FILE_REFRESH_MAX + RETRY_FLOOD_SPARE):
+        # 每 attempt 头重取有效 retries（正在下载的条目改
+        # params.retries/cfg 后下次重试即生效——edit_task live 同步依
+        # 赖此行为）。0=不重试即仅 1 次尝试在此兑现（见 _exec_cap）。
+        tries = resolve_retries(_task_for_retries(), cfg)
+        exec_cap = _exec_cap(tries)
         # 新一轮尝试开始即清掉上一轮的“限速等待/Ns 后重试”提示：
         # 否则本次成功后旧报错仍残留在卡片上。
         if mon:
@@ -2563,11 +2711,21 @@ async def download_one(client, item, target, ctl, state=None):
                     pass
             return "skipped"
         except FileReferenceExpiredError:
-            # 文件引用过期（T49）：刷新后重试，不计入 3/6/12 退避次数；
-            # 刷新失败回 downloading 并按普通异常分类退避（文案透传）。
-            sess = (state or {}).get("session")
+            # 文件引用过期（T49 刷新 + T22 独立预算）：成功刷新→重下
+            # 不占任何预算；上限后→确定性失败（reason 含刷新上限）；
+            # 刷新异常按分类落入 deterministic（立即失败）/transient
+            # （占一次瞬时预算并退避）口径（消息文本透传）。
+            if ref_refresh >= FILE_REFRESH_MAX:
+                _retry_log(f"giveup id={mid} reason=refresh_cap")
+                reason = (f"#{mid} 文件引用刷新已达上限"
+                          f"（{FILE_REFRESH_MAX} 次）——刷新上限")
+                if mon:
+                    await mon.error(key, reason)
+                return "fail", reason
+            _retry_log(f"kind=reference id={mid} "
+                       f"refresh={ref_refresh + 1}/{FILE_REFRESH_MAX}")
             if mon:
-                await mon.set_phase("refreshing", f"#{item['msg'].id}")
+                await mon.set_phase("refreshing", f"#{mid}")
             try:
                 if sess is None:
                     raise RuntimeError("会话缺失，无法刷新文件引用")
@@ -2577,10 +2735,45 @@ async def download_one(client, item, target, ctl, state=None):
                     await mon.set_phase(
                         "downloading",
                         f"引用刷新失败 {type(rexc).__name__}")
-                raise
+                rkind = classify_download_error(rexc)
+                if rkind == "deterministic":
+                    _retry_log(f"kind=deterministic id={mid} fail_fast=1 "
+                               f"exc={type(rexc).__name__}")
+                    _retry_log(f"giveup id={mid} reason=deterministic")
+                    reason = f"{type(rexc).__name__}: {str(rexc)[:100]}"
+                    if mon:
+                        await mon.error(key, reason)
+                    return "fail", reason
+                # transient（及同名怪例→旧通用退化口径）：
+                # 第 k=ta+1 个瞬时错误；k==exec_cap 即本尝试为第
+                # exec_cap 次（总尝试上限）的失败——直接 giveup。
+                if transient_attempt + 1 >= exec_cap:
+                    _retry_log(f"giveup id={mid} reason=exhausted")
+                    reason = f"{type(rexc).__name__}: {str(rexc)[:100]}"
+                    if mon:
+                        await mon.error(key, reason)
+                    return "fail", reason
+                wait = (RETRY_BACKOFF[transient_attempt]
+                        if transient_attempt < len(RETRY_BACKOFF)
+                        else RETRY_BACKOFF_CAP)
+                transient_attempt += 1
+                _retry_log(f"kind=transient id={mid} "
+                           f"attempt={transient_attempt}/{tries} "
+                           f"wait={wait:g} exc={type(rexc).__name__}")
+                if mon:
+                    await mon.error(
+                        key, f"{type(rexc).__name__} → {wait:g}s 后重试"
+                             f"（{transient_attempt}/{tries}）")
+                await _RETRY_SLEEP(wait)
+                continue
+            ref_refresh += 1
             if mon:
                 await mon.set_phase("downloading", "引用已刷新")
+            # 刷新成功：重下不占任何预算
         except FloodWaitError as e:
+            # T22：等待不消耗任何重试预算，等待后原 attempt 重新执行。
+            _retry_log(f"kind=flood id={mid} "
+                       f"seconds={getattr(e, 'seconds', '?')}")
             if mon:
                 await mon.error(key, f"限速等待 {e.seconds}s")
             if mon:
@@ -2610,19 +2803,41 @@ async def download_one(client, item, target, ctl, state=None):
                         else "skipped"
                 await mon.leave_flood()
             else:
-                await asyncio.sleep(e.seconds + 1)
+                await _RETRY_SLEEP(e.seconds + 1)
         except Exception as e:
-            if attempt == RETRIES - 1:
+            # T22：先分类。deterministic→零 sleep 快失败；control 真类
+            # （PauseFile 等）有专属 except 前置、BaseException 天然穿透——
+            # 到不了此分支；同名怪例（名字判定为 control/flood 但类型
+            # 不匹配者）按现状旧通用语义退避（分类器不截留，TR-22.8）。
+            kind = classify_download_error(e)
+            if kind == "deterministic":
+                _retry_log(f"kind=deterministic id={mid} fail_fast=1 "
+                           f"exc={type(e).__name__}")
+                _retry_log(f"giveup id={mid} reason=deterministic")
                 reason = f"{type(e).__name__}: {str(e)[:100]}"
                 if mon:
                     await mon.error(key, reason)
                 return "fail", reason
-            wait = [3, 6, 12][attempt]
+            # transient：第 k=ta+1 个瞬时错误；k==exec_cap 即本尝试为
+            # 第 exec_cap 次（总尝试上限）的失败——到达上限即 fail。
+            if transient_attempt + 1 >= exec_cap:
+                _retry_log(f"giveup id={mid} reason=exhausted")
+                reason = f"{type(e).__name__}: {str(e)[:100]}"
+                if mon:
+                    await mon.error(key, reason)
+                return "fail", reason
+            wait = (RETRY_BACKOFF[transient_attempt]
+                    if transient_attempt < len(RETRY_BACKOFF)
+                    else RETRY_BACKOFF_CAP)
+            transient_attempt += 1
+            _retry_log(f"kind=transient id={mid} "
+                       f"attempt={transient_attempt}/{tries} "
+                       f"wait={wait:g} exc={type(e).__name__}")
             if mon:
                 await mon.error(
-                    key, f"{type(e).__name__} → {wait}s 后重试（{attempt+1}/{RETRIES}）"
-                )
-            await asyncio.sleep(wait)
+                    key, f"{type(e).__name__} → {wait:g}s 后重试"
+                         f"（{transient_attempt}/{tries}）")
+            await _RETRY_SLEEP(wait)
     return "fail", "重试次数用完"
 
 
@@ -4457,6 +4672,10 @@ async def run_download_session(client, task, sess, *, gui=None,
     folder = pathlib.Path(task["folder"])
     planned_n = len(mon.entries)
     counters = {"ok": 0, "skipped": 0, "exists": 0, "fail": 0}
+    # T22 S3：会话级 tg_config 快照（仅读可选 retries 键；无全局写入口），
+    # 经 state["cfg"] 透传给 download_one，在循环内与 sess.task 同源解析
+    # （选型：download_one 内经 sess.task 解析 + state 增 cfg 键，报告说明）。
+    _cfg_snapshot = load_config()
 
     def persist(key, status, error=None):
         ti = find_item(task, key)
@@ -4687,7 +4906,8 @@ async def run_download_session(client, task, sess, *, gui=None,
                 try:
                     r = await download_one(
                         dl_client, it, str(folder / it["name"]), ctl,
-                        state={"monitor": mon, "session": sess},
+                            state={"monitor": mon, "session": sess,
+                                   "cfg": _cfg_snapshot},
                     )
                 except AccountDenied:
                     # ---- alt 无权限（ChannelPrivate）：仅一次回退 main。
@@ -4724,7 +4944,8 @@ async def run_download_session(client, task, sess, *, gui=None,
                     try:
                         r = await download_one(
                             client, it, str(folder / it["name"]), ctl,
-                            state={"monitor": mon, "session": sess},
+                        state={"monitor": mon, "session": sess,
+                               "cfg": _cfg_snapshot},
                         )
                     except AccountDenied:
                         r = ("fail", "AccountDenied: 主号也无权限")
