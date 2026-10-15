@@ -3168,22 +3168,162 @@ def delete_task(task):
         pass
 
 
+# T23 启动对账（FR-10/AC-7）：对账允许自动变更的状态集合。
+# downloading 仅是会话运行相位、正常路径从不持久化——出现在清单里即
+# 崩溃残留（旧版/脏 JSON），无活动会话（由调用时机保证：会话启动前/
+# 菜单入口均非运行期）一律回 pending。
+RECONCILE_ACTIVE = frozenset(("downloading",))
+# 反向补登：成品在且大小匹配时磁盘事实优先，未终态条目归 exists。
+# skipped 是用户意图终态，两个状态变更集合都不含它（判定表 3/7 行）。
+RECONCILE_PROMOTABLE = frozenset(("pending", "failed", "downloading"))
+
+
+def _reconcile_artifacts(folder, ti, *, finished_ok):
+    """T23 工件修复：只碰本条目严格命名的分片工件——work=<name>.dl 与
+    <work>.part<N>.done 标记（任何删除前断言路径仍在 folder 内，防
+    name 穿越；成品文件永不删，错误大小的 work 也保留——parallel_
+    download 开工时自行 truncate）。
+
+    - finished_ok（成品在且大小匹配）：work 与标记都属收尾 replace 后
+      清理窗口的残留，全部删除；
+    - 无匹配成品：size==0 无分片方案不动；work 在且大小==size 时仅删
+      越界/畸形标记（idx 解析不出或 idx>=nparts；界内零字节标记信任
+      ——Telegram 无 piece hash，FR-10 不做内容校验）；work 缺失或
+      大小不符时删全部标记（防零字节洞）。
+    返回 (purged, trimmed, kept, work_removed)：purged/trimmed 为删除
+    的标记数，kept 为界内保留数（无成品分支），work_removed 0/1。"""
+    folder = pathlib.Path(folder)
+    name = ti["name"]
+    size = ti.get("size") or 0
+    work = folder / (name + ".dl")
+    prefix = name + ".dl.part"
+    found = sorted(folder.glob(name + ".dl.part*.done"))
+    purged = trimmed = kept = work_removed = 0
+
+    def _safe_remove(p):
+        assert p.parent == folder, f"对账工件越界: {p}"
+        try:
+            os.remove(p)
+            return True
+        except OSError:
+            return False
+
+    if finished_ok:
+        for p in found:
+            if _safe_remove(p):
+                purged += 1
+        if work.exists() and _safe_remove(work):
+            work_removed = 1
+        return purged, trimmed, kept, work_removed
+    if size == 0:
+        return purged, trimmed, kept, work_removed
+    nparts = -(-size // PART)
+    work_ok = work.exists() and work.stat().st_size == size
+    for p in found:
+        token = p.name[len(prefix):-len(".done")]
+        in_range = token.isdigit() and int(token) < nparts
+        if work_ok:
+            if in_range:
+                kept += 1
+            elif _safe_remove(p):
+                trimmed += 1
+        elif _safe_remove(p):
+            purged += 1
+    return purged, trimmed, kept, work_removed
+
+
 def reconcile_task(task):
-    """对账本地文件：标记完成但成品缺失/大小不符的，改回 pending。
-    返回重置条数（.dl 分片续传不在这里处理）。"""
+    """启动对账（T23 重写，FR-10/AC-7）：按磁盘事实全量重建——成品/
+    .dl/.partN.done/大小四要素核对；崩溃活动态（downloading 残留）回
+    pending；反向补登（成品在且大小匹配的未终态 →exists）；残留分片
+    工件修复（孤儿 purge / 越界畸形 trim / 成品匹配的 stale 清理）。
+    纯磁盘、零网络、幂等（第二遍 changed=0 零机读行）；skipped 是用户
+    意图终态永不自动改。机读日志前缀 [reconcile]（仅任务 id/msg id/
+    状态名/字节数，禁文件名与敏感信息）。返回计数 dict：
+    {"changed": 变更条目数, "reset": 重置 pending 条数,
+     "promote": 补登 exists 条数, "markers": purge+trim 删除标记数,
+     "stale_work": 成品匹配清理的 work+markers 文件数}。"""
     folder = pathlib.Path(task["folder"])
-    changed = 0
+    tid = task.get("id", "?")
+    stats = {"changed": 0, "reset": 0, "promote": 0,
+             "markers": 0, "stale_work": 0}
+    touched = set()
+
+    def _ev(kind, ti, from_st=None, to_st=None, detail=None):
+        line = f"[reconcile] task={tid} item={ti.get('msg')} kind={kind}"
+        if from_st is not None:
+            line += f" from={from_st}"
+        if to_st is not None:
+            line += f" to={to_st}"
+        if detail is not None:
+            line += f" detail={detail}"
+        print(line)
+        touched.add(ti.get("msg"))
+
     for ti in task["items"]:
-        if ti["status"] in DONE_STATUSES:
-            p = folder / ti["name"]
-            ok = p.exists() and (
-                not ti.get("size") or p.stat().st_size == ti["size"]
-            )
-            if not ok:
+        target = folder / ti["name"]
+        size = ti.get("size") or 0
+        try:
+            finished = target.exists() and (
+                size == 0 or target.stat().st_size == size)
+        except OSError:
+            finished = False
+        st = ti["status"]
+        # ---- 状态判定（判定表；skipped 永不自动改） ----
+        if finished:
+            if st in RECONCILE_PROMOTABLE:       # done/exists/skipped 不动
+                ti["status"] = "exists"
+                ti.pop("error", None)
+                _ev("promote_exists", ti, from_st=st, to_st="exists")
+                stats["promote"] += 1
+        elif target.exists():                    # 成品在但大小不符
+            if st not in ("pending", "skipped"):
+                try:
+                    got = target.stat().st_size
+                except OSError:
+                    got = -1
                 ti["status"] = "pending"
                 ti.pop("error", None)
-                changed += 1
-    return changed
+                _ev("reset_size", ti, from_st=st, to_st="pending",
+                    detail=f"{got}/{size}")
+                stats["reset"] += 1
+        else:                                    # 成品缺失
+            if st in DONE_STATUSES:
+                ti["status"] = "pending"
+                ti.pop("error", None)
+                _ev("reset_missing", ti, from_st=st, to_st="pending")
+                stats["reset"] += 1
+            elif st in RECONCILE_ACTIVE:         # 崩溃活动态回 pending
+                ti["status"] = "pending"
+                ti.pop("error", None)
+                _ev("active_reset", ti, from_st=st, to_st="pending")
+                stats["reset"] += 1
+        # ---- 工件修复（与 status 无关，凡无匹配成品时执行；
+        #      成品匹配时清 replace 后清理窗口残留） ----
+        try:
+            purged, trimmed, kept, work_removed = _reconcile_artifacts(
+                folder, ti, finished_ok=finished)
+        except OSError:
+            purged = trimmed = kept = work_removed = 0
+        if finished:
+            if purged or work_removed:
+                _ev("stale_work", ti, detail=f"{purged}/{work_removed}")
+                stats["stale_work"] += purged + work_removed
+        else:
+            if purged:
+                _ev("markers_purge", ti, detail=f"{purged}/{-(-size // PART)}")
+                stats["markers"] += purged
+            if trimmed:
+                _ev("markers_trim", ti, detail=f"{trimmed}/{kept}")
+                stats["markers"] += trimmed
+
+    stats["changed"] = len(touched)
+    if touched:
+        print(f"[reconcile] task={tid} changed={stats['changed']} "
+              f"reset={stats['reset']} promote={stats['promote']} "
+              f"markers={stats['markers']} "
+              f"stale_work={stats['stale_work']}")
+    return stats
 
 
 def task_counts(task):
@@ -4662,7 +4802,7 @@ async def _close_session(task_id, phase, detail, error=""):
 
 
 async def run_download_session(client, task, sess, *, gui=None,
-                               lazy_statuses=None, do_reconcile=False):
+                               lazy_statuses=None):
     """执行已 open 的下载会话（T49）。返回
     {"status": "done"|"aborted"|"error", "error": str, "counters": {...}}。
     阶段时序：preparing(open 已置) -> disk_check -> (reconciling) ->
@@ -4715,13 +4855,16 @@ async def run_download_session(client, task, sess, *, gui=None,
             await _close_session(task["id"], "aborted", "已取消")
             return {"status": "aborted", "error": "", "counters": counters}
 
-    # ---- d. reconciling（仅显式 do_reconcile=True；GUI 永不传，
-    #      TUI 生产入口也不传，对账时机仍是 task_menu 入口） ----
-    if do_reconcile:
-        changed = reconcile_task(task)
-        if changed > 0:
-            save_task(task, force=True)
-            await mon.set_phase("reconciling", f"重置 {changed} 条缺失记录")
+    # ---- d. reconciling（T23：会话启动前强制对账——GUI/TUI 同一
+    #      chokepoint，磁盘事实优先重建后再进下载；changed=0 时静默
+    #      （不打 phase 零机读行），逐条/汇总行由 reconcile_task 输出） ----
+    r = reconcile_task(task)
+    if r["changed"]:
+        save_task(task, force=True)
+        await mon.set_phase(
+            "reconciling",
+            f"重置 {r['reset']} 条，补登 {r['promote']} 条，"
+            f"清理分片工件 {(r['markers'] + r['stale_work'])} 个")
 
     # 磁盘检查的交互输入结束后再启动按键监听（现状语义）
     if gui is None:
@@ -5742,11 +5885,17 @@ async def task_edit_flow(client, task):
 
 
 async def task_menu(client, task, pool=None):
-    changed = reconcile_task(task)
-    if changed:
+    r = reconcile_task(task)
+    if r["changed"]:
         save_task(task, force=True)
-        print(paint(f"（{changed} 个已完成视频本地文件缺失，已重置为未下载）",
-                    YELLOW))
+        notes = []
+        if r["reset"]:
+            notes.append(f"{r['reset']} 条缺失/不符已重置为未下载")
+        if r["promote"]:
+            notes.append(f"{r['promote']} 条磁盘已有补记为已存在")
+        if r["markers"] or r["stale_work"]:
+            notes.append("残留分片工件已清理")
+        print(paint(f"（对账：{'，'.join(notes)}）", YELLOW))
 
     while True:
         c = task_counts(task)
@@ -6036,7 +6185,8 @@ async def main_menu(client, pool=None):
         title_bar("TG 视频下载器", f"{len(tasks)} 个任务")
         opts = [("1", "新建下载任务", True)]
         for i, t in enumerate(tasks, 2):
-            if reconcile_task(t):
+            r = reconcile_task(t)
+            if r["changed"]:
                 save_task(t, force=True)
             c = task_counts(t)
             if c["unfinished"]:

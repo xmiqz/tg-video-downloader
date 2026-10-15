@@ -1263,7 +1263,7 @@ class Api:
         return cb
 
     def _dl_worker(self, job_id, cancel_event, task_id, task, sess,
-                   lazy_statuses, do_reconcile):
+                   lazy_statuses):
         """download 作业 daemon 线程（仿 _search_worker 范式）：run_
         download_session 提交到 engine.loop，按返回 status 收口
         done/cancelled/error（错误文案透传）；线程兜底 except 同样
@@ -1274,8 +1274,7 @@ class Api:
             fut = asyncio.run_coroutine_threadsafe(
                 core.run_download_session(
                     self.client, task, sess, gui={},
-                    lazy_statuses=lazy_statuses,
-                    do_reconcile=do_reconcile),
+                    lazy_statuses=lazy_statuses),
                 self.engine.loop)
             result = fut.result()
         except Exception as e:  # noqa: BLE001 - worker 线程兜底
@@ -1416,7 +1415,7 @@ class Api:
         threading.Thread(
             target=self._dl_worker,
             args=(job_id, cancel_event, first["id"], first, sess,
-                  None, False),
+                  None),
             daemon=True, name="dl-" + job_id,
         ).start()
         self._start_dl_cancel_watcher(job_id, cancel_event, first["id"])
@@ -1613,6 +1612,12 @@ class Api:
         # 未注册的窗口；open_download_session 内另有同源兜底）
         if task_id in core.MOVING_TASKS:
             return {"ok": False, "error": "任务目录正在移动中，暂不能开始下载"}
+        # T23：会话启动前对账（FR-10）——与 run_download_session d 段
+        # 同的对账内核。此处先行的原因是：本方法后续的 n 计数与
+        # build_planned 都基于清单 status，必须在磁盘事实重建后取值。
+        r = core.reconcile_task(t)
+        if r["changed"]:
+            core.save_task(t, force=True)
         # T57：only_skipped 只拉 skipped（C10：语义单一，不兼带
         # pending/failed）；pull_records 的 make 确认消息后自动重置
         # pending 清错，全链复用既有 statuses 通路，零分支新增
@@ -1667,7 +1672,7 @@ class Api:
         threading.Thread(
             target=self._dl_worker,
             args=(job_id, cancel_event, task_id, t, sess,
-                  statuses, False),
+                  statuses),
             daemon=True, name="dl-" + job_id,
         ).start()
         self._start_dl_cancel_watcher(job_id, cancel_event, task_id)
