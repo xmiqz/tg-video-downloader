@@ -28,6 +28,11 @@
   --raw-scrim: rgba(16,22,40,.35);   --raw-frost: rgba(238,242,250,.45);
   --raw-shade: rgba(30,42,80,.35);   --raw-shade-strong: rgba(30,42,80,.14);
   --raw-shade-deep: rgba(4,6,18,.32); --raw-ring: rgba(79,124,255,.22);
+  /* T8 追加（最小）：液态玻璃底栏边缘虹彩原料 + 无滤镜降级实面原料 */
+  --raw-irid-1: rgba(64,201,224,.50);   /* 浅青 */
+  --raw-irid-2: rgba(96,219,156,.48);   /* 浅绿 */
+  --raw-irid-3: rgba(230,146,224,.50);  /* 淡粉紫 */
+  --raw-solid: #ffffff;                 /* 降级不透明实面（浅色） */
 
   /* --- 1.2 玻璃原料（v2.0 liquid 参数，对照见 t7_result.md） --- */
   --gl-blur-l: 34px;         --gl-blur-m: 24px;  --gl-blur-s: 12px;
@@ -101,6 +106,13 @@
   --glass-sheet-blur: var(--gl-blur-l);  --glass-sheet-border: var(--gl-e-a);
   --glass-sheet-hi: inset 0 var(--line-1) 0 var(--gl-hi-soft);
   --glass-sheet-shadow: var(--shadow-4);
+
+  /* --- 2.3 底栏边缘虹彩（T8 追加：液态玻璃悬浮底栏边缘色散，浅深两套原料派生） --- */
+  --nav-edge-iridescence: linear-gradient(100deg,
+      transparent 2%, var(--raw-irid-1) 15%, var(--raw-irid-2) 30%,
+      var(--raw-irid-3) 45%, transparent 58%);
+  --nav-edge-opacity: .85;  /* 虹彩带强度（叠加玻璃面上可辨，参考图口径） */
+  --nav-edge-fade: 30%;     /* 虹彩带在 nav 高度上的衰减终点（集中上缘） */
 }
 
 /* ============ 3. 组件层：T8/T10/T15 最小消费集合 ============ */
@@ -167,6 +179,11 @@
     --gl-e-a: rgba(255,255,255,.34); --gl-e-b: rgba(255,255,255,.20);
     --gl-hi: rgba(255,255,255,.55); --gl-hi-soft: rgba(255,255,255,.18);
     --gl-shadow: 0 16px 40px var(--raw-shade-strong);
+    /* T8 追加：深色虹彩原料（暗玻璃面上提亮）+ 降级实面 */
+    --raw-irid-1: rgba(112,220,255,.42);
+    --raw-irid-2: rgba(120,236,190,.38);
+    --raw-irid-3: rgba(255,178,244,.42);
+    --raw-solid: #171a28;
   }
 }
 
@@ -190,6 +207,11 @@
   --gl-e-a: rgba(255,255,255,.34); --gl-e-b: rgba(255,255,255,.20);
   --gl-hi: rgba(255,255,255,.55); --gl-hi-soft: rgba(255,255,255,.18);
   --gl-shadow: 0 16px 40px var(--raw-shade-strong);
+  /* T8 追加：深色虹彩原料 + 降级实面（与 4.1 系统深色块同值） */
+  --raw-irid-1: rgba(112,220,255,.42);
+  --raw-irid-2: rgba(120,236,190,.38);
+  --raw-irid-3: rgba(255,178,244,.42);
+  --raw-solid: #171a28;
 }
 
 /* ============ 5. 降级（FR-22 / NFR-8） ============ */
@@ -202,15 +224,16 @@
   }
 }
 
-/* 5.2 无 backdrop-filter：不透明/纯色玻璃降级面 */
+/* 5.2 无 backdrop-filter：不透明/纯色玻璃降级面
+   （T8 消化 T7 收割应改②：原深色路径 var(--raw-bg-2) 为 5% 白纱，
+   无滤镜时背后内容直接透出不可读；现统一为不透明实色 --raw-solid，
+   浅色=白、深色=暗实面板；blur 原料归零杜绝残留滤镜计算。） */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   :root {
     --gl-blur-l: 0; --gl-blur-m: 0; --gl-blur-s: 0;
-    --gl-g-a: rgba(255,255,255,.9); --gl-g-b: rgba(255,255,255,.7);
-    --gl-g-c: rgba(255,255,255,.62); --gl-l-2: rgba(255,255,255,.55);
-    --gl-l-1: rgba(255,255,255,.35);
-    --glass-card-bg: var(--raw-bg-2); --glass-nav-bg: var(--raw-bg-2);
-    --glass-sheet-bg: var(--raw-bg-2);
+    --glass-card-bg: var(--raw-solid);
+    --glass-nav-bg: var(--raw-solid);
+    --glass-sheet-bg: var(--raw-solid);
   }
 }
 
