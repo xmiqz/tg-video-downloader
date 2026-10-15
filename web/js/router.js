@@ -3,6 +3,10 @@
 //
 // 设计契约：evidence/T8/t8_contract.md（一次冻结，下游 T11–T16
 // 只替换 web/js/views/* 占位与其 css 切片，零改本文件/壳样式/引导）。
+// fix1（2026-10-15，spec 评审 hard 闭环）：产品默认路由模式恒 hash，
+// history 模式实现保留仅供具备 SPA 回退的宿主经测试钩子 v22history=1
+// 显式启用（与 v22shell 同待遇、净化不进历史）；模式解析收进纯函数
+// resolveMode（T18 翻版时 v22history/v22hashmode 与 v22shell 一并清理）。
 //
 // 结构分三层（tdd-seams：纯逻辑可离线测，视觉归 TR-8.2 浏览器级）：
 //   ① 契约纯函数：ROUTES / DEFAULT_ROUTE / parseHash / buildUrl / matchRoute
@@ -68,15 +72,43 @@ export function parseHash(hash) {
 }
 
 // buildUrl：两种模式的统一 URL 构造。
-// 净化规则：v22shell 是一次性引导开关，router 永不把它写进 URL；
-// 其余参数段（t=…）按序保留——保证 bridge token 在两种模式下存活。
+// 净化规则（fix1 R1）：v22shell 与 v22history 均为一次性测试钩子，router
+// 永不把它们写进 URL（v22history 与 v22shell 同等待遇，T18 翻版一并清理）；
+// 其余参数段（t=、v22hashmode、v22theme 等）按序保留——保证 bridge token
+// 在两种模式下存活。
 export function buildUrl(opts) {
-  const kv = (opts.extra || []).filter(function (p) { return p[0] !== "v22shell"; });
+  const kv = (opts.extra || []).filter(function (p) {
+    return p[0] !== "v22shell" && p[0] !== "v22history";
+  });
   const q = kv.map(function (p) { return p[0] + "=" + p[1]; }).join("&");
   if (opts.mode === "history") {
     return { pushUrl: opts.path + (q ? "#" + q : ""), has: q ? "#" + q : "" };
   }
   return "#" + opts.path + (q ? "&" + q : "");
+}
+
+// resolveMode：路由模式解析纯函数（fix1 R1，seam 离线可测）。
+// 入参 spec = { mode, protocol, url, pushStateOk }：
+//   mode        — "hash"|"history" 显式注入直返（seam S4/S5 注入面兼容）；
+//   protocol    — location.protocol（"file:" 恒 hash，钩子不可覆盖）；
+//   url         — location.href（或 pathname+search+hash 拼接），识别测试钩子；
+//   pushStateOk — 宿主 history.pushState 可用性。
+// 组长裁决（2026-10-15，spec hard 闭环）：产品默认模式恒 hash——loopback、
+// file:、普通 http 静态托管、任意 host 均默认 hash。依据：FR-4 规范入口
+// 本就是 `http://127.0.0.1:<port>/#t=<token>`；FR-26 要求无 SPA 回退的普通
+// http 静态托管可运行（pathname 路由刷新即 404 白页）；FR-27 禁止白屏；
+// FR-3 原文允许 "History API / hash 兼容"。history 模式全套实现保留，仅供
+// 具备 SPA 回退的宿主经显式测试钩子 v22history=1（hash 或查询串）启用；
+// v22hashmode=1 保留为强制 hash（与默认等价，测试用）。
+export function resolveMode(spec) {
+  const s = spec || {};
+  if (s.mode === "hash" || s.mode === "history") return s.mode;
+  const url = String(s.url || "");
+  if (/[?&#]v22hashmode=1(?!\w)/.test(url)) return "hash";
+  const proto = String(s.protocol || "").toLowerCase();
+  const isFile = proto.indexOf("file") === 0;
+  if (/[?&#]v22history=1(?!\w)/.test(url) && !isFile && s.pushStateOk) return "history";
+  return "hash";
 }
 
 function safeDecode(s) {
@@ -133,17 +165,20 @@ export function createRouter(deps) {
   // 注入环境无 win 时退化为 doc（离线桩把它当事件总线）。
   const win = d.win || (typeof window !== "undefined" ? window : doc);
 
-  let mode;
-  if (d.mode === "hash") mode = "hash";
-  else if (d.mode === "history") mode = "history";
-  else { // auto：无 pushState（老 WebView）或 file: 协议 → hash 降级
-    const okPush = !!(historyApi && typeof historyApi.pushState === "function");
-    const proto = location && location.protocol ? String(location.protocol) : "";
-    mode = okPush && proto !== "file:" ? "history" : "hash";
-  }
+  // 模式解析（fix1 R1）：默认 hash；仅测试钩子 v22history=1 在具备 pushState
+  // 的非 file: 宿主显式启用 history；v22hashmode=1 强制 hash。全部规则收在
+  // 纯函数 resolveMode（seam S7 单测）。
+  let mode = resolveMode({
+    mode: d.mode,
+    protocol: location && location.protocol ? String(location.protocol) : "",
+    url: location ? String(location.href ||
+      ((location.pathname || "/") + (location.search || "") + (location.hash || ""))) : "",
+    pushStateOk: !!(historyApi && typeof historyApi.pushState === "function"),
+  });
 
   const state = { current: "", currentView: null };
   const nodes = new Map(); // viewName -> mounted node（keep-alive 缓存）
+  const mounts = new Map(); // viewName -> in-flight mount Promise（fix1 R2：异步防重入）
   let navToken = 0;
 
   function currentExtra() {
@@ -165,10 +200,20 @@ export function createRouter(deps) {
     }
     let node = nodes.get(name);
     if (!node) {
-      const r = await v.mount(host);
-      if (token !== navToken) return; // 并发导航竞态：放弃过期挂载
+      // fix1 R2：慢异步 mount（T11+ 可能返回 Promise）期间同视图重入
+      // （hashchange/快速导航）复用同一 in-flight Promise——每视图 mount
+      // 至多并发一次；恢复时 navToken 已过期（已被切走）则丢弃结果且不写
+      // 缓存（不污染），后续重进复用该 Promise 或重新 mount，视图侧无需关心。
+      let pending = mounts.get(name);
+      if (!pending) {
+        pending = Promise.resolve(v.mount(host));
+        mounts.set(name, pending);
+      }
+      const r = await pending;
+      if (token !== navToken) return; // 并发导航竞态：放弃过期挂载（不缓存）
       node = r && r.nodeType ? r : null;
       nodes.set(name, node);
+      mounts.delete(name);
     }
     if (host && node && node.parentNode !== host) host.appendChild(node);
     if (typeof v.onEnter === "function") v.onEnter(params || {});
@@ -486,9 +531,11 @@ export async function boot() {
   }
 
   const router = createRouter({
-    // v22hashmode=1（hash 段）：测试钩子，强制 hash 降级模式（浏览器级
-    // 验证无 pushState 环境路由；T18 翻版时与 v22shell/v22theme 一并清理）。
-    mode: /[?#&]v22hashmode=1(?!\w)/.test(win.location.href) ? "hash" : "auto",
+    // 模式由 resolveMode 统一解析（fix1 R1）：产品默认恒 hash；测试钩子
+    // v22history=1（hash/查询串）显式启用 history（供具备 SPA 回退的宿主
+    // 测试）；v22hashmode=1 强制 hash。三钩子 T18 翻版时与 v22shell/
+    // v22theme 一并清理。
+    mode: "auto",
     history: win.history,
     location: win.location,
     doc: doc,

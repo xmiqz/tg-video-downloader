@@ -16,9 +16,10 @@
         回退不透明实色 nav 面（tokens --raw-solid，本任务 T7 应改②消化）
 
    双壳样式边界（并存期铁律）：旧壳 style.css 的全局元素规则会命中本壳
-   DOM（* reset / button / label / nav{flex-direction:column}）；本文件对
-   实际中招属性显式防御（ .sh-bottombar 主轴/ gap/flex），其余全局项经盘
-   点无冲突（label 规则待 T11+ 视图注意规避）。
+   DOM（* reset / button / label / nav{flex-direction:column} / nav{flex:1}）；
+   本文件对实际中招属性显式防御（ .sh-bottombar 主轴/ gap/flex、
+   .sh-side-nav 自持 flex:1——fix1 R3），其余全局项经盘点无冲突
+   （label 规则待 T11+ 视图注意规避）。
    ============================================================ */
 
 /* ---------- 1. 外壳根：全屏接管并隐藏旧壳顶层节点 ---------- */
@@ -97,6 +98,14 @@ body:has(> #sh-root) { overflow: hidden; }
   margin: 0;
   padding: 0;
   list-style: none;
+}
+/* fix1 R3（std 评审 judgement 1/2）：侧栏导航区自持纵向伸展——显式
+   flex:1 占满 brand 与 foot 之间，不再依赖旧壳全局 nav{flex:1}
+   （style.css:270）；T18 删除旧壳后形态零惊变。抽屉不加 grow，
+   foot 钉底由 .sh-drawer flex 容器 + margin-top:auto 保证。 */
+.sh-side-nav {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .sh-nav-item {
   display: flex;
@@ -300,6 +309,11 @@ body:has(> #sh-root) { overflow: hidden; }
   top: 0;
   bottom: 0;
   width: min(78vw, 320px);
+  /* fix1 R3（std 评审 judgement 1）：显式 flex 纵轴容器——使
+     .sh-drawer-foot 的 margin-top:auto 真实钉底（块级容器中垂直
+     auto margin 恒计 0，foot 在内容不足时不贴底）。 */
+  display: flex;
+  flex-direction: column;
   box-sizing: border-box;
   z-index: calc(var(--z-overlay) + 1);
   padding: var(--space-4);
