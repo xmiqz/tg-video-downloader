@@ -1,0 +1,226 @@
+/* ============================================================
+   tokens.css — T7 设计令牌与主题系统（v2.2 W1）
+   消费方：T8 shell / T10 ui / T15 settings。纯 CSS 变量，零 JS。
+   主题契约：
+     1) :root 与 :root[data-theme="light"] = 浅色（默认）；
+     2) 深色两路并存：
+        ① @media (prefers-color-scheme: dark) 内
+           :root:not([data-theme="light"]) —— 系统深色跟随；
+        ② :root[data-theme="dark"] —— 显式指定，任意系统生效；
+     3) 级联：显式 data-theme 优先于系统媒体（② 置于 ① 后，
+        同特异性后者胜出；light 经 :not() 排除出系统深色）。
+     4) 深浅两套 semantic 键一致，无缺项回退。
+   ============================================================ */
+
+/* ============ 1. base 层：原始原料（允许裸值；语义/组件层只许 var） ============ */
+:root,
+:root[data-theme="light"] {
+  /* --- 1.1 色板 raw：浅色默认（深色覆盖见文末 dark 块） --- */
+  --raw-bg: #f2f5fc;          --raw-bg-2: #ffffff;
+  --raw-bg-sunk: #e8edf7;    --raw-ink: #1b2233;
+  --raw-ink-dim: rgba(27,34,51,.68);  --raw-ink-mute: rgba(27,34,51,.45);
+  --raw-brand-1: #4f7cff;    --raw-brand-2: #8b5bff;
+  --raw-brand-soft: rgba(79,124,255,.16);  --raw-on-brand: #ffffff;
+  --raw-danger: #e5455a;     --raw-danger-soft: rgba(229,69,90,.14);
+  --raw-danger-ink: #cf3b50; --raw-ok: #16a97c;
+  --raw-warn: #d98f1f;       --raw-warn-soft: rgba(217,143,31,.16);
+  --raw-border: rgba(20,30,60,.12);  --raw-border-strong: rgba(20,30,60,.24);
+  --raw-scrim: rgba(16,22,40,.35);   --raw-frost: rgba(238,242,250,.45);
+  --raw-shade: rgba(30,42,80,.35);   --raw-shade-strong: rgba(30,42,80,.14);
+  --raw-shade-deep: rgba(4,6,18,.32); --raw-ring: rgba(79,124,255,.22);
+
+  /* --- 1.2 玻璃原料（v2.0 liquid 参数，对照见 t7_result.md） --- */
+  --gl-blur-l: 34px;         --gl-blur-m: 24px;  --gl-blur-s: 12px;
+  --gl-sat: 185%;
+  --gl-g-a: rgba(255,255,255,.72);  --gl-g-b: rgba(255,255,255,.52);
+  --gl-g-c: rgba(255,255,255,.58);  --gl-l-1: rgba(255,255,255,.10);
+  --gl-l-2: rgba(255,255,255,.16);  --gl-l-3: rgba(255,255,255,.06);
+  --gl-e-a: rgba(20,30,60,.12);     --gl-e-b: rgba(20,30,60,.16);
+  --gl-hi: rgba(255,255,255,.9);    --gl-hi-soft: rgba(255,255,255,.55);
+  --gl-shadow: 0 12px 30px var(--raw-shade-strong);
+
+  /* --- 1.3 间距（4px 栅格） --- */
+  --space-0: 0;    --space-1: 4px;   --space-2: 8px;   --space-3: 12px;
+  --space-4: 16px; --space-5: 20px;  --space-6: 24px;  --space-8: 32px;
+  --space-10: 40px; --space-12: 48px; --space-14: 56px; --space-16: 64px;
+  --line-1: 1px;   --line-hair: 1.5px;  /* 非4px倍率白名单：细边框/高光 */
+
+  /* --- 1.4 clamp() 字号阶梯 --- */
+  --text-xs: clamp(11px,.30vw+10px,12px); --text-sm: clamp(12px,.40vw+11px,13px);
+  --text-md: clamp(13px,.50vw+12px,14px); --text-lg: clamp(15px,.60vw+14px,17px);
+  --text-xl: clamp(17px,.90vw+15px,20px); --text-2xl: clamp(20px,1.4vw+17px,26px);
+  --text-3xl: clamp(23px,2.0vw+20px,32px);
+
+  /* --- 1.5 圆角 --- */
+  --radius-xs: 6px; --radius-sm: 10px; --radius-md: 14px;
+  --radius-lg: 20px; --radius-xl: 28px; --radius-pill: 999px;
+
+  /* --- 1.6 阴影层级 --- */
+  --shadow-1: 0 1px 2px var(--raw-shade);
+  --shadow-2: 0 4px 12px var(--raw-shade);
+  --shadow-3: 0 12px 30px var(--raw-shade-strong);
+  --shadow-4: 0 24px 60px var(--raw-shade-deep);
+
+  /* --- 1.7 动效时长/缓动（reduced-motion 归零） --- */
+  --dur-xs: 120ms; --dur-sm: 200ms; --dur-md: 320ms; --dur-lg: 420ms;
+  --ease-standard: cubic-bezier(.32,.72,0,1);
+  --ease-out: cubic-bezier(0,0,.2,1);
+  --ease-spring: cubic-bezier(.34,1.45,.48,1);
+
+  /* --- 1.8 z-index 层级 --- */
+  --z-backdrop: 0; --z-base: 1; --z-sticky: 10; --z-nav: 20;
+  --z-overlay: 200; --z-sheet: 300; --z-toast: 400; --z-modal: 500;
+}
+
+/* ============ 2. semantic 层：语义令牌（全 var 引用 base，零裸色值） ============ */
+:root,
+:root[data-theme="light"] {
+  /* --- 2.1 语义色 --- */
+  --color-surface: var(--raw-bg);        --color-surface-raise: var(--raw-bg-2);
+  --color-surface-sunk: var(--raw-bg-sunk); --color-text: var(--raw-ink);
+  --color-text-strong: var(--raw-ink);   --color-text-muted: var(--raw-ink-dim);
+  --color-text-faint: var(--raw-ink-mute); --color-primary: var(--raw-brand-1);
+  --color-primary-strong: var(--raw-brand-2); --color-primary-soft: var(--raw-brand-soft);
+  --color-on-primary: var(--raw-on-brand); --color-danger: var(--raw-danger);
+  --color-danger-soft: var(--raw-danger-soft); --color-danger-text: var(--raw-danger-ink);
+  --color-success: var(--raw-ok);        --color-warning: var(--raw-warn);
+  --color-warning-soft: var(--raw-warn-soft); --color-border: var(--raw-border);
+  --color-border-strong: var(--raw-border-strong); --color-scrim: var(--raw-scrim);
+  --color-frost: var(--raw-frost);
+
+  /* --- 2.2 玻璃三档语义（卡片/导航/弹层） --- */
+  --glass-card-bg: linear-gradient(155deg,var(--gl-g-a) 0%,var(--gl-g-b) 42%,var(--gl-g-c) 100%);
+  --glass-card-blur: var(--gl-blur-l);   --glass-card-border: var(--gl-e-a);
+  --glass-card-hi: inset 0 var(--line-hair) 0 var(--gl-hi);
+  --glass-card-shadow: var(--gl-shadow);
+  --glass-nav-bg: linear-gradient(160deg,var(--gl-l-2),var(--gl-l-3));
+  --glass-nav-blur: var(--gl-blur-m);    --glass-nav-border: var(--gl-e-b);
+  --glass-nav-hi: inset 0 var(--line-1) 0 var(--gl-hi-soft);
+  --glass-nav-shadow: var(--shadow-1);
+  --glass-sheet-bg: linear-gradient(160deg,var(--gl-l-2),var(--gl-l-1));
+  --glass-sheet-blur: var(--gl-blur-l);  --glass-sheet-border: var(--gl-e-a);
+  --glass-sheet-hi: inset 0 var(--line-1) 0 var(--gl-hi-soft);
+  --glass-sheet-shadow: var(--shadow-4);
+}
+
+/* ============ 3. 组件层：T8/T10/T15 最小消费集合 ============ */
+:root,
+:root[data-theme="light"] {
+  /* --- 3.1 按钮 --- */
+  --btn-font: var(--text-md);  --btn-h: var(--space-10);
+  --btn-h-pad: var(--space-4); --btn-v-pad: var(--space-2);
+  --btn-radius: var(--radius-md); --btn-gap: var(--space-2);
+  --btn-primary-bg: linear-gradient(135deg,var(--color-primary),var(--color-primary-strong));
+  --btn-primary-text: var(--color-on-primary); --btn-primary-shadow: var(--shadow-2);
+  --btn-ghost-bg: var(--glass-card-bg); --btn-ghost-border: var(--glass-card-border);
+  --btn-ghost-text: var(--color-text);  --btn-danger-bg: var(--color-danger-soft);
+  --btn-danger-text: var(--color-danger-text); --btn-text: var(--color-text);
+  --btn-transition: background var(--dur-sm) var(--ease-standard), transform var(--dur-sm) var(--ease-spring);
+
+  /* --- 3.2 输入框 --- */
+  --input-bg: var(--color-surface-sunk); --input-border: var(--color-border);
+  --input-border-focus: var(--color-primary); --input-ring: var(--raw-ring);
+  --input-radius: var(--radius-md); --input-h: var(--space-12);
+  --input-text: var(--color-text); --input-placeholder: var(--color-text-muted);
+  --input-transition: border-color var(--dur-sm) var(--ease-standard), box-shadow var(--dur-sm) var(--ease-standard);
+
+  /* --- 3.3 底部弹层/模态 --- */
+  --sheet-bg: var(--glass-sheet-bg); --sheet-border: var(--glass-sheet-border);
+  --sheet-radius: var(--radius-xl);  --sheet-shadow: var(--glass-sheet-shadow);
+  --sheet-backdrop: var(--color-scrim); --sheet-max-w: 640px;
+  --sheet-transition: transform var(--dur-md) var(--ease-out), opacity var(--dur-sm) var(--ease-standard);
+
+  /* --- 3.4 导航（T8 侧栏/底栏） --- */
+  --nav-bg: var(--glass-nav-bg); --nav-border: var(--glass-nav-border);
+  --nav-blur: var(--glass-nav-blur); --nav-item-h: var(--space-12);
+  --nav-item-radius: var(--radius-md); --nav-item-hover: var(--gl-l-3);
+  --nav-item-active: linear-gradient(135deg,var(--color-primary-soft),transparent);
+  --nav-text: var(--color-text-muted); --nav-text-active: var(--color-text);
+
+  /* --- 3.5 Toast --- */
+  --toast-bg: var(--glass-sheet-bg); --toast-border: var(--glass-sheet-border);
+  --toast-radius: var(--radius-md);  --toast-shadow: var(--shadow-3);
+  --toast-text: var(--color-text);
+  --toast-transition: transform var(--dur-md) var(--ease-spring), opacity var(--dur-sm) var(--ease-standard);
+}
+
+/* ============ 4. 深色主题：两路并存（base 原料覆盖，语义/组件自动跟随） ============ */
+
+/* 4.1 系统深色跟随 */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --raw-bg: #07080f;  --raw-bg-2: rgba(255,255,255,.05);
+    --raw-bg-sunk: rgba(7,9,20,.55); --raw-ink: #f5f7fe;
+    --raw-ink-dim: rgba(238,242,252,.68); --raw-ink-mute: rgba(231,236,249,.45);
+    --raw-brand-1: #4f7cff; --raw-brand-2: #8b5bff;
+    --raw-brand-soft: rgba(91,134,255,.18); --raw-on-brand: #ffffff;
+    --raw-danger: #ff6172; --raw-danger-soft: rgba(255,97,114,.16);
+    --raw-danger-ink: #ff8a97; --raw-ok: #34d9a0; --raw-warn: #ffb84d;
+    --raw-warn-soft: rgba(255,184,77,.16);
+    --raw-border: rgba(255,255,255,.12); --raw-border-strong: rgba(255,255,255,.24);
+    --raw-scrim: rgba(5,7,14,.55); --raw-frost: rgba(9,11,20,.30);
+    --raw-shade: rgba(4,6,18,.34); --raw-shade-strong: rgba(4,6,18,.42);
+    --raw-shade-deep: rgba(4,6,18,.5); --raw-ring: rgba(91,134,255,.35);
+    --gl-g-a: rgba(255,255,255,.20); --gl-g-b: rgba(255,255,255,.10);
+    --gl-g-c: rgba(255,255,255,.05); --gl-l-1: rgba(255,255,255,.10);
+    --gl-l-2: rgba(255,255,255,.16); --gl-l-3: rgba(255,255,255,.06);
+    --gl-e-a: rgba(255,255,255,.34); --gl-e-b: rgba(255,255,255,.20);
+    --gl-hi: rgba(255,255,255,.55); --gl-hi-soft: rgba(255,255,255,.18);
+    --gl-shadow: 0 16px 40px var(--raw-shade-strong);
+  }
+}
+
+/* 4.2 显式深色（任意系统生效；置于 4.1 后，同特异性后者胜出） */
+:root[data-theme="dark"] {
+  --raw-bg: #07080f;  --raw-bg-2: rgba(255,255,255,.05);
+  --raw-bg-sunk: rgba(7,9,20,.55); --raw-ink: #f5f7fe;
+  --raw-ink-dim: rgba(238,242,252,.68); --raw-ink-mute: rgba(231,236,249,.45);
+  --raw-brand-1: #4f7cff; --raw-brand-2: #8b5bff;
+  --raw-brand-soft: rgba(91,134,255,.18); --raw-on-brand: #ffffff;
+  --raw-danger: #ff6172; --raw-danger-soft: rgba(255,97,114,.16);
+  --raw-danger-ink: #ff8a97; --raw-ok: #34d9a0; --raw-warn: #ffb84d;
+  --raw-warn-soft: rgba(255,184,77,.16);
+  --raw-border: rgba(255,255,255,.12); --raw-border-strong: rgba(255,255,255,.24);
+  --raw-scrim: rgba(5,7,14,.55); --raw-frost: rgba(9,11,20,.30);
+  --raw-shade: rgba(4,6,18,.34); --raw-shade-strong: rgba(4,6,18,.42);
+  --raw-shade-deep: rgba(4,6,18,.5); --raw-ring: rgba(91,134,255,.35);
+  --gl-g-a: rgba(255,255,255,.20); --gl-g-b: rgba(255,255,255,.10);
+  --gl-g-c: rgba(255,255,255,.05); --gl-l-1: rgba(255,255,255,.10);
+  --gl-l-2: rgba(255,255,255,.16); --gl-l-3: rgba(255,255,255,.06);
+  --gl-e-a: rgba(255,255,255,.34); --gl-e-b: rgba(255,255,255,.20);
+  --gl-hi: rgba(255,255,255,.55); --gl-hi-soft: rgba(255,255,255,.18);
+  --gl-shadow: 0 16px 40px var(--raw-shade-strong);
+}
+
+/* ============ 5. 降级（FR-22 / NFR-8） ============ */
+
+/* 5.1 减弱动效：时长归零、缓动线性 */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-xs: 0ms; --dur-sm: 0ms; --dur-md: 0ms; --dur-lg: 0ms;
+    --ease-standard: linear; --ease-out: linear; --ease-spring: linear;
+  }
+}
+
+/* 5.2 无 backdrop-filter：不透明/纯色玻璃降级面 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root {
+    --gl-blur-l: 0; --gl-blur-m: 0; --gl-blur-s: 0;
+    --gl-g-a: rgba(255,255,255,.9); --gl-g-b: rgba(255,255,255,.7);
+    --gl-g-c: rgba(255,255,255,.62); --gl-l-2: rgba(255,255,255,.55);
+    --gl-l-1: rgba(255,255,255,.35);
+    --glass-card-bg: var(--raw-bg-2); --glass-nav-bg: var(--raw-bg-2);
+    --glass-sheet-bg: var(--raw-bg-2);
+  }
+}
+
+/* 5.3 低端/小屏：降模糊、减叠层、去重阴影（中端手机帧率） */
+@media (max-width: 640px) {
+  :root {
+    --gl-blur-l: 20px; --gl-blur-m: 14px; --gl-blur-s: 8px;
+    --gl-g-a: rgba(255,255,255,.85); --gl-g-b: rgba(255,255,255,.68);
+    --gl-g-c: rgba(255,255,255,.55);
+    --gl-shadow: 0 8px 20px var(--raw-shade-strong);
+    --sheet-max-w: 100%;
+  }
+}
