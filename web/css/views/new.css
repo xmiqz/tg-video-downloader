@@ -1,2 +1,415 @@
-/* views/new.css — T8 占位切片（极简）。
-   占位空态样式集中在 shell.css §8。T12 替换本文件。 */
+/* ============================================================
+   views/new.css — T12 新建下载视图切片（替换 T8 占位）
+   所有权：本文件 + web/js/views/new.js（恰两文件，零改基座）。
+
+   纪律：
+   - 只消费 tokens.css 令牌 + ui.css 组件类（.u-card/.u-seg/.u-progress/
+     .u-empty/.u-btn）；类名 nw- 前缀（与旧壳 .steps/.form-card/.video-row
+     等及外壳 .sh-/组件 .u- 零碰撞）。
+   - 裸值就近注明旧壳出处（web/style.css / web/index.html 文件:行）；
+     断点 767.98/768 例外（媒体查询不可 var()，口径=FR-23 ≥768 平板
+     起桌面形态，与 ui.css OVERLAY_FORM_BREAKPOINT 同源）。
+   - 视觉口径逐段对照旧壳"新建向导"（style.css:511-592、1075-1128）；
+     结果行桌面表格化密度 / 手机卡片（任务书 §2.10，≥768 断点）。
+   - 动效只走 --dur-*/--ease-*；自有动画双套归零（见文末 §9：
+     prefers-reduced-motion 与 #sh-root[data-v22-rm="on"]，终态保留）。
+   ============================================================ */
+
+/* ---------- 0. 视图根与页头 ---------- */
+.vw-new {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0; /* 360px 防横向溢出（FR-23 小屏） */
+}
+.nw-head h2 {
+  margin: 0;
+  font-size: var(--text-xl);
+  color: var(--color-text-strong);
+  line-height: 1.4;
+}
+.nw-sub {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+/* ---------- 1. 步骤条（对照 style.css:512-522 steps/step/step-line） ---------- */
+.nw-steps {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-1);
+}
+.nw-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-faint);
+  font-size: var(--text-md);
+}
+.nw-step i {
+  width: 32px;   /* 旧壳步骤圆径 32px（style.css:514） */
+  height: 32px;
+  border-radius: var(--radius-pill);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-style: normal;
+  font-size: var(--text-sm);
+  background: var(--color-surface-sunk);
+  border: var(--line-1) solid var(--color-border);
+  transition: background var(--dur-sm) var(--ease-standard),
+    color var(--dur-sm) var(--ease-standard);
+}
+.nw-step.is-active { color: var(--color-text-strong); }
+.nw-step.is-active i {
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-strong));
+  color: var(--color-on-primary);
+  border-color: transparent;
+}
+.nw-step.is-done i {
+  background: var(--color-surface-raise);   /* 旧壳完成态高亮反转（style.css:521） */
+  color: var(--color-text);
+  border-color: transparent;
+}
+.nw-step-line {
+  flex: 0 1 var(--space-10);   /* 旧壳连接线 54px（style.css:522）近似 4px 栅格 40px */
+  height: 2px;                 /* 旧壳连接线 2px 高（style.css:522） */
+  border-radius: var(--radius-pill);
+  background: var(--color-border);
+}
+
+/* ---------- 2. 表单（对照 style.css:523-529 form-card/form-grid 口径） ---------- */
+.nw-wiz { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
+.nw-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.nw-label, .nw-field label {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+.nw-input {
+  width: 100%;
+  min-height: 44px;            /* FR-24 命中区（表单输入同款） */
+  box-sizing: border-box;
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+  font-size: var(--text-md);
+  color: var(--input-text);
+  background: var(--input-bg);
+  border: var(--line-1) solid var(--input-border);
+  border-radius: var(--input-radius);
+  transition: var(--input-transition);
+}
+.nw-input::placeholder { color: var(--input-placeholder); }
+.nw-input:focus {
+  outline: none;
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 0 var(--space-1) var(--input-ring);
+}
+/* 日期输入默认不可压缩（会把同排挤扁）：与数字输入同权（style.css:558-559） */
+.nw-dual input[type="date"] { flex: 1 1 0; min-width: 0; }
+/* 窄布局隐藏 number 上下箭头仍可键入（style.css:560-565） */
+.nw-field input[type="number"]::-webkit-inner-spin-button,
+.nw-field input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.nw-dual {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);           /* 旧壳 dual-input 9px（style.css:555）近似 8px 栅格 */
+  min-width: 0;
+}
+.nw-dual .nw-input { flex: 1 1 0; min-width: 0; }
+.nw-dual > span[aria-hidden] { color: var(--color-text-faint); flex: none; }
+/* 数字小输入（limit/parallel）：窄钳防撑破 360px（旧壳 .narrow-input 130px 口径
+   style.css:602） */
+.nw-field--num { max-width: 180px; }
+
+/* ---------- 3. 高级折叠（对照 style.css:533-551 adv 系） ---------- */
+.nw-adv-toggle {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  text-align: left;
+  color: var(--color-text-muted);
+}
+.nw-caret {
+  display: inline-block;
+  transition: transform var(--dur-md) var(--ease-standard); /* 旧壳 .35s（style.css:542）近似 --dur-md=320ms */
+}
+.nw-adv-toggle.open .nw-caret { transform: rotate(180deg); } /* style.css:543 */
+.nw-adv-toggle.open { color: var(--color-text); }
+.nw-hint {
+  flex-basis: 100%;
+  font-size: var(--text-sm);
+  color: var(--color-text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nw-adv {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-sunk);
+  border: var(--line-1) solid var(--color-border);
+  animation: nw-rise var(--dur-md) var(--ease-out);   /* 旧壳 rise .35s（style.css:550）近似 */
+}
+.nw-adv[hidden] { display: none; }
+.nw-adv .u-seg { align-self: flex-start; max-width: 100%; }
+
+/* ---------- 4. 操作区与提示 ---------- */
+.nw-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.nw-actions--between { justify-content: space-between; align-items: center; } /* style.css:528 */
+.nw-err {
+  margin: 0;
+  min-height: var(--text-md);
+  font-size: var(--text-sm);
+  color: var(--color-danger-text);   /* 旧壳 .login-err 红（style.css 设置页同族） */
+  word-break: break-word;
+}
+.nw-err:empty { display: none; }
+.nw-note {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);   /* style.css:529 .wiz-note 口径 */
+  word-break: break-word;
+}
+.nw-note:empty { display: none; }
+
+/* ---------- 5. 步骤 2：流式进度区（对照 style.css:1080-1106 search-progress 系） ---------- */
+.nw-prog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunk);
+  border: var(--line-1) solid var(--color-border);
+}
+.nw-prog[hidden] { display: none; }
+.nw-prog-head { display: flex; align-items: center; gap: var(--space-3); }
+.nw-prog-head .u-progress { flex: 1 1 auto; min-width: 0; }
+.nw-prog-head .nw-cancel-btn { flex: none; }
+.nw-phase {
+  font-size: var(--text-md);
+  color: var(--color-text);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;   /* style.css:1097 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nw-counts {
+  font-size: var(--text-sm);
+  color: var(--color-text-faint);       /* style.css:1100-1103 */
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+.nw-pnote {
+  font-size: var(--text-sm);
+  color: var(--color-text-faint);       /* style.css:1104 */
+  word-break: break-word;
+}
+.nw-pnote.warn { color: var(--color-warning); }   /* style.css:1105 */
+.nw-pnote.error { color: var(--color-danger); }   /* style.css:1106 */
+.nw-pnote:empty { display: none; }
+
+/* ---------- 6. 步骤 2：结果工具条（对照 style.css:476-479 search-box / 任务书 §2.7） ---------- */
+.nw-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.nw-searchbox {
+  position: relative;
+  flex: 1 1 200px;              /* 旧壳 search-box flex:1 max-width:360px（style.css:476） */
+  max-width: 360px;
+  min-width: 0;
+}
+.nw-search-ico {
+  position: absolute;
+  left: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-text-faint);
+  pointer-events: none;
+}
+.nw-search-input { padding-left: calc(var(--space-8) + var(--space-1)); }
+.nw-selact { display: flex; gap: var(--space-2); }
+
+/* 视觉隐藏 label（a11y：搜索框文字关联，不占布局） */
+.nw-sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- 7. 结果列表（对照 style.css:568-592 video 系 + 1075-1128 引用标签） ---------- */
+.nw-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);           /* 旧壳 9px（style.css:568）近似 8px 栅格 */
+  max-height: 44vh;              /* 旧壳 .video-list 44vh 内滚动（style.css:568） */
+  overflow-y: auto;
+  padding-right: var(--space-1);
+  min-height: 120px;             /* 等待态最小视觉占位（4px 栅格 30 倍） */
+  overscroll-behavior: contain;
+}
+.nw-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);           /* 旧壳 14px（style.css:571）近似 12px 栅格 */
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunk);
+  border: var(--line-1) solid var(--color-border);
+  cursor: pointer;
+  transition: border-color var(--dur-sm) var(--ease-standard),
+    transform var(--dur-sm) var(--ease-standard);
+}
+.nw-row:hover { border-color: var(--color-border-strong); transform: translateX(3px); } /* style.css:577 */
+.nw-row:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 var(--space-1) var(--input-ring);
+}
+.nw-row.is-sel {
+  border-color: var(--color-primary);           /* style.css:578 选态描边 */
+  background: var(--color-primary-soft);        /* style.css:579 选态底 */
+}
+.nw-cbox {
+  width: 19px;                  /* 旧壳勾选框 19px（style.css:581） */
+  height: 19px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  border: 2px solid var(--color-border-strong); /* 旧壳 2px（style.css:582） */
+  color: var(--color-on-primary);
+  font-size: var(--text-sm);
+  transition: background var(--dur-sm) var(--ease-standard),
+    border-color var(--dur-sm) var(--ease-standard);
+}
+.nw-row.is-sel .nw-cbox {
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-strong));
+  border-color: transparent;
+}
+.nw-info { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+.nw-name {
+  font-size: var(--text-md);
+  font-weight: 500;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nw-reftag {                    /* 引用来源紫系标签（style.css:1112-1118） */
+  display: inline-block;
+  margin-right: var(--space-1);
+  font-size: var(--text-xs);
+  padding: 2px 7px;             /* 旧壳 2px 7px（style.css:1114） */
+  border-radius: var(--radius-xs);
+  color: var(--color-primary-strong);
+  background: var(--color-primary-soft);
+  border: var(--line-1) solid var(--color-border);
+  vertical-align: 1px;
+}
+.nw-sub {
+  margin-top: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--color-text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;      /* 单行截断（style.css:589-590） */
+}
+.nw-refinline {                 /* 引用文本行内截断（style.css:1120-1124） */
+  display: inline-block;
+  max-width: 340px;             /* 旧壳 340px（style.css:1121） */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  color: var(--color-text-faint);
+}
+.nw-side {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-1);
+}
+.nw-size { font-size: var(--text-sm); color: var(--color-text-muted); }
+.nw-srctag {                    /* 来源小标签（style.css:470） */
+  font-size: var(--text-xs);
+  padding: 2px 7px;             /* 旧壳 2px 7px（style.css:470） */
+  border-radius: var(--radius-xs);
+  background: var(--color-surface-raise);
+  color: var(--color-text-muted);
+}
+
+/* ---------- 8. 断点：≥768 平板/桌面（FR-23 ≥768 平板起桌面形态；
+       与 ui.css OVERLAY_FORM_BREAKPOINT 同源）—— 条件区双列 + 结果行表格化密度 ---------- */
+@media (min-width: 768px) {
+  .nw-adv .nw-field { min-width: 0; }
+  .nw-adv {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-4) var(--space-6);
+  }
+  .nw-adv > .nw-field:last-child { grid-column: 1 / -1; } /* 并行度独占行（number 钳宽） */
+  /* 结果行表格化：勾选 | 名称(含标签/截断) | 日期·摘要 | 体积/来源，
+     密度对齐旧壳行网格（hover/选中语义不变） */
+  .nw-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 2.2fr) minmax(140px, 1.4fr) auto;
+    column-gap: var(--space-4);
+    align-items: center;
+  }
+  .nw-sub { margin-top: 2px; }
+}
+
+/* ≥1024（shell side 形态）：条件卡上限 680px 左对齐（旧壳 .form-card
+   max-width:680px，style.css:523），向导不铺满 1040 视图宿主 */
+@media (min-width: 1024px) {
+  .nw-wiz { max-width: 760px; }  /* 旧壳 680px + 桌面舒展余量（任务书 §2.1 放宽为舒展布局授权） */
+}
+
+/* ---------- 9. 动效双套归零（终态保留不动画；任务书 §1.6） ---------- */
+@keyframes nw-rise {
+  from { opacity: 0; transform: translateY(var(--space-2)); } /* 旧壳 rise 语义（style.css:550） */
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nw-adv { animation: none; }
+  .nw-caret { transition: none; }
+  .nw-step i { transition: none; }
+  .nw-row { transition: none; }
+  .nw-row:hover { transform: none; }
+  .nw-cbox { transition: none; }
+}
+#sh-root[data-v22-rm="on"] .nw-adv,
+#sh-root[data-v22-rm="on"] .nw-row:hover { animation: none; }
+#sh-root[data-v22-rm="on"] .nw-caret,
+#sh-root[data-v22-rm="on"] .nw-step i,
+#sh-root[data-v22-rm="on"] .nw-row,
+#sh-root[data-v22-rm="on"] .nw-cbox { transition: none; }
+#sh-root[data-v22-rm="on"] .nw-row:hover { transform: none; }
