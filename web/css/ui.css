@@ -2,26 +2,52 @@
    ui.css — T10 通用组件库样式（web/js/ui/* 的唯一样式宿主）
    消费方契约（t8_contract.md §7 R4-①）：router.js boot() 动态 link
    引导（仅 v22shell=1 新壳路径）；开关默认关闭时本文件零请求。
-   纪律（t10 任务书 §2）：
+   纪律（t10 任务书 §2；fix2 spec-J2/std-J1 收口订正）：
      - 只消费 tokens.css 既有令牌（颜色/间距/圆角/阴影/动效/玻璃参数），
        零硬编码色值；组件固有常量白名单（均注明来源）：
        · 44px 最小命中区（FR-24 可点元素 ≥44×44）
        · 4px 栅格（tokens.css --space-* 的最小单位，FR-22 间距体系）
        · 768px / 767.98px 媒体查询（OVERLAY_FORM_BREAKPOINT，
          FR-23 ≥768 平板起为桌面形态；媒体查询不可用 var()）
+       · 视口几何常量（视口相对布局不消费令牌，防长内容溢出视口）：
+         88vh 弹层高度上限（对齐旧壳 .modal style.css:713）、
+         70vh toast 栈上限（对齐旧壳 TgToast host app.js:3688）、
+         38vh toast 详情区上限（对齐旧壳 app.js:3730）、
+         92vw 小屏宽度钳（同 style.css:713 .modal 宽度钳口径）
+       · 520px toast 栈宽（对齐旧壳 TgToast host width min(520px,92vw)
+         app.js:3688；弹层面板宽走 --sheet-max-w 令牌，此处非令牌）
        · 38% 不定进度滑块宽 + 1.15s 往复（对齐旧壳 .job-fill.indet
          style.css:986-987 的既有视觉语言）
        · 6px 背板模糊 + 140% 饱和（.u-overlay-mask 玻璃参数；非令牌数值，
-          玻璃参数派生口径：对齐旧壳模态遮罩玻璃语汇 style.css:708
-          backdrop-filter: blur(8px)，取 --glass-* 档位近似并补 saturate
-          以贴合液态玻璃观感）
+         玻璃参数派生口径：对齐旧壳模态遮罩玻璃语汇 style.css:708
+         backdrop-filter: blur(8px)，取 --glass-* 档位近似并补 saturate
+         以贴合液态玻璃观感）
+       · 微位移反馈常量：scale(.97) 按压/pop 进入缩放比（视觉比例）、
+         translateY(16px) modal pop 进入位移（4px 栅格 4 倍）、
+         translateY(-8px) 空态 bob 与 toast 离场位移（4px 栅格 2 倍，
+         对齐旧壳 bob style.css:597）、translateY(100%) sheet 全高
+         滑入（自身高度语义）、translateX(-50%) host 水平居中惯例
+       · 3px toast 左缘色带强调宽（视觉常量，非色值非栅格倍数）
+       · 24px 辅助 pill 最小高（.u-toast-pill；4px 栅格 6 倍，次要
+         小件非主命中区；主命中区 44px 见 .u-btn/.u-seg-item）
+       · 48px 空态图标字号（对齐旧壳 .empty-ico style.css:596）
+       · 8px 进度槽高（对齐旧壳 .ov-bar style.css:385，4px 栅格 2 倍）
        · 240ms 退出过渡（.u-toast/.is-out；4px 栅格 60 倍，短于
          --dur-lg 以免级联等待）
+       · 3s 空态 bob 周期（对齐旧壳 .empty-ico style.css:596）
+       · 500ms 确定进度 width 过渡（对齐旧壳 .ov-fill style.css:392）
      - 类名统一 u- 前缀（与旧壳 .empty-state/.segmented/.sheet 及
        外壳 .sh-* 命名空间零碰撞）；样式自持，不复制 shell.css 玻璃
        底栏实现（玻璃材质经 --glass-* 三档令牌派生 tokens.css §2.2）。
-     - prefers-reduced-motion：动画/过渡时长全部经 --dur-*（tokens.css
-       5.1 归零满足），不定进度动画在消减动效下直停于半程。
+     - prefers-reduced-motion 双路归零（订正旧头注「动效全走 --dur-*」
+       的不实宣称；spec-J2）：
+       · 第一路 tokens.css §5.1 媒体块：经 --dur-* / --sheet-transition /
+         --toast-transition 的动效时长随令牌归零（弹层过渡/按钮/分段/
+         关闭钮反馈/toast 进场等）；
+       · 第二路 本文件 §9 媒体块：四个裸时长动效（空态 bob 3s、不定
+         进度 1.15s、toast 离场 240ms、确定进度 width 500ms）显式
+         animation/transition 归零；视觉终态保留（图标/进度条/toast
+         仍渲染，仅无运动）。
    ============================================================ */
 
 /* ============================================================
@@ -48,7 +74,7 @@
   background: var(--glass-card-bg);
   color: var(--color-text);
 }
-.u-btn:active { transform: scale(.97); }
+.u-btn:active { transform: scale(.97); } /* 按压反馈缩放比（视觉常量，白名单：微位移反馈） */
 .u-btn--primary {
   background: var(--btn-primary-bg);
   color: var(--btn-primary-text);
@@ -121,6 +147,8 @@
   position: absolute;
   inset: 0;
   background: var(--sheet-backdrop);
+  /* 玻璃参数派生（非令牌）：对齐旧壳 .modal-mask blur(8px)（style.css:708），
+     取档位近似并补 saturate 以贴合液态玻璃观感（头注白名单） */
   backdrop-filter: blur(6px) saturate(140%);
   -webkit-backdrop-filter: blur(6px) saturate(140%);
   opacity: 0;
@@ -133,21 +161,21 @@
   flex-direction: column;
   gap: var(--space-3);
   width: min(var(--sheet-max-w), 100%);
-  max-height: 88vh;
+  max-height: 88vh; /* 弹层高度上限（对齐旧壳 .modal style.css:713；视口几何常量） */
   overflow-y: auto;
   padding: var(--space-5) var(--space-5) calc(var(--space-5) + env(safe-area-inset-bottom, 0px));
   border-radius: var(--sheet-radius) var(--sheet-radius) 0 0; /* sheet 贴底：仅上圆角 */
   background: var(--sheet-bg);
   border: 1px solid var(--sheet-border);
   box-shadow: var(--sheet-shadow);
-  transform: translateY(100%);
+  transform: translateY(100%); /* sheet 全高滑入（自身高度位移语义；时长经 --sheet-transition 归零于 reduce） */
   transition: var(--sheet-transition);
 }
 /* 模态形态：居中 + 四角圆 + pop 进入（对齐旧壳 .modal 语义 style.css:712-716） */
 .u-overlay[data-form="modal"] .u-overlay-panel {
   align-self: center;
   border-radius: var(--sheet-radius);
-  transform: translateY(16px) scale(.97);
+  transform: translateY(16px) scale(.97); /* modal pop 进入（对齐旧壳 .modal pop 语义 style.css:715；16px=4px 栅格 4 倍，.97 缩放比视觉常量） */
 }
 .u-overlay.is-open .u-overlay-mask { opacity: 1; }
 .u-overlay.is-open .u-overlay-panel { transform: none; }
@@ -211,13 +239,13 @@
   position: fixed;
   top: var(--space-5);
   left: 50%;
-  transform: translateX(-50%);
+  transform: translateX(-50%); /* host 水平居中（几何定位惯例，同旧壳 TgToast app.js:3686） */
   z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  width: min(520px, 92vw);
-  max-height: 70vh;
+  width: min(520px, 92vw); /* 对齐旧壳 TgToast host 宽（app.js:3688） */
+  max-height: 70vh; /* 对齐旧壳 TgToast host 上限（app.js:3688） */
   pointer-events: none;
 }
 .u-toast {
@@ -229,7 +257,7 @@
   border-radius: var(--toast-radius);
   background: var(--toast-bg);
   border: 1px solid var(--toast-border);
-  border-left-width: 3px;
+  border-left-width: 3px; /* 左缘色带强调宽（视觉常量，白名单；非色值非栅格倍数） */
   box-shadow: var(--toast-shadow);
   color: var(--toast-text);
   font-size: var(--text-md);
@@ -260,7 +288,7 @@
   font: inherit;
   font-size: var(--text-xs);
   padding: var(--space-1) var(--space-3);
-  min-height: 24px;
+  min-height: 24px; /* 辅助 pill 下限（4px 栅格 6 倍；次要小件非主命中区 44px） */
   border-radius: var(--radius-pill);
   border: 1px solid var(--color-border);
   background: var(--color-surface-sunk);
@@ -276,11 +304,11 @@
   font-size: var(--text-sm);
   white-space: pre-wrap;
   word-break: break-all;
-  max-height: 38vh;
+  max-height: 38vh; /* 对齐旧壳 toast 详情区（app.js:3730） */
   overflow-y: auto;
 }
 .u-toast-detail[hidden] { display: none; }
-.u-toast.is-out { opacity: 0; transform: translateY(-8px); transition: opacity 240ms var(--ease-standard), transform 240ms var(--ease-standard); }
+.u-toast.is-out { opacity: 0; transform: translateY(-8px); transition: opacity 240ms var(--ease-standard), transform 240ms var(--ease-standard); } /* 离场：-8px=2×4px 栅格微位移；240ms 裸时长（短于 --dur-lg 免级联等待）——reduce 由 §9 显式归零 */
 
 /* ============================================================
    5. 空态（.u-empty，对齐旧壳 .empty-state style.css:595-599）
@@ -296,7 +324,7 @@
 }
 .u-empty-ico {
   font-size: 48px; /* 与旧壳 .empty-ico 同尺寸（style.css:596 惯例，非色值） */
-  animation: u-empty-bob 3s var(--ease-standard) infinite alternate;
+  animation: u-empty-bob 3s var(--ease-standard) infinite alternate; /* 3s 循环对齐旧壳 .empty-ico bob（style.css:596）——reduce 由 §9 显式归零 */
 }
 @keyframes u-empty-bob { to { transform: translateY(-8px); } /* 对齐旧壳 bob style.css:597（8px = 2×4px 栅格） */ }
 .u-empty-title {
@@ -437,4 +465,23 @@
   min-width: 0;
   font-size: var(--text-sm);
   color: var(--color-text-muted);
+}
+
+/* ============================================================
+   9. 消减动效（prefers-reduced-motion: reduce）— fix2 spec-J2
+      双路归零口径（本块为第二路；第一路见 tokens.css §5.1）：
+      第一路（tokens.css §5.1，--dur-xs/sm/md/lg→0ms）覆盖本文件全部
+        经 --dur-* / --sheet-transition / --toast-transition 的动效
+        （弹层过渡、按钮/分段/关闭钮反馈、toast 进场等）；
+      第二路（本块）显式归零四个未走 --dur-* 的裸时长动效：
+        空态 bob 3s（§5）、不定进度 u-progress-indet 1.15s（§6）、
+        toast 离场 .is-out 240ms（§4）、确定进度 width 500ms（§6）。
+      视觉终态保留（停运动不消形）：空态图标/进度条/toast 照常渲染，
+      离场与关闭直接跳终态、无中间帧动画。
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  .u-empty-ico,
+  .u-progress[data-determinate="false"] .u-progress-fill { animation: none; }
+  .u-progress-fill { transition: none; }
+  .u-toast.is-out { transition: none; }
 }
