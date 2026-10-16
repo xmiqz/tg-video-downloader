@@ -11,6 +11,10 @@
          FR-23 ≥768 平板起为桌面形态；媒体查询不可用 var()）
        · 38% 不定进度滑块宽 + 1.15s 往复（对齐旧壳 .job-fill.indet
          style.css:986-987 的既有视觉语言）
+       · 6px 背板模糊 + 140% 饱和（.u-overlay-mask 玻璃参数；非令牌数值，
+          玻璃参数派生口径：对齐旧壳模态遮罩玻璃语汇 style.css:708
+          backdrop-filter: blur(8px)，取 --glass-* 档位近似并补 saturate
+          以贴合液态玻璃观感）
        · 240ms 退出过渡（.u-toast/.is-out；4px 栅格 60 倍，短于
          --dur-lg 以免级联等待）
      - 类名统一 u- 前缀（与旧壳 .empty-state/.segmented/.sheet 及
@@ -116,7 +120,7 @@
 .u-overlay-mask {
   position: absolute;
   inset: 0;
-  background: var(--sheet-backdrop));
+  background: var(--sheet-backdrop);
   backdrop-filter: blur(6px) saturate(140%);
   -webkit-backdrop-filter: blur(6px) saturate(140%);
   opacity: 0;
