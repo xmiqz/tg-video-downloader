@@ -401,6 +401,12 @@ export async function boot() {
     l.href = "css/views/" + n + ".css";
     doc.head.appendChild(l);
   });
+  // T10 组件库样式（t8_contract.md §7 R4-① 预授权的同型引导；仅 v22shell=1
+  // 新壳路径装载，开关默认关闭时零请求）
+  const uiCss = doc.createElement("link");
+  uiCss.rel = "stylesheet";
+  uiCss.href = "css/ui.css";
+  doc.head.appendChild(uiCss);
 
   // 主题镜像：与 index.html 旧壳引导脚本同一数据源（localStorage.appearance，
   // 后端配置为准、这里仅镜像）。默认 dark（对齐产品默认"静态暗"）；liquid
