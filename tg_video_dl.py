@@ -104,6 +104,22 @@ ACCT_COOLDOWN_MAX = 300.0
 # acct_hint 事件去抖：同 task+reason 最小间隔（channel_private 不受限）。
 ACCT_HINT_MIN_INTERVAL = 30.0
 
+# ---- T59 账号健康巡检阈值（FR-41 收口 / tasks.md Task 59）----
+# warm_alt 由一次性 20s fire-and-forget 预热升级为有界后台巡检
+# （health loop）。以下阈值全部可被 cfg.acct_policy 可选键覆盖
+# （load_acct_policy——与 T51 慢速阈值同源，无第二配置源）：
+#   warm_poll_sec=60：巡检轮询间隔（10..600）；
+#   warm_hard_fail_max=3：连续确定性硬错上限→标 unhealthy（1..10）；
+#   warm_unhealthy_backoff_sec=600：unhealthy 退避秒（30..3600）；
+#   warm_transient_backoff_sec=30：瞬时错指数退避基值（1..300）。
+WARM_POLL_SEC = 60.0
+WARM_HARD_FAIL_MAX = 3
+WARM_UNHEALTHY_BACKOFF = 600.0
+# 瞬时退避序列钉死 30/60/120/300/300…（任务书 TR-59.1①）：前 3 次
+# 指数 2 倍，第 4 次起一律封顶本值。
+WARM_TRANSIENT_BACKOFF = 30.0
+WARM_TRANSIENT_BACKOFF_MAX = 300.0
+
 # 无权限频道错误类名钉死集合（用 type(e).__name__ 与真 telethon 类比较）。
 PRIVATE_ERROR_NAMES = {"ChannelPrivateError"}
 
@@ -241,6 +257,9 @@ def ensure_dirs_and_migrate():
     # T56 Bug5：提升流程中断对账（零网络；正常态零动作）
     reconcile_session_promotion()
 
+    # T59：异常手机号启动对账（只标记不删除；零网络；正常态零写盘）
+    reconcile_phones(load_config())
+
     # T21：tasks 目录原子写残留 .*.json.tmp 清理（只清 tmp，绝不碰 bak）
     try:
         for tmp_task in TASK_ROOT.glob("*.json.tmp"):
@@ -332,6 +351,15 @@ def load_acct_policy():
                              1024, 100 * 1024 * 1024)),
         "slow_win_sec": _num("slow_win_sec", ACCT_SLOW_WIN_SEC, 5, 300),
         "cooldown_sec": _num("cooldown_sec", ACCT_COOLDOWN_SECS, 10, 1800),
+        # T59 巡检阈值（§2.4：可选键；缺省=内置默认，非法值回落默认，
+        # 与 T51 阈值同源——本函数是唯一配置覆盖入口）
+        "warm_poll_sec": _num("warm_poll_sec", WARM_POLL_SEC, 10, 600),
+        "warm_hard_fail_max": int(_num("warm_hard_fail_max",
+                                       WARM_HARD_FAIL_MAX, 1, 10)),
+        "warm_unhealthy_backoff_sec": _num(
+            "warm_unhealthy_backoff_sec", WARM_UNHEALTHY_BACKOFF, 30, 3600),
+        "warm_transient_backoff_sec": _num(
+            "warm_transient_backoff_sec", WARM_TRANSIENT_BACKOFF, 1, 300),
     }
 
 
@@ -460,6 +488,105 @@ def reconcile_session_promotion():
         save_config(cfg)
         print("[acct] reconcile: 检测到提升后残留的小号配置/附属文件，"
               "已收敛（新主号授权完好）")
+
+
+def validate_phone(p):
+    """T59 §2.2 异常手机号校验（纯函数；规则写死如下，禁自由发挥）：
+      1) 空值（None/空串/纯空白）→ "empty"；
+      2) 允许恰好一个前导 '+'，其余必须全为 ASCII 数字 → 否则
+         "non-digit"；
+      3) 数字总位数 7..15（E.164）→ 否则 "length"；
+      4) 总位数 >7 时国家码段首位不得为 0（"国家码 1-3 位非零开头"
+         规则的可判定投影：仅 >7 位时校验首位）→ 否则 "country-code"。
+    合法返回 ""。钉死用例：q→non-digit；""→empty；123→length；
+    "+"+90 位数字→length；+0123456789→country-code；+8613800138000
+    →合法。"""
+    s = str(p or "").strip()
+    if not s:
+        return "empty"
+    if s.startswith("+"):
+        s = s[1:]
+    if not s or not (s.isascii() and s.isdigit()):
+        return "non-digit"
+    if not (7 <= len(s) <= 15):
+        return "length"
+    if len(s) > 7 and s[0] == "0":
+        return "country-code"
+    return ""
+
+
+def _mask_phone(p):
+    """T59 §2.2 手机号脱敏（日志强制）：显示为 ****+末 2 位；长度 <2
+    （含空值）一律 ****。任何 [acct]/[wacct]/巡检/校验日志输出手机号
+    必须经本助手，禁明文。"""
+    s = str(p or "")
+    return "****" + s[-2:] if len(s) >= 2 else "****"
+
+
+def reconcile_phones(cfg):
+    """T59 §2.2 启动对账：异常手机号清洗——只标记不删除（零网络、
+    幂等）。由 ensure_dirs_and_migrate 在 reconcile_session_promotion
+    之后调用（入参为现读 cfg）。
+
+    校验范围与落点（规则钉死）：
+      - cfg["phone"]（主号顶层键；键缺席=未登录/已登出，正常态不算脏）
+        与 cfg["accounts"][*]["phone"]（历史遗留可选键；键缺席=小号
+        phone 本就不落盘的正常态，不算脏）；
+      - 脏值 → 对应 accounts 条目加可选键 "phone_invalid": true；
+        合法且该条目曾被标 → 清除标记自愈（不删除任何条目/文件/
+        既有键；合法号零触碰）；
+      - 主号标记落在 id=="main" 条目：accounts 键缺席但主号 phone 脏
+        时补建仅含 main 的最小条目承载标记（T58 提升流程实测形态：
+        脏 phone 写入顶层的同时 accounts 被 pop——不补建则该脏值
+        永远不可见、不可清洗）；
+      - 主号脏 phone 只影响可见性/登录预填，不进调度排除（主号是
+        唯一回退号，_eligible 的 invalid 守卫仅对小号生效）。
+    幂等：重复跑 changed=0、零写盘（mtime 不变）。返回 changed 计数。
+    [wacct] invalid 行：id/reason/脱敏 phone，一行一条（仅首标时）。"""
+    if not isinstance(cfg, dict):
+        return 0
+    accts = cfg.get("accounts")
+    if not isinstance(accts, list):
+        accts = None
+    main_phone = cfg.get("phone")
+    # 主号需要标记但无承载条目：补建仅含 main 的最小条目（红线 5：
+    # cfg 仅 accounts 条目允许加可选标记键；不写任何 alt 配置）
+    if (main_phone is not None and validate_phone(main_phone)
+            and not any(isinstance(a, dict) and a.get("id") == ACCT_MAIN
+                        for a in (accts or []))):
+        if accts is None:
+            accts = []
+            cfg["accounts"] = accts
+        accts.insert(0, {"id": ACCT_MAIN})
+    if accts is None:
+        return 0
+    changed = 0
+    for a in accts:
+        if not isinstance(a, dict):
+            continue
+        aid = a.get("id")
+        cand = []                       # (脏值, 原因)：main 含顶层键
+        if aid == ACCT_MAIN and main_phone is not None:
+            r = validate_phone(main_phone)
+            if r:
+                cand.append((main_phone, r))
+        if "phone" in a:
+            r = validate_phone(a.get("phone"))
+            if r:
+                cand.append((a.get("phone"), r))
+        if cand:
+            phone, reason = cand[0]
+            if not a.get("phone_invalid"):
+                a["phone_invalid"] = True
+                changed += 1
+                _wacct_log(f"id={aid} event=invalid reason={reason} "
+                           f"phone={_mask_phone(phone)}")
+        elif a.get("phone_invalid"):
+            a.pop("phone_invalid", None)   # 自愈：清除过期标记
+            changed += 1
+    if changed:
+        save_config(cfg)
+    return changed
 
 
 def prompt_manual_api(cfg):
@@ -2633,6 +2760,15 @@ _RETRY_SLEEP = asyncio.sleep
 _NET_SLEEP = asyncio.sleep
 
 
+# ---- T59 账号健康巡检公共件（FR-41 收口 / tasks.md Task 59）----
+# 测试缝（照 _NET_SLEEP 风格）：巡检排程等待专用可覆盖 sleep 句柄。
+# 生产恒为 asyncio.sleep；测试 monkeypatch 为假时钟推进器（TR 不得
+# 真实等 60s 轮询/30-300s 退避/600s unhealthy 窗）。health loop 的
+# 轮询等待一律走此句柄；单次预热 20s 限时仍走 asyncio.wait_for
+# （不在本缝——探测本身受 20s 上限约束）。
+_WARM_SLEEP = asyncio.sleep
+
+
 def _net_is_connected(client) -> bool:
     """T24 连通探测：调 client.is_connected()；任何异常 fail-open 返回
     True（探测失败不误判断网，保持旧行为——只有明确返回 False 才算
@@ -2669,6 +2805,15 @@ def _retry_log(line):
     """T22 机读日志：固定前缀 [retry]，一行一条，字段稳定可 grep；
     只含 msg id/异常类名/秒数，禁带手机号/密钥/会话串。"""
     print(f"[retry] {line}", flush=True)
+
+
+def _wacct_log(line):
+    """T59 机读日志：[wacct] 前缀（账号巡检专用），一行一条，字段稳定
+    可 grep；只含账号 id/秒数/计数/脱敏手机号，禁带明文手机号/密钥/
+    会话串。探测结果行 event 词表钉死：probe|recover|flood|backoff|
+    unhealthy|invalid；生命周期行（loop=exit，§2.1 循环退出一行）不带
+    event（六词均为探测结果语义）。"""
+    print(f"[wacct] {line}", flush=True)
 
 
 def classify_download_error(exc) -> str:
@@ -4166,6 +4311,15 @@ class AccountPool:
         self._seq = 0                            # 选号决策日志序号（从 1 连续）
         self._last_hint = {}                     # (task_id, reason) -> monotonic 去抖
         self._sampler = None                     # 慢速采样任务
+        # T59 巡检状态（§2.1 有界后台巡检）：acct -> {probe_due, until,
+        # hard_fail, tries, mode}；mode ∈ idle|flood_wait|backoff|
+        # unhealthy。线程安全口径与 slow_*/flood_until 等既有状态字典
+        # 一致：asyncio 循环线程单写（tick/_warm_fail/_warm_recover），
+        # snapshot() 在 _lock 内读。
+        self.warm_state = {}
+        self._health_task = None                 # 巡检 asyncio task（自持）
+        self._health_stop = False                # 停止旗（stop_health_loop）
+        self._warm_inflight = False              # 单次探测进行中（防重入）
 
     # ---------- 事件出口 ----------
     def emit(self, name, payload):
@@ -4264,7 +4418,13 @@ class AccountPool:
         T58：connect/授权阶段异常维持 _cleanup_add 后 re-raise（码绝无
         发出）；send_code_request 阶段异常保留 _adding 与 client 原样
         上抛（码可能已在途，add_verify_code 仍可续走），由 gui 层
-        _map_send_code_exc 统一分类。"""
+        _map_send_code_exc 统一分类。
+        T59 §2.2：入参 phone 头部守卫——先过 validate_phone，非法立即
+        ValueError（错误文案含原因词；gui 层按既有未知异常形状映射），
+        不触网、不创建 client、不进 _adding/state。"""
+        reason = validate_phone(phone)
+        if reason:
+            raise ValueError(f"小号手机号不合法：{reason}")
         if account_id != ACCT_ALT:
             raise ValueError(f"不支持添加账号：{account_id!r}（仅 alt1）")
         if self._adding.get(ACCT_ALT) is not None:
@@ -4391,7 +4551,9 @@ class AccountPool:
 
     async def shutdown_alts(self):
         """主号 logout 时调用：断开 alt 连接、清运行态；
-        不删 alt 文件/配置（下次连接可复用授权）。"""
+        不删 alt 文件/配置（下次连接可复用授权）。
+        T59：先停有界巡检循环（拆除点，§2.1）。"""
+        self.stop_health_loop()
         self._adding.pop(ACCT_ALT, None)
         client = self.clients.pop(ACCT_ALT, None)
         self.state.pop(ACCT_ALT, None)
@@ -4470,44 +4632,247 @@ class AccountPool:
         self.state[ACCT_ALT] = "ready"
         return client
 
+    async def _warm_once(self):
+        """T59：单次预热尝试（自 warm_alt 连接块提炼；warm_alt 外部
+        签名/调用点零改）。返回 (ok, exc)：
+          ok=True → 成功（ready/缓存 me/回填 _alt_phone 在此完成）；
+          ok=False, exc=None → 前置不满足（不可懒连接/phone_invalid/
+            已连接/adding/探测重入），零动作零触网；
+          ok=False, exc 非 None → 连接/授权失败（已 disconnect 吞掉，
+            状态回落 has_session 绝不置 error；异常原样带回调用方
+            分类——warm_alt 打印后吞掉保 T56 语义，巡检 tick 走 T22
+            分类）。打印一律留在调用方（tick 巡检轮只出 [wacct] 行，
+            每轮恰一行）。"""
+        if self._warm_inflight:
+            return False, None            # 单次探测重入守卫（有界）
+        if not self._alt_lazy_ok():
+            return False, None
+        if self._phone_invalid_of(ACCT_ALT):
+            return False, None            # T59 §2.2：脏 phone 不进巡检
+        if self.clients.get(ACCT_ALT) is not None:
+            return False, None
+        if self._adding.get(ACCT_ALT) is not None:
+            return False, None
+        client = self._raw_client(ACCT_ALT)
+        self._warm_inflight = True
+        try:
+            try:
+                await asyncio.wait_for(client.connect(), timeout=20.0)
+                if not await client.is_user_authorized():
+                    raise RuntimeError("小号未授权")
+            except Exception as e:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                return False, e
+            self.clients[ACCT_ALT] = client
+            self.state[ACCT_ALT] = "ready"
+            try:
+                me = await client.get_me()
+                self.me_cache[ACCT_ALT] = {
+                    "name": me.first_name or "", "username": me.username or "",
+                    "phone": me.phone or ""}
+                if me.phone:
+                    self._alt_phone = me.phone
+            except Exception:
+                self.me_cache[ACCT_ALT] = None
+            return True, None
+        finally:
+            self._warm_inflight = False
+
     async def warm_alt(self):
         """T56 Bug3：主号就绪后静默预热小号（fire-and-forget 提交，
         绝不阻塞登录返回）。仅当可懒连接（已配置+session 文件在）且
         无 client、非 adding/error 时动作；construct→connect（限时
         20s）→is_user_authorized→成功置 ready+缓存 me（含回填
         _alt_phone）；任何失败 disconnect 吞掉、绝不置 error——状态
-        回落 has_session，保住下次选号资格（离线不能永久打掉 alt）。"""
-        if not self._alt_lazy_ok():
-            return False
-        if self.clients.get(ACCT_ALT) is not None:
-            return False
-        if self._adding.get(ACCT_ALT) is not None:
-            return False
-        client = self._raw_client(ACCT_ALT)
+        回落 has_session，保住下次选号资格（离线不能永久打掉 alt）。
+        T59：连接块提炼为 _warm_once()（语义等价：返回值/[acct] 行/
+        状态效果逐一不变）；首次调用同时启动有界后台巡检
+        （start_health_loop，§2.1）。"""
+        self.start_health_loop()
+        ok, exc = await self._warm_once()
+        if ok:
+            print("[acct] 小号预热成功（连接已就绪）")
+            return True
+        if exc is not None:
+            print(f"[acct] 小号预热失败（{type(exc).__name__}），保持待连接")
+        return False
+
+    # ---------- T59 有界后台巡检（§2.1 health loop；零新事件/零新 RPC） ----------
+    def _phone_invalid_of(self, acct):
+        """T59 §2.2：读 cfg accounts 条目的 phone_invalid 标记（只读；
+        标记由 reconcile_phones 启动对账幂等维护；运行期 add_start 只
+        放行合法号、remove_account 弹除整键，标记与账号态自洽）。
+        load_config 现读（小文件、低频调用点：选号决策/巡检 tick/
+        snapshot）；异常/缺键一律 False 保守放行。"""
         try:
-            await asyncio.wait_for(client.connect(), timeout=20.0)
-            if not await client.is_user_authorized():
-                raise RuntimeError("小号未授权")
-        except Exception as e:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
-            print(f"[acct] 小号预热失败（{type(e).__name__}），保持待连接")
-            return False
-        self.clients[ACCT_ALT] = client
-        self.state[ACCT_ALT] = "ready"
-        try:
-            me = await client.get_me()
-            self.me_cache[ACCT_ALT] = {
-                "name": me.first_name or "", "username": me.username or "",
-                "phone": me.phone or ""}
-            if me.phone:
-                self._alt_phone = me.phone
+            accts = load_config().get("accounts")
         except Exception:
-            self.me_cache[ACCT_ALT] = None
-        print("[acct] 小号预热成功（连接已就绪）")
-        return True
+            return False
+        if not isinstance(accts, list):
+            return False
+        for a in accts:
+            if isinstance(a, dict) and a.get("id") == acct:
+                return bool(a.get("phone_invalid"))
+        return False
+
+    @staticmethod
+    def _warm_st0():
+        """T59 巡检状态初值（mode=idle）。"""
+        return {"probe_due": 0.0, "until": 0.0, "hard_fail": 0,
+                "tries": 0, "mode": "idle"}
+
+    def start_health_loop(self):
+        """T59 §2.1：启动有界后台巡检（幂等；fire-and-forget——立即
+        返回，绝不阻塞调用方）。warm_alt 首次调用自动触发；循环自持，
+        随 shutdown_alts 停止；测试可显式 stop_health_loop。"""
+        if self._health_task is not None and not self._health_task.done():
+            return
+        self._health_stop = False
+        self._health_task = asyncio.ensure_future(self._health_loop())
+
+    def stop_health_loop(self):
+        """T59 测试缝/拆除：停巡检（幂等；cancel 即时打断排程等待，
+        循环 finally 打印退出行）。"""
+        self._health_stop = True
+        t = self._health_task
+        self._health_task = None
+        if t is not None and not t.done():
+            t.cancel()
+
+    async def _health_loop(self):
+        """T59 §2.1 巡检循环：轮询间隔 policy.warm_poll_sec（默认
+        60s）；每轮至多一次预热尝试（_warm_tick）；任何异常吞掉不炸
+        循环（CancelledError 照常穿透拆除）；退出前打印一行机读日志
+        （[wacct] loop=exit——生命周期行，无探测结果语义故不带
+        event=，字段另行稳定）。"""
+        pol = float(self.policy.get("warm_poll_sec", WARM_POLL_SEC))
+        ticks = 0
+        try:
+            while not self._health_stop:
+                await _WARM_SLEEP(pol)
+                if self._health_stop:
+                    break
+                try:
+                    await self._warm_tick()
+                except Exception:
+                    pass           # 巡检轮异常吞掉：循环必须有界不炸
+                ticks += 1
+        finally:
+            _wacct_log(f"loop=exit id={ACCT_ALT} ticks={ticks}")
+
+    async def _warm_tick(self):
+        """T59 §2.1 一轮巡检（有界）：仅小号、仅"待连接"态动作；
+        phone_invalid 号零触碰（§2.2）；排程（flood/退避/unhealthy）
+        未到期零动作零日志。单轮至多一次预热尝试。"""
+        if self._adding.get(ACCT_ALT) is not None:
+            return
+        if self.clients.get(ACCT_ALT) is not None:
+            return
+        if not self._alt_lazy_ok():
+            return
+        if self._phone_invalid_of(ACCT_ALT):
+            return
+        st = self.warm_state.get(ACCT_ALT) or {}
+        if time.monotonic() < float(st.get("probe_due", 0.0)):
+            return
+        ok, exc = await self._warm_once()
+        if ok:
+            self._warm_recover()
+        elif exc is not None:
+            self._warm_fail(exc)
+        # exc 为 None：前置竞态（探测重入/adding 刚开始等）——零动作
+
+    def _warm_classify(self, e):
+        """T59 §2.1：复用 T22 classify_download_error 取分类（不复制
+        实现）：flood→"flood"；deterministic→"deterministic"；其余
+        （transient/reference/control/未知兜底）一律按 transient 保守
+        再探（connect/get_me 链路不产 control；reference 不可达）。"""
+        kind = classify_download_error(e)
+        if kind == "flood":
+            return "flood"
+        if kind == "deterministic":
+            return "deterministic"
+        return "transient"
+
+    def _warm_backoff_delay(self, tries):
+        """T59 §2.1 瞬时退避序列（任务书钉死 30/60/120/300/300…）：
+        前 3 次指数 2 倍（base/2base/4base，逐项封顶），第 4 次起一律
+        WARM_TRANSIENT_BACKOFF_MAX；base 可经 policy
+        warm_transient_backoff_sec 覆盖。"""
+        base = float(self.policy.get("warm_transient_backoff_sec",
+                                     WARM_TRANSIENT_BACKOFF))
+        if tries <= 3:
+            return min(base * (2 ** (tries - 1)),
+                       WARM_TRANSIENT_BACKOFF_MAX)
+        return WARM_TRANSIENT_BACKOFF_MAX
+
+    def _warm_fail(self, e):
+        """T59 §2.1 一次巡检探测失败（[wacct] 恰一行）：
+        - flood：不计失败次、不进退避，按 wait 排程下轮（到期再探）；
+        - deterministic：hard_fail+=1；达 policy.warm_hard_fail_max →
+          标 unhealthy、退避 policy.warm_unhealthy_backoff_sec 后允许
+          一轮再探（再探成功→_warm_recover 复位；再探硬错→hard_fail
+          仍≥上限→重新标 unhealthy）；未达上限→下轮轮询再探；
+        - transient：不计硬错，指数退避再探（探测成功即复位）。
+        计数口径：flood/transient 不改 hard_fail、deterministic 不改
+        tries；仅 _warm_recover 复位二者（任务书未定义跨类清零）。"""
+        st = self.warm_state.setdefault(ACCT_ALT, self._warm_st0())
+        now = time.monotonic()
+        kind = self._warm_classify(e)
+        if kind == "flood":
+            wait = int(getattr(e, "seconds", 0) or 0)
+            if wait < 1:
+                wait = 1
+            st["mode"] = "flood_wait"
+            st["probe_due"] = now + wait
+            st["until"] = st["probe_due"]
+            _wacct_log(f"id={ACCT_ALT} event=flood wait={wait}")
+            return
+        if kind == "deterministic":
+            st["hard_fail"] = int(st.get("hard_fail", 0)) + 1
+            mx = int(self.policy.get("warm_hard_fail_max",
+                                     WARM_HARD_FAIL_MAX))
+            if st["hard_fail"] >= mx:
+                bo = float(self.policy.get(
+                    "warm_unhealthy_backoff_sec", WARM_UNHEALTHY_BACKOFF))
+                st["mode"] = "unhealthy"
+                st["probe_due"] = now + bo
+                st["until"] = st["probe_due"]
+                _wacct_log(f"id={ACCT_ALT} event=unhealthy "
+                           f"hard_fail={st['hard_fail']} backoff={int(bo)}")
+            else:
+                pol = float(self.policy.get("warm_poll_sec",
+                                            WARM_POLL_SEC))
+                st["mode"] = "backoff"
+                st["probe_due"] = now + pol
+                st["until"] = st["probe_due"]
+                _wacct_log(f"id={ACCT_ALT} event=probe outcome=fail "
+                           f"kind=deterministic hard_fail={st['hard_fail']}")
+            return
+        st["tries"] = int(st.get("tries", 0)) + 1
+        delay = self._warm_backoff_delay(st["tries"])
+        st["mode"] = "backoff"
+        st["probe_due"] = now + delay
+        st["until"] = st["probe_due"]
+        _wacct_log(f"id={ACCT_ALT} event=backoff delay={int(delay)} "
+                   f"tries={st['tries']}")
+
+    def _warm_recover(self):
+        """T59 §2.1 探测成功：ready/me/_alt_phone 已由 _warm_once 置好
+        → 自动回可调度池（_alt_lazy_ok 本就为真，无需额外动作）；复位
+        计数/模式（[wacct] 恰一行）。恢复边沿零 acct_hint（reason 词表
+        钉死），经 TUI 打印 + snapshot 可见。"""
+        st = self.warm_state.setdefault(ACCT_ALT, self._warm_st0())
+        prev = st.get("mode", "idle")
+        st["mode"] = "idle"
+        st["probe_due"] = 0.0
+        st["until"] = 0.0
+        st["hard_fail"] = 0
+        st["tries"] = 0
+        _wacct_log(f"id={ACCT_ALT} event=recover from={prev}")
 
     # ---------- 状态标注（下载侧经客户端视图回调） ----------
     def note_flood(self, acct, seconds, channel=None, item_msg=None):
@@ -4661,8 +5026,13 @@ class AccountPool:
 
     def _eligible(self, acct, channel):
         """该号当下是否可派新条目（返回 (ok, 过滤原因)）。
-        过滤原因字符串：flood:<s> / slow:cooldown<s> / denied / ""
-        （空=合格；main 永远不在 denied 集——note_deny 仅 alt 触发）。"""
+        过滤原因字符串：flood:<s> / slow:cooldown<s> / denied / invalid
+        / ""（空=合格；main 永远不在 denied 集——note_deny 仅 alt 触发）。
+        T59 §2.2 头部守卫：cfg 标 phone_invalid 的小号不进调度；过滤
+        原因经 select 决策日志 reason=invalid 落盘（pref=alt1/auto/
+        sticky 落到该号时可见）。主号不受本守卫影响（唯一回退号）。"""
+        if acct == ACCT_ALT and self._phone_invalid_of(ACCT_ALT):
+            return False, "invalid"
         now = time.monotonic()
         fu = self.flood_until.get(acct, 0.0)
         if now < fu:
@@ -4790,28 +5160,44 @@ class AccountPool:
     def snapshot(self):
         """线程安全账号状态列表（account_list RPC 消费）：
         main 恒在列；alt1 仅在已配置（或半成品文件在）或 adding 中时
-        在列。me 不触网（仅登录成功缓存的 get_me）。"""
+        在列。me 不触网（仅登录成功缓存的 get_me）。
+        T59 §2.3：账号条目加可选键——phone_invalid:true（cfg 标记脏
+        phone 时）/ health:"unhealthy"（巡检标 unhealthy 时），仅异常
+        时出现、缺省省略（旧前端零感知）。"""
         now = time.monotonic()
         with self._lock:
-            out = [{
+            main_row = {
                 "id": ACCT_MAIN, "label": "",
                 "state": self._state_of(ACCT_MAIN),
                 "phone": "", "me": self.me_cache.get(ACCT_MAIN),
                 "busy": self.busy.get(ACCT_MAIN, 0),
                 "flag": self._flag_of(ACCT_MAIN, now),
-            }]
+            }
+            out = [self._t59_marks(ACCT_MAIN, main_row)]
             alt_on = (self._alt_lazy_ok()
                       or self._adding.get(ACCT_ALT) is not None)
             if alt_on:
-                out.append({
+                alt_row = {
                     "id": ACCT_ALT, "label": "",
                     "state": self._state_of(ACCT_ALT),
                     "phone": self._alt_phone,
                     "me": self.me_cache.get(ACCT_ALT),
                     "busy": self.busy.get(ACCT_ALT, 0),
                     "flag": self._flag_of(ACCT_ALT, now),
-                })
+                }
+                out.append(self._t59_marks(ACCT_ALT, alt_row))
             return out
+
+    def _t59_marks(self, acct, row):
+        """T59 §2.3 snapshot 可选键（就地加；仅异常时出现）。
+        warm_state 读口与 snapshot 同锁（本方法仅在 _lock 内调用）；
+        phone_invalid 现读 cfg 标记（reconcile_phones 维护）。"""
+        if self._phone_invalid_of(acct):
+            row["phone_invalid"] = True
+        st = self.warm_state.get(acct)
+        if isinstance(st, dict) and st.get("mode") == "unhealthy":
+            row["health"] = "unhealthy"
+        return row
 
     def busy_snapshot(self):
         """线程安全 busy 快照（remove 等闸门用）。"""
@@ -6277,6 +6663,13 @@ async def account_menu(pool):
             nm = me.get("name") or ""
             line = (f"  {ACCT_MARK[a['id']]} {nm}  {who}  {st}"
                     f"  忙 {a['busy']}  {flag}")
+            # T59 §2.3：行尾追加 health/invalid 短词标记（既有字段与
+            # 顺序零改动，只在行尾追加；展示同源 snapshot 可选键，
+            # NFR-13 TUI 跟进）
+            if a.get("phone_invalid"):
+                line += "  手机号异常"
+            if a.get("health") == "unhealthy":
+                line += "  不健康"
             print(line if a["state"] == "ready" else paint(line, DIM))
         if not any(a["id"] == ACCT_ALT for a in rows):
             print(paint("  （无小号）", DIM))
