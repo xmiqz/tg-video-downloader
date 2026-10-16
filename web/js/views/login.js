@@ -1,42 +1,666 @@
 // ============================================================
-// views/login.js — T8 占位视图：登录（手机号/验证码/2FA 三步）
-// 契约：t8_contract.md §1 模块形状 { path, title, mount, onEnter, onLeave }
-// 归属波次：T11 替换本文件与 css/views/login.css（零改基座）。
-// T8 只做「迁移中」空态，禁止实现业务。
+// views/login.js — T11 登录视图（v2.2 W4-a）
+//
+// 契约：
+//   t8_contract.md §1 模块形状 { path, title, mount, onEnter, onLeave }；
+//   t58_contract.md 登录三步可靠性（七类异常/recoverable 入口/软成功
+//   warning/me 重试/login_state 三态/guest 轮询）；
+//   t10_contract.md 组件库（本文件 import ../ui/index.js 桶，仅此入口）。
+//
+// 行为对齐（旧壳出处，均为只读参照）：
+//   app.js bootConnect(209-272)/tryConnect(288-310)/showLoginStep(317-323)/
+//   doSendCode(447-474)/doVerifyCode(475-489)/doVerifyPassword(490-502)/
+//   afterLogin(503-531)/renderMe(535-540)/showMeError(548-558)/retryMe
+//   (562-579)/doGuest(418-440)/guestPollTick(394-415)。
+//
+// 纪律：零 alert/confirm/prompt（错误一律内联）；零新 RPC（只走
+// window.pywebview.api 既有方法）；模块顶层零副作用（一切 DOM/监听/轮询
+// 在 mount/onEnter 内起、onLeave 全清理）；动效仅 --dur-*/--ease-* 令牌。
 // ============================================================
 
+import { el, createCard } from "../ui/index.js";
+
+// ------------------------------------------------------------
+// ① 契约导出（t8_contract.md §1 恰五员）
+// ------------------------------------------------------------
 export const path = "login";
 
+// 非空静态 title：router 进入视图后写入 document.title（保 T8 占位原值，
+// 禁改——T8 TR-8.1 E2 断言锚点）。
 export const title = "登录 - TG 视频下载器";
 
-let cached = null;
-let paramsBox = null;
+// ------------------------------------------------------------
+// ② seam 纯函数（T11 任务书 §3 S1–S6；命名导出仅供测试，零 DOM 依赖）
+// ------------------------------------------------------------
 
-export function mount(container) {
-  if (cached) return cached;
-  const el = document.createElement("div");
-  el.className = "v22-placeholder-view";
-  el.setAttribute("data-view-name", "login");
-  el.innerHTML =
-    '<div class="v22-ph-card">' +
-    '<div class="v22-ph-ico" aria-hidden="true">🔑</div>' +
-    '<h2 class="v22-ph-title">登录</h2>' +
-    '<p class="v22-ph-desc">本视图将在 v2.2 后续版本迁移（T11：手机号 / 验证码 / 两步验证三步）。</p>' +
-    '<p class="v22-ph-params" data-ph="params"></p>' +
-    "</div>";
-  paramsBox = el.querySelector('[data-ph="params"]');
-  cached = el;
-  return el;
+// S1 login_state → "connected" | "guest" | "anonymous"。
+// 兜底（T58 2.3 三态口径 + app.js bootConnect/guestPollTick 消费规则纯化）：
+//   logged_in===true 且 guest!==true → connected（已授权就绪）；
+//   否则 guest===true → guest（游客态，含矛盾形状 logged_in&&guest ——
+//     logged_in 须 !guest 才立，游客态保留轮询待快照自愈）；
+//   其余（null/缺字段/字符串形状）→ anonymous。
+export function resolveEntryState(st) {
+  if (st && typeof st === "object") {
+    if (st.logged_in === true && st.guest !== true) return "connected";
+    if (st.guest === true) return "guest";
+  }
+  return "anonymous";
 }
 
-export function onEnter(params) {
-  if (paramsBox) {
-    paramsBox.textContent = params && params.id
-      ? "路由参数：id=" + String(params.id)
-      : "";
+// S2 send_code 返回 → {step:"code",warning} | {recover:true,error} | {error}
+// （app.js doSendCode 447-474 纯化；T58 3.2 分支唯一入口）。
+export function resolveSendCodeOutcome(r, fallbackError) {
+  const fallback = fallbackError || "发送验证码失败";
+  if (r && typeof r === "object") {
+    if (r.ok === true) {
+      // 完全成功 / 软成功（SendCodeUnavailable——码经 App 消息已到）：
+      // 只信 ok → 码步；warning 原句透传内联（软成功文案）。
+      return { step: "code", warning: r.warning || "" };
+    }
+    if (r.recoverable === true) {
+      // 网络抖动（码可能已发出但响应回程失败）：停 phone 步 + 明示
+      // 恢复入口；缺 error 时给可用兜底文案。
+      return {
+        recover: true,
+        error: r.error || "网络异常，验证码可能已发送到你的 Telegram；如已收到可直接点下方入口输入",
+      };
+    }
+    // flood_wait（文案含秒数，后端拼好透传）/bad_phone/banned/api_invalid/
+    // AuthKeyDuplicated/其余：显错无恢复入口。
+    return { error: r.error || fallback };
+  }
+  return { error: fallback };
+}
+
+// S3 verify_code / verify_password 共用 → "ready" | "need_password" | {error}
+// （app.js doVerifyCode 475-489 / doVerifyPassword 490-502 纯化：
+//   ok+ready → 成功；ok+need_password → 密步；ok 其他 stage / !ok / null →
+//   {error}（旧壳 loginErr(m||"") 空文案留当前步）；异常前缀由调用方拼）。
+export function resolveVerifyOutcome(r) {
+  if (r && typeof r === "object") {
+    if (r.ok === true && r.stage === "ready") return "ready";
+    if (r.ok === true && r.stage === "need_password") return "need_password";
+    return { error: r.error || "" };
+  }
+  return { error: "" };
+}
+
+// S4 步骤机（task §3.S4）：三步向导 phone→code→pwd 单链；
+//   phone 不可再退（prevStep 钳制）、pwd 末步钳制；未知输入安全默认
+//   phone。返回上一步纯前端切步零 RPC、保值（TR11-1 走查）。
+const STEP_CHAIN = ["phone", "code", "pwd"];
+export function nextStep(cur) {
+  const i = STEP_CHAIN.indexOf(cur);
+  if (i < 0) return "phone";
+  return STEP_CHAIN[Math.min(i + 1, STEP_CHAIN.length - 1)];
+}
+export function prevStep(cur) {
+  const i = STEP_CHAIN.indexOf(cur);
+  if (i < 0) return "phone";
+  return STEP_CHAIN[Math.max(i - 1, 0)];
+}
+
+// S5 游客态轮询裁决 → "connected" | "logged_out" | "keep"
+// （app.js guestPollTick 394-415 纯化；T58 FE-D：发码中 poll 不收卡）。
+export function resolvePollTick(st) {
+  if (st && typeof st === "object") {
+    if (st.logged_in === true && st.guest !== true) return "connected";
+    if (st.guest !== true && st.logged_in !== true) return "logged_out";
+  }
+  return "keep";
+}
+
+// S6 输入清洗（旧壳口径：手机号/验证码仅 trim —— app.js:450/481，
+// 零自创校验不拦合法输入；密码敏感不 trim —— app.js:496 直取 .value）。
+export function sanitizePhone(v) {
+  return String(v == null ? "" : v).trim();
+}
+export function sanitizeCode(v) {
+  return String(v == null ? "" : v).trim();
+}
+export function sanitizePwd(v) {
+  return String(v == null ? "" : v);
+}
+
+// ------------------------------------------------------------
+// ③ 视图实现（mount 内构建一次、keep-alive；onEnter 重入重判）
+// ------------------------------------------------------------
+
+const POLL_MS = 2000;           // 轮询节拍（app.js:386 setInterval 2000）
+const BRIDGE_TIMEOUT_MS = 8000; // bridge 就绪等待上限（桩宿主立即就绪）
+
+let root = null;                // 视图根节点缓存（mount 恰一次）
+let epoch = 0;                  // onEnter 世代（重入/离开使旧异步回调失效）
+let pollId = null;              // 游客态轮询句柄（onLeave 必清）
+let pollBusy = false;
+let busy = false;               // 提交互斥（防重复发码/重复校验）
+
+const $ = {};                   // 节点引用（mount 时赋值）
+const stepEls = {};             // step 名 → 步骤块元素（phone|code|pwd，动态访问映射）
+const dotEls = {};              // step 名 → 步骤指示节点（同上）
+const submitLabels = new Map(); // busy 换文案用：按钮 -> 默认文案
+
+// —— 桥就绪（bridge 未起时等 pywebviewready；解析后监听即除）——
+function bridgeReady(timeoutMs) {
+  return new Promise(function (resolve) {
+    let done = false;
+    function finish(v) {
+      if (done) return;
+      done = true;
+      window.removeEventListener("pywebviewready", finish);
+      clearTimeout(timer);
+      resolve(v);
+    }
+    const timer = setTimeout(function () { finish(false); }, timeoutMs);
+    window.addEventListener("pywebviewready", finish);
+    if (window.pywebview && window.pywebview.api) finish(true);
+  });
+}
+
+function api() {
+  return window.pywebview.api;
+}
+
+function idle(my) { return my !== epoch; }
+
+// 导航：去任务库（新壳 router 优先，缺位降级 hash —— 任务书 §1.4）。
+function goTasks() {
+  const r = window.__t8router;
+  if (r && typeof r.navigate === "function") r.navigate("/tasks");
+  else window.location.hash = "#/tasks";
+}
+
+// —— 三步向导 ——
+function setStep(step) {
+  const s = STEP_CHAIN.indexOf(step) >= 0 ? step : "phone";
+  const curIdx = STEP_CHAIN.indexOf(s);
+  STEP_CHAIN.forEach(function (k, idx) {
+    const node = stepEls[k];
+    if (node) node.hidden = k !== s;
+    const dot = dotEls[k];
+    if (!dot) return;
+    dot.classList.toggle("is-active", idx === curIdx);
+    dot.classList.toggle("is-done", idx < curIdx);
+    if (idx === curIdx) dot.setAttribute("aria-current", "step");
+    else dot.removeAttribute("aria-current");
+    dot.querySelector(".lg-dot-num").textContent = idx < curIdx ? "✓" : String(idx + 1);
+  });
+  // T58 3.2：每次进入 phone 步重置“直接输入”恢复入口。
+  if (s === "phone") hideRecover();
+}
+
+function hideRecover() {
+  if ($.btnRecover) $.btnRecover.hidden = true;
+}
+
+// —— 内联错误 / 受控提示（零 alert；role=alert 区域）——
+function errShow(msg) {
+  if (!$.err) return;
+  $.err.textContent = msg || "";
+  $.err.hidden = !msg;
+}
+function noticeShow(msg) {
+  if (!$.notice) return;
+  $.notice.textContent = msg || "";
+  $.notice.hidden = !msg;
+}
+function errShowAcct(msg) {
+  if (!$.acctErr) return;
+  $.acctErr.textContent = msg || "";
+  $.acctErr.hidden = !msg;
+}
+
+// —— busy 呈现（提交即忙态 + 全动作钮禁用防重复，settled 恢复；
+//    目标按钮换“发送中…/验证中…/确认中…”文案，app.js withBusy 口径）——
+function setBusyUi(on, targetBtn, pendingText) {
+  busy = on;
+  if ($.btnPhone) $.btnPhone.disabled = on;
+  if ($.btnCode) $.btnCode.disabled = on;
+  if ($.btnPwd) $.btnPwd.disabled = on;
+  if ($.btnGuestEnter) $.btnGuestEnter.disabled = on;
+  if ($.btnGuestBrowse) $.btnGuestBrowse.disabled = on;
+  if ($.btnRetryMe) $.btnRetryMe.disabled = on;
+  if (on && targetBtn) {
+    if (targetBtn) targetBtn.textContent = pendingText;
+  } else {
+    submitLabels.forEach(function (label, b) { b.textContent = label; });
+  }
+  if ($.loginCard) $.loginCard.el.setAttribute("aria-busy", on ? "true" : "false");
+}
+
+async function withSubmit(targetBtn, pendingText, fn) {
+  if (busy) return;
+  setBusyUi(true, targetBtn, pendingText);
+  try {
+    await fn();
+  } catch (e) {
+    // 意外异常兜底（不产生未捕获 rejection；文案由 fn 内部分支处理）。
+    console.error("[v22login] 提交异常：", e);
+  } finally {
+    setBusyUi(false);
   }
 }
 
+// —— 三个提交动作（七类 send_code 分支唯一入口 resolveSendCodeOutcome）——
+function doSendCode() {
+  const phone = sanitizePhone($.inputPhone.value);
+  if (!phone) { errShow("请输入手机号"); return; }
+  errShow("");
+  hideRecover(); // T58 3.2：新一轮发送即重置恢复按钮
+  withSubmit($.btnPhone, "发送中…", async function () {
+    let r = null;
+    let exc = null;
+    try { r = await api().send_code(phone); }
+    catch (e) { exc = e; }
+    const out = resolveSendCodeOutcome(
+      r,
+      exc ? "发送验证码失败：" + (exc && exc.message ? exc.message : String(exc)) : undefined);
+    if (out.step === "code") {
+      setStep("code");
+      errShow(out.warning || "");   // 软成功 warning 原句内联
+    } else if (out.recover) {
+      errShow(out.error);           // 停 phone 步显错 + 明示入口
+      $.btnRecover.hidden = false;
+    } else {
+      errShow(out.error);           // flood/bad_phone/banned/api_invalid…无恢复入口
+    }
+  });
+}
+
+function doVerifyCode() {
+  errShow("");
+  withSubmit($.btnCode, "验证中…", async function () {
+    let r = null;
+    let exc = null;
+    try { r = await api().verify_code(sanitizeCode($.inputCode.value)); }
+    catch (e) { exc = e; }
+    const out = resolveVerifyOutcome(r);
+    if (out === "ready") {
+      await afterLoginAction();
+    } else if (out === "need_password") {
+      setStep("pwd");
+    } else {
+      // 留码步：可改码重验 / 返回重发（T58 3.2）。
+      errShow(exc
+        ? "验证码校验失败：" + (exc && exc.message ? exc.message : String(exc))
+        : out.error);
+    }
+  });
+}
+
+function doVerifyPassword() {
+  errShow("");
+  withSubmit($.btnPwd, "确认中…", async function () {
+    let r = null;
+    let exc = null;
+    try { r = await api().verify_password(sanitizePwd($.inputPwd.value)); }
+    catch (e) { exc = e; }
+    const out = resolveVerifyOutcome(r);
+    if (out === "ready") {
+      await afterLoginAction();
+    } else {
+      // 留密步（app.js:490-502）。
+      errShow(exc
+        ? "两步验证失败：" + (exc && exc.message ? exc.message : String(exc))
+        : out.error);
+    }
+  });
+}
+
+// —— 游客入口（app.js doGuest 418-440）——
+function doGuestEnter() {
+  // anonymous 态：“暂不登录（游客模式）”→ set_guest(true)；成功跳任务库；
+  // 失败内联显错（app.js:425-431 文案口径）。
+  withSubmit($.btnGuestEnter, "进入中…", async function () {
+    let r = null;
+    let exc = null;
+    try { r = await api().set_guest(true); }
+    catch (e) { exc = e; }
+    if (exc) {
+      return errShow("进入游客模式失败：" + (exc && exc.message ? exc.message : String(exc)));
+    }
+    if (!r || !r.ok) return errShow((r && r.error) || "进入游客模式失败");
+    goTasks();
+  });
+}
+
+function doGuestBrowse() {
+  // guest 态：“继续游客浏览”仅收卡跳任务库（不调 set_guest —— 任务书 §2.6）。
+  goTasks();
+}
+
+// —— 登录成功：账号卡 + me（app.js afterLogin 503-531 / T58 3.3）——
+function renderMeCard(m) {
+  $.meName.textContent = m.name || "已登录";
+  $.meUser.textContent = m.username ? "@" + m.username : (m.phone || "");
+  $.meAvatar.textContent = (m.name || "?").slice(0, 1); // 首字头像（app.js:539）
+  errShowAcct("");
+  $.btnRetryMe.hidden = true;
+}
+
+function renderMePending() {
+  $.meName.textContent = "获取账号资料中…";
+  $.meUser.textContent = "";
+  $.meAvatar.textContent = "…";
+  errShowAcct("");
+  $.btnRetryMe.hidden = true;
+}
+
+// me 失败：保底“已登录”卡 + 错误文案 + 内联“重试获取资料”
+// （T58 3.3 R5：文案不出现“重启应用”；app.js showMeError 548-558）。
+function showMeError(text) {
+  $.meName.textContent = "已登录";
+  $.meUser.textContent = "";
+  $.meAvatar.textContent = "·";
+  errShowAcct("获取账号资料失败：" + (text || "未知错误"));
+  $.btnRetryMe.hidden = false;
+}
+
+async function fetchMe(my) {
+  try {
+    const m = await api().me();
+    if (idle(my)) return;
+    if (m && m.ok) renderMeCard(m);
+    else showMeError((m && m.error) || "未能获取账号信息");
+  } catch (e) {
+    if (idle(my)) return;
+    showMeError(e && e.message ? e.message : String(e));
+  }
+}
+
+function showAccountCard() {
+  $.loginCard.el.hidden = true;
+  $.guestNote.hidden = true;
+  $.acctCard.el.hidden = false;
+  renderMePending();
+}
+
+function afterLoginAction() {
+  stopPoll();
+  showAccountCard();
+  return fetchMe(epoch);
+}
+
+function doRetryMe() {
+  // 手动重试：成功回填资料 + 清错误（T58 3.3 retryMe 562-579）。
+  withSubmit($.btnRetryMe, "重试中…", async function () {
+    let m = null;
+    try { m = await api().me(); }
+    catch (e) {
+      return errShowAcct("重试获取资料失败：" + (e && e.message ? e.message : String(e)));
+    }
+    if (!m || !m.ok) {
+      return errShowAcct("重试获取资料失败：" + ((m && m.error) || "未能获取账号信息"));
+    }
+    renderMeCard(m);
+  });
+}
+
+// —— 游客态轮询（app.js 379-415：约 2s 一拍、document.hidden 跳过、
+//    busy 门；发现 logged_in&&!guest → 转账号卡；发现登出 → 停轮询显手机步）——
+function startPoll() {
+  if (pollId != null) return;
+  pollId = setInterval(pollTick, POLL_MS);
+}
+function stopPoll() {
+  if (pollId != null) {
+    clearInterval(pollId);
+    pollId = null;
+  }
+}
+async function pollTick() {
+  const my = epoch;
+  if (pollBusy || document.hidden) return;
+  pollBusy = true;
+  try {
+    const st = await api().login_state();
+    if (idle(my)) return;
+    const verdict = resolvePollTick(st);
+    if (verdict === "connected") {
+      stopPoll();
+      showAccountCard();
+      fetchMe(my);
+    } else if (verdict === "logged_out") {
+      stopPoll();
+      showLoginForm("anonymous");
+      setStep("phone");
+    }
+  } catch (e) {
+    /* 轮询静默容错（app.js:412 catch）；epoch 失效自然停 */
+  } finally {
+    pollBusy = false;
+  }
+}
+
+// —— 登录卡形态切换 ——
+function showLoginForm(entryState) {
+  $.acctCard.el.hidden = true;
+  $.loginCard.el.hidden = false;
+  $.guestNote.hidden = entryState !== "guest";
+  $.btnGuestEnter.hidden = entryState !== "anonymous";
+  $.btnGuestBrowse.hidden = entryState !== "guest";
+}
+
+// ------------------------------------------------------------
+// DOM 构建（mount 恰一次；自身 try/catch 兜底 —— t8 契约 std2 J 项：
+// 失败返回带错误文案的降级元素 + console.error，绝不抛 rejected Promise）
+// ------------------------------------------------------------
+function buildDom() {
+  const labelPhone = el("label", { class: "lg-label", for: "lg-phone", text: "手机号（含国家区号，不带 +）" });
+  const labelCode = el("label", { class: "lg-label", for: "lg-code", text: "Telegram 发来的验证码" });
+  const labelPwd = el("label", { class: "lg-label", for: "lg-pwd", text: "两步验证密码" });
+
+  $.inputPhone = el("input", {
+    class: "lg-input", id: "lg-phone", type: "tel",
+    inputmode: "tel", autocomplete: "tel", placeholder: "8613800000000",
+    "aria-label": "手机号", enterkeyhint: "go",
+  });
+  $.inputCode = el("input", {
+    class: "lg-input", id: "lg-code", type: "text",
+    inputmode: "numeric", autocomplete: "one-time-code", placeholder: "如 12345",
+    "aria-label": "验证码", enterkeyhint: "go",
+  });
+  $.inputPwd = el("input", {
+    class: "lg-input", id: "lg-pwd", type: "password",
+    autocomplete: "current-password", placeholder: "2FA 密码",
+    "aria-label": "两步验证密码", enterkeyhint: "go",
+  });
+
+  $.btnPhone = el("button", { class: "u-btn u-btn--primary lg-block", type: "button", text: "发送验证码", onClick: function () { doSendCode(); } });
+  // T58 3.2：可恢复错误明示入口（默认隐藏；仅用户主动点击才进码步）。
+  $.btnRecover = el("button", {
+    class: "u-btn u-btn--ghost lg-block", type: "button", hidden: true,
+    text: "已收到验证码？直接输入",
+    onClick: function () { $.btnRecover.hidden = true; setStep("code"); },
+  });
+  $.btnCode = el("button", { class: "u-btn u-btn--primary lg-block", type: "button", text: "登录", onClick: function () { doVerifyCode(); } });
+  $.btnBackCode = el("button", { class: "u-btn u-btn--ghost lg-block", type: "button", text: "返回上一步", onClick: function () { setStep(prevStep("code")); } });
+  $.btnPwd = el("button", { class: "u-btn u-btn--primary lg-block", type: "button", text: "确认", onClick: function () { doVerifyPassword(); } });
+  $.btnBackPwd = el("button", { class: "u-btn u-btn--ghost lg-block", type: "button", text: "返回上一步", onClick: function () { setStep(prevStep("pwd")); } });
+
+  $.stepPhone = el("div", { class: "lg-step", dataset: { step: "phone" } },
+    [labelPhone, $.inputPhone, $.btnPhone, $.btnRecover]);
+  $.stepCode = el("div", { class: "lg-step", dataset: { step: "code" }, hidden: true },
+    [labelCode, $.inputCode, $.btnCode, $.btnBackCode]);
+  $.stepPwd = el("div", { class: "lg-step", dataset: { step: "pwd" }, hidden: true },
+    [labelPwd, $.inputPwd, $.btnPwd, $.btnBackPwd]);
+  stepEls.phone = $.stepPhone;
+  stepEls.code = $.stepCode;
+  stepEls.pwd = $.stepPwd;
+
+  // 步骤指示（a11y：role=group + aria-label；active 项 aria-current=step）。
+  function dot(key, num, labelText) {
+    const n = el("span", { class: "lg-dot-num", "aria-hidden": "true", text: String(num) });
+    const l = el("span", { class: "lg-dot-label", text: labelText });
+    return el("li", { class: "lg-dot", dataset: { dot: key } }, [n, l]);
+  }
+  $.dotPhone = dot("phone", 1, "手机号");
+  $.dotCode = dot("code", 2, "验证码");
+  $.dotPwd = dot("pwd", 3, "密码");
+  dotEls.phone = $.dotPhone;
+  dotEls.code = $.dotCode;
+  dotEls.pwd = $.dotPwd;
+  const steps = el("div", { class: "lg-steps", role: "group", "aria-label": "登录步骤" },
+    el("ol", { class: "lg-steps-list" }, [$.dotPhone, $.dotCode, $.dotPwd]));
+
+  $.err = el("p", { class: "lg-err", role: "alert", hidden: true, text: "" });
+  $.notice = el("p", { class: "lg-notice", hidden: true, text: "" });
+
+  $.btnGuestEnter = el("button", {
+    class: "u-btn u-btn--ghost lg-block", type: "button", hidden: true,
+    text: "暂不登录（游客模式）",
+    onClick: function () { doGuestEnter(); },
+  });
+  $.btnGuestBrowse = el("button", {
+    class: "u-btn u-btn--ghost lg-block", type: "button", hidden: true,
+    text: "继续游客浏览",
+    onClick: function () { doGuestBrowse(); },
+  });
+
+  const brand = el("div", { class: "lg-brand", "aria-hidden": "true" },
+    el("div", { class: "lg-logo", text: "TG" }));
+
+  $.loginCard = createCard({ title: "登录", sub: "登录后开始下载频道视频", ariaLabel: "登录" });
+  $.loginCard.el.classList.add("lg-card"); // 进场动效挂点（login.css §8）
+  $.loginCard.body.append(brand, steps, $.stepPhone, $.stepCode, $.stepPwd,
+    $.err, $.notice, $.btnGuestEnter, $.btnGuestBrowse);
+
+  // 账号卡（已登录态渲染账号信息/资料重试；成功态提供“去任务库”导航）。
+  $.meAvatar = el("div", { class: "lg-avatar", "aria-hidden": "true", text: "…" });
+  $.meName = el("div", { class: "lg-me-name", text: "" });
+  $.meUser = el("div", { class: "lg-me-user", text: "" });
+  const meRow = el("div", { class: "lg-me" },
+    [$.meAvatar, el("div", { class: "lg-me-meta" }, [$.meName, $.meUser])]);
+  $.acctErr = el("p", { class: "lg-err", role: "alert", hidden: true, text: "" });
+  $.btnRetryMe = el("button", {
+    class: "u-btn u-btn--ghost lg-block", type: "button", hidden: true,
+    text: "重试获取资料",
+    onClick: function () { doRetryMe(); },
+  });
+  $.btnGoTasks = el("button", {
+    class: "u-btn u-btn--primary lg-block", type: "button",
+    text: "去任务库",
+    onClick: function () { goTasks(); },
+  });
+  $.acctCard = createCard({ title: "账号", sub: "已登录", ariaLabel: "账号信息" });
+  $.acctCard.el.classList.add("lg-card"); // 进场动效挂点（login.css §8）
+  $.acctCard.body.append(meRow, $.acctErr, $.btnRetryMe, $.btnGoTasks);
+  $.acctCard.el.hidden = true;
+
+  // 游客受限提示条（对齐旧 guest-bar 语义，style.css:1021 起；说明游客
+  // 可离线浏览任务库、下载/搜索等动作需登录）。
+  $.guestNote = el("div", {
+    class: "lg-note", role: "status", hidden: true,
+    text: "游客模式：可离线浏览任务库；下载、搜索等动作需登录后使用",
+  });
+
+  submitLabels.set($.btnPhone, "发送验证码");
+  submitLabels.set($.btnCode, "登录");
+  submitLabels.set($.btnPwd, "确认");
+  submitLabels.set($.btnRetryMe, "重试获取资料");
+  submitLabels.set($.btnGuestEnter, "暂不登录（游客模式）");
+
+  const view = el("div", { class: "lg-view", "data-view-name": "login" },
+    [$.guestNote, $.loginCard.el, $.acctCard.el]);
+  $.loginCard.el.setAttribute("aria-busy", "false");
+  return view;
+}
+
+// mount：缓存节点（router keep-alive 首进恰一次；返回 Node 本值）。
+export function mount(container) {
+  if (root) return root;
+  try {
+    root = buildDom();
+    return root;
+  } catch (e) {
+    // 兜底降级元素（契约 R2 教训：不让 rejected Promise 进 mounts 缓存）。
+    console.error("[v22login] 登录视图构建失败：", e);
+    root = el("div", { class: "lg-view", "data-view-name": "login" },
+      el("p", { class: "lg-err", role: "alert", text: "登录视图加载失败，请稍后重试。" }));
+    return root;
+  }
+}
+
+// ------------------------------------------------------------
+// 生命周期
+// ------------------------------------------------------------
+
+function resetTransient() {
+  stopPoll();
+  pollBusy = false;
+  if (busy) setBusyUi(false);
+  if ($.inputPhone) $.inputPhone.value = "";   // 重开卡清值（app.js showLoginCard 360-363）
+  if ($.inputCode) $.inputCode.value = "";
+  if ($.inputPwd) $.inputPwd.value = "";
+  errShow("");
+  errShowAcct("");
+  noticeShow("");
+}
+
+// onEnter：login_state 定初始态 → connect 复核（零发码，T58 2.2/3.1）。
+//   connected → 账号卡 + me；
+//   guest     → 受限提示条 + 登录卡 + “继续游客浏览”（不调 set_guest）；
+//   anonymous → 登录卡 + “暂不登录（游客模式）”（set_guest(true) 成功跳转）；
+//   connect 复核：need_code / has_session（本轮已发码）→ 卡首现即码步；
+//   need_phone + phone_prefill → 仅预填（绝不触发发送）；
+//   已就绪 → 账号卡。guest 态卡片前台期间起 2s 轮询。
+export function onEnter(params) {
+  resetTransient();
+  const my = ++epoch;
+  (async function () {
+    const bridgeOk = await bridgeReady(BRIDGE_TIMEOUT_MS);
+    if (idle(my)) return;
+    if (!bridgeOk) {
+      showLoginForm("anonymous");
+      setStep("phone");
+      noticeShow("正在连接应用服务…完成后即可登录");
+      return;
+    }
+    let st = null;
+    try { st = await api().login_state(); } catch (e) { st = null; }
+    if (idle(my)) return;
+    const entry = resolveEntryState(st);
+    if (entry === "connected") {
+      showAccountCard();
+      fetchMe(my);
+      return;
+    }
+    showLoginForm(entry);
+    // 发码中（has_session 新语义=本轮 _code_sent）：卡首现即码步
+    //（app.js:241-252 口径；guest 同样只信后端发码信号）。
+    setStep(st && st.has_session ? "code" : "phone");
+    let r = null;
+    try { r = await api().connect(); } catch (e) { r = null; }
+    if (idle(my)) return;
+    const codeStep = (r && r.ok && r.stage === "need_code") ||
+                     (st && st.has_session && !(r && r.busy));
+    if (r && r.ok && (r.stage === "ready" || !r.stage)) {
+      // connect 复核发现已就绪 → 账号卡（connect 全路径零发码）。
+      showAccountCard();
+      fetchMe(my);
+      return;
+    }
+    if (codeStep) {
+      setStep("code");
+      if (r && r.warning) errShow(r.warning);
+    } else if (r && r.ok && r.stage === "need_phone") {
+      setStep("phone");
+      // T58 3.1：cfg 旧手机号仅预填输入框，不触发任何发送。
+      if (r.phone_prefill) $.inputPhone.value = r.phone_prefill;
+    } else {
+      setStep("phone");
+      if (r && !r.ok) errShow(r.error || "");
+      else if (r && r.warning) errShow(r.warning);
+    }
+    if (entry === "guest") startPoll();
+  })();
+}
+
+// onLeave：全局资源全清（轮询 clearInterval；epoch 使在途回调失效；
+// 元素级监听随 keep-alive 节点常驻属缓存语义，零 window 级订阅残留）。
 export function onLeave() {
-  /* 占位视图无全局资源需要清理（T11 如需在离开时清理，在此实现） */
+  epoch++;
+  stopPoll();
+  pollBusy = false;
+  if (busy) setBusyUi(false);
 }

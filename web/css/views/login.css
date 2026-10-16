@@ -1,3 +1,275 @@
-/* views/login.css — T8 占位切片（极简）。
-   占位空态样式集中在 shell.css §8（.v22-placeholder-view）。
-   T11 替换本文件实现 Argon 玻璃登录卡；插槽约定见 t8_contract.md。 */
+/* ============================================================
+   views/login.css — T11 登录视图切片（v2.2 W4-a）
+   替换 T8 占位（.v22-placeholder-view 体系随本波自然废弃）。
+   消费：tokens.css 令牌（颜色/间距/圆角/字号/动效全 var()）+
+   ui.css 组件类（.u-card 由 createCard 生成、.u-btn*）。
+   视觉口径对齐旧壳（出处逐条注释；非令牌裸值仅限旧壳溯源项）。
+   深浅双主题：全部经语义令牌派生，无主题分支规则。
+   ============================================================ */
+
+/* ---------- 1. 视图容器：单列、卡宽受限居中 ---------- */
+/* 旧壳登录卡定宽 380px（style.css:242 .login-card{width:380px}）——
+   ≥1024 桌面由外壳 .sh-viewhost(max-width:1040px) 提供版心，本视图
+   再以 380px 上限+auto 居中承接该口径；<392 视口自然收缩为 100%。 */
+.lg-view {
+  width: 100%;
+  max-width: 380px; /* 旧壳出处：style.css:242（login-card width） */
+  margin: 0 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding-bottom: var(--space-6);
+}
+
+/* ---------- 2. 游客受限提示条（对齐旧 guest-bar 暖色系） ----------
+   旧壳出处：style.css:1021-1031（.guest-bar 渐变暖底/暖描边/居中
+   小字）；口径映射：渐变双暖底→--color-warning-soft 单一语义底、
+   rgba 描边→--color-warning、#ffc78a 文字→--color-warning。 */
+.lg-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  border: var(--line-1) solid var(--color-warning);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+  overflow-wrap: anywhere; /* 长文案不撑破窄屏布局（FR-24 邻条） */
+}
+.lg-note[hidden] { display: none; }
+
+/* ---------- 3. 品牌徽章（对齐旧 .logo-badge） ----------
+   旧壳出处：style.css:251-257（62px/圆角18px/品牌渐变/字重800/20px）；
+   口径映射：62px→--space-16(64px)、18px→--radius-lg(20px)、
+   --brand-grad→--btn-primary-bg(同名 135deg 品牌渐变语义)、投影→
+   --shadow-2（视觉近似、令牌优先）。 */
+.lg-brand {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-2) 0 0;
+}
+.lg-logo {
+  width: var(--space-16);
+  height: var(--space-16);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-lg);
+  background: var(--btn-primary-bg);
+  color: var(--color-on-primary);
+  font-weight: 800;
+  font-size: var(--text-2xl);
+  box-shadow: var(--shadow-2);
+}
+
+/* ---------- 4. 步骤指示（1/2/3，done/active 形态） ---------- */
+.lg-steps { display: flex; justify-content: center; }
+.lg-steps-list {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lg-dot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--space-10); /* 与可点元素同一 ≥40px 视觉高（非命中目标，纯指示） */
+}
+.lg-dot-num {
+  width: var(--space-10);
+  height: var(--space-10);
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  border: var(--line-1) solid var(--color-border);
+  background: var(--color-surface-sunk);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  transition: background var(--dur-sm) var(--ease-standard),
+    border-color var(--dur-sm) var(--ease-standard),
+    color var(--dur-sm) var(--ease-standard);
+}
+.lg-dot-label {
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
+/* active 形态：当前步 */
+.lg-dot.is-active .lg-dot-num {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+  color: var(--color-text-strong);
+}
+.lg-dot.is-active .lg-dot-label { color: var(--color-text); }
+/* done 形态：已完成步（对勾字符由 JS 写入 .lg-dot-num） */
+.lg-dot.is-done .lg-dot-num {
+  border-color: var(--color-success);
+  background: var(--color-primary-soft);
+  color: var(--color-success);
+}
+
+/* ---------- 5. 步骤块 / 表单 ---------- */
+.lg-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  /* 步进场：淡入+8px=2×4px 栅格微位移（参考旧 .login-card pop 的
+     轻量化承接；时长/缓动全令牌） */
+  animation: lg-step-in var(--dur-md) var(--ease-out);
+}
+.lg-step[hidden] { display: none; }
+@keyframes lg-step-in {
+  from { opacity: 0; transform: translateY(8px); } /* 8px=2×4px 栅格 */
+}
+
+.lg-label {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+/* 输入框：tokens.css §3.2 全套 --input-* 语义令牌；
+   高度 --input-h=--space-12=48px ≥44px 命中区（FR-24） */
+.lg-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: var(--input-h);
+  padding: var(--space-2) var(--space-4);
+  font: inherit;
+  font-size: var(--text-md);
+  color: var(--input-text);
+  background: var(--input-bg);
+  border: var(--line-1) solid var(--input-border);
+  border-radius: var(--input-radius);
+  transition: var(--input-transition);
+}
+.lg-input::placeholder { color: var(--input-placeholder); }
+.lg-input:focus {
+  outline: none;
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 0 3px var(--input-ring); /* 3px 视觉聚焦环（--input-ring 色令牌） */
+}
+.lg-input:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+}
+
+/* 满宽动作钮（对齐旧 .btn.block 语义） */
+.lg-block { width: 100%; }
+
+/* ---------- 6. 错误 / 受控提示（内联，零弹窗） ----------
+   旧壳出处：style.css:250（.login-err 12px 危险色）与 style.css:1013
+   -1016（#login-notice 暖色居中）；口径映射：#ff8a97/#ffb84d →
+   --color-danger-text/--color-warning（语义色深浅两套齐备）。 */
+.lg-err {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-danger-text);
+  line-height: 1.5;
+  min-height: 1em; /* 预留行高，错误出现不跳动布局 */
+  overflow-wrap: anywhere; /* 长错误文案不撑破窄屏 */
+}
+.lg-err[hidden] { display: none; }
+.lg-notice {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-warning);
+  line-height: 1.5;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.lg-notice[hidden] { display: none; }
+
+/* ---------- 7. 账号卡（已登录态） ---------- */
+.lg-me {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+/* 首字头像：旧壳出处 style.css:291-297（.me-avatar 38px 圆形品牌渐变）；
+   口径映射：38px→--space-10(40px)、--brand-grad→--btn-primary-bg。 */
+.lg-avatar {
+  width: var(--space-10);
+  height: var(--space-10);
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  background: var(--btn-primary-bg);
+  color: var(--color-on-primary);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.lg-me-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.lg-me-name {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--color-text-strong);
+  overflow-wrap: anywhere;
+}
+.lg-me-user {
+  font-size: var(--text-sm);
+  color: var(--color-text-faint);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- 8. 卡片进场（对齐旧 .login-card pop） ----------
+   旧壳出处：style.css:244-246（animation: pop .5s var(--spring)；
+   from{opacity:0;transform:scale(.9) translateY(14px)}）——时长换
+   --dur-lg、缓动换 --ease-spring 令牌；.9/14px 为旧壳形变口径随引。 */
+.lg-card {
+  animation: lg-pop var(--dur-lg) var(--ease-spring);
+}
+@keyframes lg-pop {
+  from { opacity: 0; transform: scale(.9) translateY(14px); } /* 旧壳出处：style.css:246 */
+}
+.lg-card[hidden] { display: none; }
+
+/* ---------- 9. 减弱动效双路归零（契约铁律 6） ----------
+   视图自有 keyframe（lg-pop/lg-step-in）与 transition 类动效在两路口
+   均显式归零；视觉终态保留（卡片/步骤块静止渲染在终态、指示色形态
+   不受动效影响——transition 归零仅令状态切换即时生效）。 */
+@media (prefers-reduced-motion: reduce) {
+  .lg-view .lg-card,
+  .lg-view .lg-step,
+  .lg-view .lg-dot-num {
+    animation: none;
+    transition: none;
+  }
+}
+#sh-root[data-v22-rm="on"] .lg-card,
+#sh-root[data-v22-rm="on"] .lg-step,
+#sh-root[data-v22-rm="on"] .lg-dot-num {
+  animation: none;
+  transition: none;
+}
+
+/* ---------- 10. 窄屏适配（320–390 抽测） ----------
+   320px 视口下外壳 .sh-scroll 左右各 16px padding → 内容 ~288px：
+   全元素 100%+box-sizing+anywhere 换行保证零横向溢出；步骤指示在
+   <360px 时压缩 gap/隐藏文字标签只留数字，防指示行溢出（文字信息由
+   步骤内 label 完整承载，指示仪是冗余映射）。
+   359.98px 断点：本切片新增（<360px 指示行压缩；媒体查询不可 var()，
+   与 ui.css 767.98px 断点同口径；TR11-1 H 组 320px 抽测对应）。 */
+@media (max-width: 359.98px) {
+  .lg-steps-list { gap: var(--space-2); }
+  .lg-dot-label { display: none; }
+}
