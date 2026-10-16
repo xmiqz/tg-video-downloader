@@ -64,6 +64,10 @@ PART = 8 * 1024 * 1024     # 分片大小
 CONCURRENT = 4             # 并行连接数
 RETRIES = 3                # 单视频重试次数
 STALL_SECS = 90            # 停滞判定秒数
+# ---- T24 断网感知与停滞分片重置（FR-11 / AC-9）----
+SHARD_RESET_MAX = 3        # 单分片停滞重置上限（首取 +3 次重置 = 至多 4 个迭代器）
+NET_POLL_SECS = 2.0        # 断网轮询间隔（生产 2s；测试 monkeypatch 即退）
+SIMPLE_TIMEOUT_SECS = 1800 # simple_download 总超时（断网期间暂停计时）
 SPEED_WIN_SEC = 10.0       # 总速度滑动窗口：统计最近 10 秒下载量，每秒更新
 # T50 目录搬运跨卷分块大小。依据：单搬运线程内存上限 ≤4 MiB；4 MiB 在
 # 10 MB/s 慢速 U 盘上单块约 0.4s，满足作业帧 ≤500ms 节拍预算；NVMe/SSD
@@ -1921,18 +1925,34 @@ class Monitor:
     async def set_phase(self, phase, detail="", index=None, total=None):
         """切换阶段。未知阶段是编程错误（AssertionError）；非法转移拒绝并
         保持原阶段（打印技术日志）；终态幂等不可再变。detail 为裸细节，
-        phase_detail 存 phase_text 拼装产物（全链同源文案）。"""
+        phase_detail 存 phase_text 拼装产物（全链同源文案）。
+        T24：同相位 detail 刷新（old == phase 且 detail 非空）时就地
+        更新 phase_detail 并照常发通知——不校验转移表、不改 self.phase、
+        不重置 phase_entered、不动 index/total；供断网进入/恢复提示用
+        （断网期不新增 phase，用既有 downloading + detail 表达）。"""
         if phase not in PHASE_LABELS:
             raise AssertionError(f"未知下载阶段：{phase!r}")
         async with self.lock:
             old = self.phase
             if old == phase and not detail:
-                # 同阶段重申（open 的 preparing 首帧）：仍发一次通知
+                # 同阶段重申（open 的 preparing 首帧）：仍发一次通知；
+                # T24 恢复清空：detail 为空时把 phase_detail 复位为
+                # 该相位短名（断网提示语清除，同相位不改 self.phase）。
+                if self.phase_detail != phase_text(phase, ""):
+                    self.phase_detail = phase_text(phase, "")
                 self._fire_phase_cb(phase, self.phase_detail,
                                     self.phase_index, self.phase_total)
                 return
             if old in PHASE_TERMINAL:
                 return                      # 终态不可再变（幂等）
+            if old == phase and detail:
+                # T24 同相位 detail 刷新：就地更新文案并通知（不转移）
+                self.phase_detail = phase_text(phase, detail)
+                text = self.phase_detail
+                index_ = self.phase_index
+                total_ = self.phase_total
+                self._fire_phase_cb(phase, text, index_, total_)
+                return
             if not phase_transition_ok(old, phase):
                 print(f"[!] 忽略非法阶段转移 {old} -> {phase}")
                 return
@@ -2412,35 +2432,96 @@ async def parallel_download(client, item, target, ctl, state=None):
         if os.path.exists(mark):
             return
         got = 0
+        reset = 0               # T24 停滞重置计数（每代新迭代器超时 +1）
+        net_down = False        # T24 断网等待态（局部标志去重，每事件一行）
+        net_rounds = 0          # T24 断网轮询轮数（recover wait= 换算）
         async with sem:
             tripped = _ctl_or_abort(ctl, state)
             if tripped:
                 raise tripped
-            it = client.iter_download(
-                msg.media, offset=off,
-                request_size=512 * 1024, file_size=size
-            ).__aiter__()
-            # 独立文件句柄，直写到本分片的字节区间
-            with open(work, "r+b") as f:
-                f.seek(off)
-                while True:
+            while True:
+                if net_down:
+                    # 断网等待：暂停一切计时；每轮先过 ctl（暂停/取消/
+                    # 跳过同样一个轮询周期内生效，无不可取消阻塞），
+                    # 再按 _NET_SLEEP 轮询；恢复后丢弃旧迭代器从 off
+                    # 重下——不消耗分片重置次数、不消耗 T22 重试预算。
                     tripped = _ctl_or_abort(ctl, state)
                     if tripped:
                         raise tripped
-                    try:
-                        chunk = await asyncio.wait_for(
-                            it.__anext__(), timeout=STALL_SECS
-                        )
-                    except StopAsyncIteration:
-                        break
-                    take = min(len(chunk), ln - got)
-                    if take > 0:
-                        f.write(chunk[:take])
-                        got += take
-                        if mon:
-                            await mon.add(key, take)
-                    if got >= ln:
-                        break
+                    await _NET_SLEEP(NET_POLL_SECS)
+                    net_rounds += 1
+                    if not _net_is_connected(client):
+                        continue
+                    net_down = False
+                    _net_log(f"id={msg.id} part={idx} recover=1 "
+                             f"wait={net_rounds * NET_POLL_SECS:g}")
+                    if mon:
+                        await mon.set_phase("downloading", "")
+                # 每次（首取/断网恢复/停滞重置）重新取迭代器：从 off 起步
+                it = client.iter_download(
+                    msg.media, offset=off,
+                    request_size=512 * 1024, file_size=size
+                ).__aiter__()
+                complete = False
+                # 独立文件句柄，直写到本分片的字节区间
+                with open(work, "r+b") as f:
+                    f.seek(off)
+                    got = 0
+                    while True:
+                        tripped = _ctl_or_abort(ctl, state)
+                        if tripped:
+                            raise tripped
+                        try:
+                            chunk = await asyncio.wait_for(
+                                it.__anext__(), timeout=STALL_SECS
+                            )
+                        except StopAsyncIteration:
+                            if got < ln:
+                                raise IOError(f"分片 {idx} 不完整")
+                            complete = True
+                            break
+                        except asyncio.TimeoutError:
+                            # T24 超时分流：先探测连通性；FloodWait 路径
+                            # 不在此（T22 原链，互不交叉）
+                            if not _net_is_connected(client):
+                                # 断网：进入有界轮询等待（事件去重，
+                                # 不消耗重置次数）
+                                if not net_down:
+                                    net_down = True
+                                    net_rounds = 0
+                                    _net_log(
+                                        f"id={msg.id} part={idx} down=1")
+                                    if mon:
+                                        await mon.set_phase(
+                                            "downloading",
+                                            "网络断开，等待自动恢复")
+                                break
+                            # 连通正常：分片停滞重置（取消/丢弃旧迭代器）
+                            reset += 1
+                            if reset > SHARD_RESET_MAX:
+                                _shard_log(
+                                    f"id={msg.id} part={idx} giveup=1 "
+                                    f"reset={SHARD_RESET_MAX} reason=stall")
+                                raise ShardResetExhausted(msg.id, idx)
+                            _shard_log(
+                                f"id={msg.id} part={idx} "
+                                f"reset={reset}/{SHARD_RESET_MAX} "
+                                f"reason=stall")
+                            break
+                        take = min(len(chunk), ln - got)
+                        if take > 0:
+                            f.write(chunk[:take])
+                            got += take
+                            if mon:
+                                await mon.add(key, take)
+                        if got >= ln:
+                            complete = True
+                            break
+                if net_down:
+                    continue            # 外层 while 头：断网轮询等待
+                if complete:
+                    break               # 分片取满，收尾
+                # 停滞重置分支：got < ln 且非断网 → 外层循环重新取迭代器
         if got < ln:
             raise IOError(f"分片 {idx} 不完整")
         # 零字节完成标记
@@ -2481,6 +2562,12 @@ async def simple_download(client, item, target, ctl, state=None):
         task = asyncio.create_task(
             client.download_media(msg, file=target, progress_callback=prog)
         )
+        # T24：硬 wait_for(1800) 替换为基于循环时间的 deadline；断网期
+        # 每轮轮询给 deadline 顺延一个轮询周期时长（等价暂停计时，
+        # 断网前已用额度保留）。pump 控制轮询仍是 0.2s。
+        deadline = loop.time() + SIMPLE_TIMEOUT_SECS
+        net_down = False        # T24 断网等待态（simple 路径 part 用 -）
+        net_rounds = 0
         while not task.done():
             tripped = _ctl_or_abort(ctl, state)
             if tripped:
@@ -2490,10 +2577,39 @@ async def simple_download(client, item, target, ctl, state=None):
                 except asyncio.CancelledError:
                     pass
                 raise tripped
+            if not _net_is_connected(client):
+                # T24 断网：暂停总超时计时 + down/recover 事件（去重）
+                if not net_down:
+                    net_down = True
+                    net_rounds = 0
+                    _net_log(f"id={msg.id} part=- down=1")
+                    if mon:
+                        await mon.set_phase("downloading",
+                                            "网络断开，等待自动恢复")
+                # 每轮顺延一个轮询周期（=本轮等待时长）：等价暂停
+                # 计时——断网期不消耗总额度，断网前已用时间保留。
+                deadline += NET_POLL_SECS
+                await _NET_SLEEP(NET_POLL_SECS)
+                net_rounds += 1
+                continue
+            if net_down:
+                net_down = False
+                _net_log(f"id={msg.id} part=- recover=1 "
+                         f"wait={net_rounds * NET_POLL_SECS:g}")
+                if mon:
+                    await mon.set_phase("downloading", "")
+            if loop.time() >= deadline:
+                # 超过总额度：维持原 TimeoutError 语义
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                raise TimeoutError(f"simple 下载超时（{SIMPLE_TIMEOUT_SECS}s）")
             await asyncio.sleep(0.2)
         task.result()
 
-    await asyncio.wait_for(pump(), timeout=1800)
+    await pump()
 
 
 # ============ T22 重试分类公共件（FR-9 / AC-6，refresh/download 邻域） ============
@@ -2508,6 +2624,45 @@ class DeterministicDownloadError(Exception):
 # 真实等 3+6+12 秒）。download_one 的瞬时退避与 FloodWait 无 mon
 # 等待统一走此句柄；其他路径（pump 轮询 0.2s 等）不经句柄。
 _RETRY_SLEEP = asyncio.sleep
+
+
+# ---- T24 断网感知公共件（FR-11 / AC-9；本任务唯一新增公共面）----
+# 测试缝（照 _RETRY_SLEEP 风格）：断网轮询专用可覆盖 sleep 句柄。
+# 生产恒为 asyncio.sleep；测试 monkeypatch 为即退收集器（TR 不得
+# 真实等 NET_POLL_SECS×N）。parallel 断网等待与 simple 断网期共用。
+_NET_SLEEP = asyncio.sleep
+
+
+def _net_is_connected(client) -> bool:
+    """T24 连通探测：调 client.is_connected()；任何异常 fail-open 返回
+    True（探测失败不误判断网，保持旧行为——只有明确返回 False 才算
+    断网）。普通函数（可 monkeypatch；parallel/simple 两路共用）。"""
+    try:
+        return bool(client.is_connected())
+    except Exception:
+        return True
+
+
+class ShardResetExhausted(Exception):
+    """T24 分片停滞重置超限：同一分片 3 次重置（共 4 个迭代器）仍无
+    字节进账。带 msg/part 信息；经 classify_download_error 未知兜底落
+    transient（不得加入确定性集合），升级为条目级 3/6/12 重试。"""
+
+    def __init__(self, mid, part):
+        self.mid = mid
+        self.part = part
+        super().__init__(f"分片 {part} 停滞重置超限（3/3）")
+
+
+def _net_log(line):
+    """T24 机读日志：[net] 前缀，一行一条，字段稳定可 grep；
+    只含 msg id/分片号/秒数，禁带文件名/手机号/密钥/会话串。"""
+    print(f"[net] {line}", flush=True)
+
+
+def _shard_log(line):
+    """T24 机读日志：[shard] 前缀，一行一条，只含 msg id/分片号。"""
+    print(f"[shard] {line}", flush=True)
 
 
 def _retry_log(line):
