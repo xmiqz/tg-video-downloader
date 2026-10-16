@@ -120,6 +120,21 @@ WARM_UNHEALTHY_BACKOFF = 600.0
 WARM_TRANSIENT_BACKOFF = 30.0
 WARM_TRANSIENT_BACKOFF_MAX = 300.0
 
+# ---- T25 慢任务让路（FR-12 / tasks.md Task 25，默认关）----
+# 判定阈值四件（独立于 ACCT_* 账号级常量——那是"账号慢→改派分流"，
+# 本组是"条目慢→暂停让路"；缺省值与 ACCT_* 同源取值但不共享变量）：
+#   SLOW_YIELD_BPS=200KB/s：条目档典型限速体感（同 ACCT_SLOW_BPS 档位）；
+#   SLOW_YIELD_WIN_SEC=20：持续低速满 20s 才触发（跨短抖动，同
+#     ACCT_SLOW_WIN_SEC 两倍于速度采样窗以避开启动爬坡）；
+#   SLOW_YIELD_COOLDOWN_SEC=60：让路后最短暂停时长（到期才谈恢复）；
+#   SLOW_YIELD_MAX=3：单条目单会话让路上限（防抖/防饿死）。模块常量、
+#     不提供任务级键——task["params"] 四可选键被红线钉死（§2.1），
+#     上限唯一来源即本常量（测试经 monkeypatch 独立验证生效）。
+SLOW_YIELD_BPS = 200 * 1024        # 204800 B/s ≈ 200 KB/s
+SLOW_YIELD_WIN_SEC = 20.0
+SLOW_YIELD_COOLDOWN_SEC = 60.0
+SLOW_YIELD_MAX = 3
+
 # 无权限频道错误类名钉死集合（用 type(e).__name__ 与真 telethon 类比较）。
 PRIVATE_ERROR_NAMES = {"ChannelPrivateError"}
 
@@ -2769,6 +2784,15 @@ _NET_SLEEP = asyncio.sleep
 _WARM_SLEEP = asyncio.sleep
 
 
+# ---- T25 慢任务让路公共件（FR-12 / tasks.md Task 25，默认关）----
+# 测试缝（照 _WARM_SLEEP 风格）：让路巡检专用可覆盖 sleep 句柄。
+# 生产恒为 asyncio.sleep（巡检节拍 1.0s，随 run_download_session
+# 生命周期启停）；测试 monkeypatch 为短真实 sleep（时间读数照常
+# 走 time.monotonic() 真时，压缩的是巡检等待成本，禁真实等 20s 窗
+# /60s 冷却；窗口与冷却秒数由 task.params 四键缩至秒级）。
+_YIELD_SLEEP = asyncio.sleep
+
+
 def _net_is_connected(client) -> bool:
     """T24 连通探测：调 client.is_connected()；任何异常 fail-open 返回
     True（探测失败不误判断网，保持旧行为——只有明确返回 False 才算
@@ -2814,6 +2838,17 @@ def _wacct_log(line):
     unhealthy|invalid；生命周期行（loop=exit，§2.1 循环退出一行）不带
     event（六词均为探测结果语义）。"""
     print(f"[wacct] {line}", flush=True)
+
+
+def _yield_log(line):
+    """T25 机读日志：[yield] 前缀（慢任务让路专用），一行一条，字段
+    稳定可 grep。事件行键序钉死六键 event/item/speed_bps/win/queued/
+    count（值均 int；win=与本事件相关的持续秒数：pause=低速已持续、
+    resume=暂停已持续、skip_trigger=低速已累计、exhausted=低速已
+    持续）；event 词表钉死 pause|resume|skip_trigger|exhausted；
+    生命周期行 loop=exit（循环退出唯一行，关态零行=管理器零启动）。
+    只含消息 id/秒数/计数，禁带文件名/路径/手机号/密钥/会话串。"""
+    print(f"[yield] {line}", flush=True)
 
 
 def classify_download_error(exc) -> str:
@@ -4146,7 +4181,7 @@ class DownloadSession:
                 elif action == "resume":
                     self._begin_resume(key)
 
-    def _begin_resume(self, key):
+    def _begin_resume(self, key, tail=False):
         rec = self.paused.pop(key, None) or self.records.get(key)
         if rec is None:
             return
@@ -4162,7 +4197,14 @@ class DownloadSession:
                 "parallel" if rec["size"] > 4 * 1024 * 1024
                 else "simple")
             await self.mon.restart(key, keep_done=mode != "simple")
-            self.resume_q.append(rec)
+            # T25：tail=True（让路条目恢复）追加 sess.queue 尾——
+            # "排队尾"语义（入 resume_q 会前插抢在排队条目之前，违背
+            # 让路初衷）；缺省 False 手动暂停/失败恢复依旧前插
+            # resume_q，手动路径逐字零变化。
+            if tail:
+                self.queue.append(rec)
+            else:
+                self.resume_q.append(rec)
             self.wake.set()
 
         asyncio.ensure_future(_do())
@@ -4190,6 +4232,252 @@ class DownloadSession:
         snap["task_total"] = c["total"]
         snap["task_finished"] = c["finished"]
         return snap
+
+
+# ---------------- T25 慢任务让路（FR-12；默认关——开关关时本段零实例化） ----------------
+
+def _slow_yield_cfg(task):
+    """任务级让路配置解析（每会话开始快照一次，运行中改任务文件
+    不热生效——与 parallel 键现状一致）。task["params"] 四可选键是
+    唯一配置入口（slow_yield/slow_yield_bps/slow_yield_win_sec/
+    slow_yield_resume_sec）；缺省 enabled=0（关）：直接短路返回，
+    不解析不打印其余键（默认态零行为变化/零新日志的解析面保障）。
+    开启后非法/缺失值回落缺省（数值夹紧参照 load_acct_policy 范式，
+    越界打印一行技术日志）。上限 max 恒源自模块常量 SLOW_YIELD_MAX
+    （不提供任务级键，§2.1 红线钉死 params 仅四键）。"""
+    raw = (task or {}).get("params") or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    try:
+        on = int(raw.get("slow_yield", 0)) == 1
+    except (TypeError, ValueError):
+        on = False
+    if not on:
+        return {"enabled": 0}
+
+    def _num(key, dflt, lo, hi):
+        try:
+            v = float(raw.get(key, dflt))
+        except (TypeError, ValueError):
+            print(f"[yield] params.{key} 非法，回退默认 {dflt}")
+            return dflt
+        if v < lo or v > hi:
+            print(f"[yield] params.{key}={v} 越界 [{lo},{hi}]，夹紧")
+            v = max(lo, min(v, hi))
+        return v
+
+    return {
+        "enabled": 1,
+        "bps": int(_num("slow_yield_bps", SLOW_YIELD_BPS,
+                        1024, 100 * 1024 * 1024)),
+        "win": _num("slow_yield_win_sec", SLOW_YIELD_WIN_SEC, 5.0, 300.0),
+        "resume": _num("slow_yield_resume_sec", SLOW_YIELD_COOLDOWN_SEC,
+                       5.0, 1800.0),
+        "max": int(SLOW_YIELD_MAX),
+    }
+
+
+class SlowYieldManager:
+    """T25 慢任务让路状态机（仅开启态随 run_download_session 生命周期
+    存在；全部状态在实例内——不进 task JSON、不进 snapshot 结构、
+    不发任何 WS 事件/reason）。每轮巡检（_YIELD_SLEEP 节拍，默认 1s）
+    直接消费 Monitor 既有速度数据（mon._snapshot() 现刷新全部
+    e["speed"]——窗口右端锚定当前时刻的现成语义——不另建测速器）：
+
+      触发（三者与，§2.2）：
+        1) 条目"下载中"且持续低速：低速 streak 满 win 秒（高速即清
+           累计——单帧低速/短暂停顿不触发；"下载中"覆盖不足 0.8*win
+           不判慢——参照 T51 cover 语义，避开启动爬坡）；
+        2) sess.queue 非空（严格只看 queue，feeder 未读完但 queue 空
+           不算）；
+        3) 本会话该条目让路次数 < max 且不在让路冷却中。
+      触发动作：ctl.pause.set()（复用 ItemCtl.pause→PauseFile→worker
+        收场置 sess.paused 的既有半途暂停路径，与用户按 P 完全同
+        一条路）；[yield] event=pause 机读行；槽位由 worker 收场释放，
+        排队条目经 schedule 自然插队。
+      恢复（两者与，§2.3）：冷却满 resume 秒且 queue 为空（冷却到期
+        但 queue 非空→保持暂停继续等，每轮重查——恢复与触发条件天然
+        互斥，无乒乓）→ sess._begin_resume(key, tail=True)：回
+        sess.queue 尾（"排队尾"语义；入 resume_q 会前插抢在排队条目
+        之前，故让路条目不走）。mon.restart 的 keep_done 语义照旧
+        （parallel 分片续传保留、simple 丢弃）。
+      边界：手动 pause/resume/remove 优先——条目不再呈现"已暂停"
+        （被用户恢复）即让位：waiting 除名、让路计数保留、低速窗口
+        从零重累计；条目落终态/被移除即除名；max 用尽后 event=
+        exhausted、照常下载到底。
+    单轮 tick 异常吞掉不炸循环（CancelledError 照常穿透拆除）；
+    退出前打印 loop=exit 生命周期行（关态不启动 → 零 [yield] 行）。
+    """
+
+    def __init__(self, sess, cfg, interval=1.0):
+        self.sess = sess
+        self.mon = sess.mon
+        self.cfg = cfg
+        self.interval = float(interval)   # 巡检节拍（生产 1.0s）
+        self._task = None
+        self.streak = {}          # key -> 低速起始时刻（高速即除名）
+        self.cover = {}           # key -> "下载中"连续覆盖秒
+        self.yields = {}          # key -> 本会话让路次数（跨让路保留）
+        self.waiting = {}         # key -> {"due": 冷却到期, "at": 让路时刻}
+        self.last_skip = {}       # key -> 上次 skip_trigger 行时刻（10s 节流）
+        self.exhausted_seen = set()   # key -> 本轮满窗已报 exhausted
+        self.ticks = 0
+        self._last = time.monotonic()   # 上轮巡检时刻（真实 dt 累计覆盖秒）
+
+    # ---------- 生命周期（start/stop 与 T51 慢速采样同范式） ----------
+    def start(self):
+        self._task = asyncio.ensure_future(self._run())
+        return self._task
+
+    def stop(self):
+        t = self._task
+        self._task = None
+        if t is not None and not t.done():
+            t.cancel()
+
+    async def _run(self):
+        try:
+            while True:
+                await _YIELD_SLEEP(self.interval)
+                try:
+                    self._tick()
+                except Exception:
+                    pass           # 单轮异常吞掉：循环必须有界不炸
+                self.ticks += 1
+        except asyncio.CancelledError:
+            raise
+        finally:
+            _yield_log(f"loop=exit task={self.sess.task_id} "
+                       f"ticks={self.ticks} "
+                       f"yields={sum(self.yields.values())}")
+
+    # ---------- 单轮巡检 ----------
+    def _tick(self):
+        now = time.monotonic()
+        # 眞实 dt：巡检节拍被测试缝压缩时覆盖秒不虚增（与 streak
+        # 的时刻语义同源，均走 time.monotonic 真时）
+        dt = max(0.0, min(now - self._last, self.interval * 3))
+        self._last = now
+        # 现刷新全部条目 e["speed"]（含窗口外样本清理/右端锚定语义，
+        # 与渲染/GUI 快照共用同一函数——速度数据唯一来源）
+        snap = self.mon._snapshot()
+        q = getattr(self.sess, "queue", None)
+        qn = len(q) if q is not None else 0
+        active = set()
+        for e in snap["active"]:
+            key = e["key"]
+            active.add(key)
+            if key in self.waiting:
+                continue           # 让路中短暂残留下载态：不累计
+            self.cover[key] = self.cover.get(key, 0.0) + dt
+            speed = e["speed"]
+            if self.cover[key] < self.cfg["win"] * 0.8:
+                # 覆盖不足（启动爬坡）不判慢；高速即清累计（照 T51）
+                if speed >= self.cfg["bps"]:
+                    self.streak.pop(key, None)
+                self._skip(key, speed, qn, now)
+                continue
+            if speed >= self.cfg["bps"]:
+                self.streak.pop(key, None)     # 抖动免疫：回高速清零
+                continue
+            since = self.streak.setdefault(key, now)
+            held = now - since
+            if held < self.cfg["win"]:
+                self._skip(key, speed, qn, now)
+                continue
+            # ---- 条件 1 成立：检查条件 2（queue）与条件 3（上限）----
+            if self.yields.get(key, 0) >= self.cfg["max"]:
+                self._exhausted(key, speed, qn, held)
+                continue
+            if qn == 0:
+                self._skip(key, speed, qn, now)
+                continue
+            self._trigger(key, speed, qn, now, held)
+        # 让路等待中的条目：恢复 / 除名 / 让位
+        for key, st in list(self.waiting.items()):
+            e = self.mon.order.get(key)
+            # 注意：“已暂停”同样置 e["final"]（mon.finish 既有语义），
+            # 只有四种真终态（完成/已存在/失败/已跳过）与移除才除名
+            if e is None or e.get("final") in (
+                    "完成", "已存在", "失败", "已跳过"):
+                # 终态/被移除：除名（让路计数与收割可见性保留在日志）
+                self.waiting.pop(key, None)
+                continue
+            # 让位判据：三者全不成立才让位于外部处置（手动 resume/
+            # 异常重入等重跑路径）：mon 已暂停 / sess.paused 存在 /
+            # 让路时的 ctl 还在跑（→只是触发后 worker 收场中的短暂
+            # 残留"下载中"帧，并非被外部恢复）
+            still_yielding = (
+                e["status"] == "已暂停"
+                or key in self.sess.paused
+                or self.sess.ctls.get(key) is st.get("ctl"))
+            if not still_yielding:
+                # 外部恢复：让位，计数保留、低速窗口从零重累计
+                # （不发事件零打扰）；仅下一轮正常巡检重新观察
+                self.waiting.pop(key, None)
+                continue
+            if now >= st["due"] and qn == 0:
+                self.waiting.pop(key, None)
+                self.sess._begin_resume(key, tail=True)
+                _yield_log(
+                    f"event=resume item=#{key[1]} speed_bps=0 "
+                    f"win={int(now - st['at'])} queued={qn} "
+                    f"count={self.yields.get(key, 0)}")
+                print(f"[yield] #{key[1]} 让路冷却已满并等到队列空闲，"
+                      f"自动恢复（回队尾，重新排队下载）")
+        # 非活跃条目：低速累计/覆盖清零（等待让路中的不重算）
+        for key in list(self.streak):
+            if key not in active and key not in self.waiting:
+                self.streak.pop(key, None)
+        for key in list(self.cover):
+            if key not in active and key not in self.waiting:
+                self.cover.pop(key, None)
+
+    # ---------- 边沿动作 ----------
+    def _trigger(self, key, speed, qn, now, held):
+        ctl = self.sess.ctls.get(key)
+        if ctl is None:
+            return                 # 条目已收场（终态竞态）：不触发
+        ctl.pause.set()
+        self.yields[key] = self.yields.get(key, 0) + 1
+        # 记下让路时的 ctl 引用：区分“收场中”（同一 ctl 仍在跑）与
+        # “已被外部恢复重跑”（新 worker 新 ctl）——让位判定的关键
+        self.waiting[key] = {"due": now + self.cfg["resume"],
+                             "at": now, "ctl": ctl}
+        self.streak.pop(key, None)
+        self.cover.pop(key, None)
+        self.exhausted_seen.discard(key)
+        _yield_log(
+            f"event=pause item=#{key[1]} speed_bps={int(speed)} "
+            f"win={int(held)} queued={qn} count={self.yields[key]}")
+        print(f"[yield] #{key[1]} 持续低速（已连续 {int(held)}s 低于 "
+              f"{human_speed(self.cfg['bps'])}），自动暂停让路"
+              f"（第 {self.yields[key]}/{self.cfg['max']} 次，冷却 "
+              f"{int(self.cfg['resume'])}s 后待队列空闲恢复）")
+
+    def _skip(self, key, speed, qn, now):
+        """低速监控中但触发条件未满足的状态行（覆盖不足/窗口未满/
+        queue 空），≤1 行/10s/条目；win=当前低速已累计秒。"""
+        if now - self.last_skip.get(key, 0.0) < 10.0:
+            return
+        self.last_skip[key] = now
+        since = self.streak.get(key)
+        held = int(now - since) if since is not None else 0
+        _yield_log(
+            f"event=skip_trigger item=#{key[1]} speed_bps={int(speed)} "
+            f"win={held} queued={qn} count={self.yields.get(key, 0)}")
+
+    def _exhausted(self, key, speed, qn, held):
+        """上限用尽：同一满窗段一行，不再让路、照常下载到底。"""
+        if key in self.exhausted_seen:
+            return
+        self.exhausted_seen.add(key)
+        _yield_log(
+            f"event=exhausted item=#{key[1]} speed_bps={int(speed)} "
+            f"win={int(held)} queued={qn} "
+            f"count={self.yields.get(key, 0)}")
+        print(f"[yield] #{key[1]} 本会话已让路 {self.cfg['max']} 次"
+              f"（上限），不再让路，照常下载到底")
 
 
 # ---------------- T51 多账号池（AccountPool；TUI/GUI 唯一调度内核） ----------------
@@ -5357,6 +5645,10 @@ async def run_download_session(client, task, sess, *, gui=None,
     # 经 state["cfg"] 透传给 download_one，在循环内与 sess.task 同源解析
     # （选型：download_one 内经 sess.task 解析 + state 增 cfg 键，报告说明）。
     _cfg_snapshot = load_config()
+    # T25：慢任务让路配置每会话快照一次（运行中改 params 不热生效，
+    # 与 parallel 键现状一致）；缺省关——enabled=0 时管理器不构造、
+    # 不启动，零新代码路径执行（TR-25.2 默认态与基线零差异）。
+    _yield_cfg = _slow_yield_cfg(task)
 
     def persist(key, status, error=None):
         ti = find_item(task, key)
@@ -5784,10 +6076,26 @@ async def run_download_session(client, task, sess, *, gui=None,
                                 f"已用 {int(now - mon.phase_entered)}s"))
     heartbeat = asyncio.create_task(phase_heartbeat())
 
+    # T25 慢任务让路（FR-12）：仅开启态启动巡检（随 run_download_
+    # session 生命周期：收尾 finally 取消，与 T51 慢速采样/
+    # phase_heartbeat 同生命周期范式）；默认关时零实例化、零
+    # [yield] 输出、零计时器。
+    yield_mgr = None
+    if _yield_cfg["enabled"]:
+        yield_mgr = SlowYieldManager(sess, _yield_cfg)
+        yield_mgr.start()
+
     try:
         await schedule()
     finally:
         heartbeat.cancel()
+        # T25：让路巡检随 run 收尾取消（退出前打 loop=exit 生命周期行）；
+        # cancel 后补一拍 0 秒让出——_run 的 finally 打印落在本会话
+        # 生命周期内（否则 asyncio.run 清理循环时才打，脱离调用方
+        # 的 stdout 捕获窗口），行为语义零变化。
+        if yield_mgr is not None:
+            yield_mgr.stop()
+            await asyncio.sleep(0)
         # T51：慢速采样任务随 run 收尾取消（与 open 的启动同生命周期）
         _pool = getattr(sess, "pool", None)
         if _pool is not None:
