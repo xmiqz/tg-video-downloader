@@ -331,7 +331,7 @@
   color: var(--color-primary-strong);
   background: var(--color-primary-soft);
   border: var(--line-1) solid var(--color-border);
-  vertical-align: 1px;
+  vertical-align: 1px;            /* 旧壳出处：style.css:1117（.ref-tag vertical-align:1px 同值） */
 }
 .nw-sub {
   margin-top: var(--space-1);
@@ -381,10 +381,18 @@
   .nw-row {
     display: grid;
     grid-template-columns: auto minmax(0, 2.2fr) minmax(140px, 1.4fr) auto;
+    /* ↑ 旧壳出处：旧壳结果行为 flex 行（style.css:570-576，无网格模板）——
+       minmax(140px, 1.4fr) 无旧壳同款，是 T12 ≥768 表格化密度的中列档；
+       份额语义就近旧壳 .video-info flex:1（可长主列，style.css:586）与
+       .video-size flex-shrink:0（固定尾列，style.css:591）：140px 保底
+       日期·摘要不塌陷、1.4fr 随行宽舒展 */
     column-gap: var(--space-4);
     align-items: center;
   }
-  .nw-sub { margin-top: 2px; }
+  .nw-sub { margin-top: 2px; }   /* 旧壳出处：同值 .acct-sub margin-top:2px
+                                     （style.css:1358）；语义近亲 .video-sub
+                                     margin-top:3px（style.css:589）——桌面
+                                     表格化密度收紧一档 */
 }
 
 /* ≥1024（shell side 形态）：条件卡上限 680px 左对齐（旧壳 .form-card

@@ -160,7 +160,11 @@
   box-shadow: 0 0 0 3px var(--input-ring); /* 3px 视觉聚焦环（--input-ring 色令牌） */
 }
 .lg-input:disabled {
-  opacity: .6;
+  opacity: .6;   /* 旧壳出处：旧壳无 input:disabled 规则（style.css 全文未见，
+                    旧壳登录输入框从不置 disabled，仅按钮有禁用态），透明度就近
+                    对齐旧壳禁用态透明度家族 .45/.55（style.css:330
+                    .me-logout-btn:disabled、style.css:964 .job-cancel-btn
+                    [disabled]）取中性抬升档 .6 */
   cursor: not-allowed;
 }
 

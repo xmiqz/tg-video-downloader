@@ -546,20 +546,35 @@ function toggleAdv() {
 // ============================================================
 // RPC 桥（唯一通道 window.pywebview.api；pywebviewready 等就绪）
 // ============================================================
+// 不变量（W4 评审 hard 1 修复）：对桥对象只做同步方法直调——任何
+// Promise 的 resolve 值 / return 值 / await 对象都不得是桥代理对象本身。
+// 根因：bridge.js:69-74 的 Proxy 对任意属性访问（含 then）都返回把属性名
+// 当方法名的 RPC 函数，桥对象因此是 thenable；一旦被 Promise 同化
+// （Promise.resolve(api)/resolve(api)/await api），机制会调用
+// api.then(res,rej)——实际发出名为 "then" 的 RPC，res/rej 永不回调，
+// await 永久 pending（修复前 doPreview 等 4 个调用点全部挂死）。
+// 守法：就绪 Promise 只 resolve 布尔（同 login.js bridgeReady 范式），
+// 调用方拿布尔后同步直读 window.pywebview.api.xxx(...) 直调（同旧壳
+// app.js:5 const api = () => window.pywebview.api 的同步消费语义）。
+function bridgeReady() {
+  return !!(typeof window !== "undefined" &&
+    window.pywebview && window.pywebview.api);
+}
+
 function ensureApi() {
-  if (typeof window !== "undefined" && window.pywebview && window.pywebview.api) {
-    return Promise.resolve(window.pywebview.api);
+  if (bridgeReady()) {
+    return Promise.resolve(true);   // 布尔；绝不 resolve 桥对象（见上不变量）
   }
   if (!apiReadyP) {
     apiReadyP = new Promise(function (resolve) {
       pyReadyHandler = function () {
         pyReadyHandler = null;
-        resolve(window.pywebview ? window.pywebview.api : null);
+        resolve(bridgeReady());     // 布尔；绝不 resolve 桥对象（见上不变量）
       };
       window.addEventListener("pywebviewready", pyReadyHandler);
-    }).then(function (api) {
+    }).then(function (ready) {
       apiReadyP = null; // 消费后复位（onLeave 同步置 null）
-      return api;
+      return ready;     // 布尔透传
     });
   }
   return apiReadyP;
@@ -594,9 +609,9 @@ async function doPreview() {
   btn.textContent = "搜索中…";
   let r = null;
   try {
-    const api = await ensureApi();
-    if (!api) throw new Error("bridge not ready");
-    r = await api.preview(r0.params);
+    const ready = await ensureApi();            // 布尔就绪，非桥对象（见 ensureApi 不变量）
+    if (!ready) throw new Error("bridge not ready");
+    r = await window.pywebview.api.preview(r0.params); // 同步直调（旧壳 app.js:5）
   } catch (e) {
     btn.disabled = false; btn.textContent = oldText;
     refs.noteBox.textContent = "";
@@ -914,8 +929,9 @@ async function cancelSearch() {
   cancelBusy = true;
   refs.cancelBtn.disabled = true;
   try {
-    const api = await ensureApi();
-    await api.preview_cancel(searchJob.job_id);
+    const ready = await ensureApi();            // 布尔就绪，非桥对象（见 ensureApi 不变量）
+    if (!ready) throw new Error("bridge not ready");
+    await window.pywebview.api.preview_cancel(searchJob.job_id); // 同步直调（旧壳 app.js:5）
     // 终态由 cancelled job_update 渲染（app.js:1062）
   } catch (e) {
     console.debug("[T12] preview_cancel 调用失败：", e); // app.js:1064 同义
@@ -928,8 +944,8 @@ async function cancelSearch() {
 async function cancelSearchJobQuietly() {  // app.js:1071-1076
   if (searchJob && searchJob.job_id && searchJob.streaming) {
     try {
-      const api = await ensureApi();
-      if (api) await api.preview_cancel(searchJob.job_id);
+      const ready = await ensureApi();          // 布尔就绪，非桥对象（见 ensureApi 不变量）
+      if (ready) await window.pywebview.api.preview_cancel(searchJob.job_id); // 同步直调
     } catch (e) { /* 静默尽力 */ }
     searchJob.streaming = false;
   }
@@ -965,10 +981,10 @@ async function doStart() {
   }
   let r = null;
   try {
-    const api = await ensureApi();
-    if (!api) throw new Error("bridge not ready");
-    r = await api.start_download(previewData.channel, previewData.title,
-      keys, parallel, "", previewData.job_id || "");
+    const ready = await ensureApi();            // 布尔就绪，非桥对象（见 ensureApi 不变量）
+    if (!ready) throw new Error("bridge not ready");
+    r = await window.pywebview.api.start_download(previewData.channel, previewData.title,
+      keys, parallel, "", previewData.job_id || "");   // 同步直调（旧壳 app.js:5）
   } catch (e) {
     restoreBtn();
     return;                                    // app.js:866 异常静默
