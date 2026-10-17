@@ -4,9 +4,9 @@
 // 设计契约：evidence/T8/t8_contract.md（一次冻结，下游 T11–T16
 // 只替换 web/js/views/* 占位与其 css 切片，零改本文件/壳样式/引导）。
 // fix1（2026-10-15，spec 评审 hard 闭环）：产品默认路由模式恒 hash，
-// history 模式实现保留仅供具备 SPA 回退的宿主经测试钩子 v22history=1
-// 显式启用（与 v22shell 同待遇、净化不进历史）；模式解析收进纯函数
-// resolveMode（T18 翻版时 v22history/v22hashmode 与 v22shell 一并清理）。
+// history 模式实现仅保留为注入面（seam 兼容）；v22history/v22hashmode/
+// v22shell/v22theme 测试钩子已随 T18 翻版清理。模式解析收在纯函数
+// resolveMode（seam 可离线测）。
 //
 // 结构分三层（tdd-seams：纯逻辑可离线测，视觉归 TR-8.2 浏览器级）：
 //   ① 契约纯函数：ROUTES / DEFAULT_ROUTE / parseHash / buildUrl / matchRoute
@@ -53,7 +53,7 @@ export const ROUTES = [
   { name: "editor", pattern: "/task/:id/edit" },
 ];
 
-// parseHash：'#/task/1/edit&t=x&v22shell=1' → { path, extra:[[k,v],…] }
+// parseHash：'#/task/1/edit&t=x' → { path, extra:[[k,v],…] }
 // 约定：hash 首段以 / 开头为路由 path；k=v 段（如 bridge 的 #t=token，
 // 见 js/bridge.js readToken）原样保留，由 router 在读写时传递、不吞掉。
 export function parseHash(hash) {
@@ -72,14 +72,9 @@ export function parseHash(hash) {
 }
 
 // buildUrl：两种模式的统一 URL 构造。
-// 净化规则（fix1 R1）：v22shell 与 v22history 均为一次性测试钩子，router
-// 永不把它们写进 URL（v22history 与 v22shell 同等待遇，T18 翻版一并清理）；
-// 其余参数段（t=、v22hashmode、v22theme 等）按序保留——保证 bridge token
-// 在两种模式下存活。
+// 参数段（t= 等）按序原样保留——保证 bridge token 在两种模式下存活。
 export function buildUrl(opts) {
-  const kv = (opts.extra || []).filter(function (p) {
-    return p[0] !== "v22shell" && p[0] !== "v22history";
-  });
+  const kv = opts.extra || [];
   const q = kv.map(function (p) { return p[0] + "=" + p[1]; }).join("&");
   if (opts.mode === "history") {
     return { pushUrl: opts.path + (q ? "#" + q : ""), has: q ? "#" + q : "" };
@@ -91,23 +86,16 @@ export function buildUrl(opts) {
 // 入参 spec = { mode, protocol, url, pushStateOk }：
 //   mode        — "hash"|"history" 显式注入直返（seam S4/S5 注入面兼容）；
 //   protocol    — location.protocol（"file:" 恒 hash，钩子不可覆盖）；
-//   url         — location.href（或 pathname+search+hash 拼接），识别测试钩子；
-//   pushStateOk — 宿主 history.pushState 可用性。
+//   url / protocol / pushStateOk — 保留入参位（seam 兼容），钩子清理后不再参与判定。
 // 组长裁决（2026-10-15，spec hard 闭环）：产品默认模式恒 hash——loopback、
 // file:、普通 http 静态托管、任意 host 均默认 hash。依据：FR-4 规范入口
 // 本就是 `http://127.0.0.1:<port>/#t=<token>`；FR-26 要求无 SPA 回退的普通
 // http 静态托管可运行（pathname 路由刷新即 404 白页）；FR-27 禁止白屏；
-// FR-3 原文允许 "History API / hash 兼容"。history 模式全套实现保留，仅供
-// 具备 SPA 回退的宿主经显式测试钩子 v22history=1（hash 或查询串）启用；
-// v22hashmode=1 保留为强制 hash（与默认等价，测试用）。
+// FR-3 原文允许 "History API / hash 兼容"。history 模式全套实现仅保留为
+// 注入面（seam S4/S5）；v22history/v22hashmode 钩子已随 T18 翻版清理。
 export function resolveMode(spec) {
   const s = spec || {};
   if (s.mode === "hash" || s.mode === "history") return s.mode;
-  const url = String(s.url || "");
-  if (/[?&#]v22hashmode=1(?!\w)/.test(url)) return "hash";
-  const proto = String(s.protocol || "").toLowerCase();
-  const isFile = proto.indexOf("file") === 0;
-  if (/[?&#]v22history=1(?!\w)/.test(url) && !isFile && s.pushStateOk) return "history";
   return "hash";
 }
 
@@ -165,9 +153,8 @@ export function createRouter(deps) {
   // 注入环境无 win 时退化为 doc（离线桩把它当事件总线）。
   const win = d.win || (typeof window !== "undefined" ? window : doc);
 
-  // 模式解析（fix1 R1）：默认 hash；仅测试钩子 v22history=1 在具备 pushState
-  // 的非 file: 宿主显式启用 history；v22hashmode=1 强制 hash。全部规则收在
-  // 纯函数 resolveMode（seam S7 单测）。
+  // 模式解析（fix1 R1）：产品默认恒 hash；history 仅注入面显式指定。规则
+  // 收在纯函数 resolveMode（seam S7 单测）。
   let mode = resolveMode({
     mode: d.mode,
     protocol: location && location.protocol ? String(location.protocol) : "",
@@ -270,8 +257,7 @@ export function createRouter(deps) {
     if (mode === "history") init = { path: location.pathname, extra: parseHash(location.hash).extra };
     else init = parseHash(location.hash);
     const r = resolve(routes, init.path);
-    // 引导期归一：根路径/无效深链 → 默认路由；无论是否重定向，地址中的
-    // v22shell 开关一律净化（buildUrl 恒不写出开关），t= 等 token 参数保留；
+    // 引导期归一：根路径/无效深链 → 默认路由；t= 等 token 参数保留；
     // 仅在内容确有差异时写入，避免多余历史/无谓 hashchange。
     const u = buildUrl({ mode: mode, path: r.path, extra: init.extra });
     if (mode === "history") {
@@ -335,7 +321,6 @@ function navLinkHtml(name, label, ico) {
 function buildShellDom() {
   const root = document.createElement("div");
   root.id = "sh-root";
-  root.setAttribute("data-v22shell", "on");
   const sideNav = NAV_ITEMS.map(function (it) { return navLinkHtml(it.name, it.label, it.ico); }).join("");
   // 手机悬浮底栏五槽（对齐参考图形态）：菜单（开抽屉）+ 四页签（含中央 FAB 化“新建”）。
   // IA 承接：旧壳侧栏四页签 active/tasks/new/settings + 侧底 me-box（登录）→
@@ -394,29 +379,25 @@ export async function boot() {
   const doc = document;
   const win = window;
 
-  // 视图层样式按约定路径引导（shell/tokens 由 index.html boot 片段引入）
+  // 视图层样式按约定路径引导（shell/tokens 由 index.html head 静态引入）
   ["login", "new", "active", "tasks", "settings", "editor"].forEach(function (n) {
     const l = doc.createElement("link");
     l.rel = "stylesheet";
     l.href = "css/views/" + n + ".css";
     doc.head.appendChild(l);
   });
-  // T10 组件库样式（t8_contract.md §7 R4-① 预授权的同型引导；仅 v22shell=1
-  // 新壳路径装载，开关默认关闭时零请求）
+  // T10 组件库样式（t8_contract.md §7 R4-① 预授权的同型引导；随新壳
+  // 引导装载）
   const uiCss = doc.createElement("link");
   uiCss.rel = "stylesheet";
   uiCss.href = "css/ui.css";
   doc.head.appendChild(uiCss);
 
-  // 主题镜像：与 index.html 旧壳引导脚本同一数据源（localStorage.appearance，
+  // 主题镜像：与 index.html 引导脚本同一数据源（localStorage.appearance，
   // 后端配置为准、这里仅镜像）。默认 dark（对齐产品默认"静态暗"）；liquid
-  // 亦为暗底玻璃。data-theme 只作用于 html 令牌层，旧壳此时已被外壳隐藏，
-  // 开关关闭路径本代码不执行，旧壳渲染不受任何影响。
-  // v22theme=light|dark（hash 段）：仅测试钩子（截图矩阵深浅覆盖），
-  // T18 翻版时与 v22shell 一并清理。
+  // 亦为暗底玻璃。data-theme 只作用于 html 令牌层。
   try {
-    var th = (String(win.location.hash).match(/[#&]v22theme=(light|dark)/) || [])[1];
-    var m = th || (win.localStorage.getItem("appearance") || "dark").toLowerCase();
+    var m = (win.localStorage.getItem("appearance") || "dark").toLowerCase();
     doc.documentElement.setAttribute("data-theme", m === "light" ? "light" : "dark");
   } catch (e) { /* 私有模式等异常沿用系统主题 */ }
 
@@ -537,10 +518,8 @@ export async function boot() {
   }
 
   const router = createRouter({
-    // 模式由 resolveMode 统一解析（fix1 R1）：产品默认恒 hash；测试钩子
-    // v22history=1（hash/查询串）显式启用 history（供具备 SPA 回退的宿主
-    // 测试）；v22hashmode=1 强制 hash。三钩子 T18 翻版时与 v22shell/
-    // v22theme 一并清理。
+    // 模式由 resolveMode 统一解析（fix1 R1）：产品默认恒 hash；history 仅
+    // 注入面（seam）。测试钩子已随 T18 翻版清理。
     mode: "auto",
     history: win.history,
     location: win.location,
