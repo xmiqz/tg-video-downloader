@@ -2028,25 +2028,6 @@ class Api:
         if cancel_event.is_set():
             self.jobs.update(job_id, state="cancelled")
 
-    # ---------- 独立编辑窗口（Task 16 将改为应用内全屏路由） ----------
-    def open_editor(self, task_id):
-        """弹出第二个专业编辑窗口（任务/条目管理）。"""
-        t = self._load_one(task_id)
-        if t is None:
-            return {"ok": False, "error": "任务不存在"}
-        url = (self.base_url + "/editor.html?id=" + task_id
-               + "#t=" + self.token)
-        s = _dpi_scale()
-        bg = "#e9ecf5" if self.cfg.get("appearance") == "light" else "#07080f"
-        self.host.create_aux_window(
-            "任务编辑 · " + t.get("channel_title", ""),
-            url, self,
-            int(1080 * s), int(740 * s),
-            (int(880 * s), int(580 * s)),
-            bg,
-        )
-        return {"ok": True}
-
     def editor_data(self, task_id, enrich=True):
         """任务与全部条目（含 TG 消息原文、时长、日期）。
         enrich=True 时后台补全缺失 text/duration；回捞时传 False 仅取本地。"""
