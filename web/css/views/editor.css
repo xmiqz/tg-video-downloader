@@ -1,2 +1,577 @@
-/* views/editor.css — T8 占位切片（极简）。
-   占位空态样式集中在 shell.css §8。T16 替换本文件（editor.html/editor.js 迁移为模块）。 */
+/* views/editor.css — T16 编辑器视图切片。所有权恰两文件（+ views/editor.js）。
+   ev- 前缀（不用 ed-：旧壳全局 .ed-/.st- 恒载会漏入，style.css:730-836）。
+   裸值注释=旧壳出处（style.css/editor.html 文件:行）；颜色全令牌。
+   <768 卡片 / ≥768 八列表格，DOM 同构；动效仅 --dur-* 与 --ease-*；§12 双路归零。 */
+
+/* 0. 视图根 */
+.vw-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);          /* style.css:733 */
+  min-width: 0;
+}
+.vw-editor--fallback {
+  padding: var(--space-6) var(--space-4);
+}
+
+/* 1. 任务设置头 */
+.ev-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-5);   /* style.css:738 */
+}
+.ev-head-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.ev-back {
+  flex-shrink: 0;
+}
+.ev-task-info {
+  flex: 1;
+  min-width: 0;                 /* style.css:741 */
+}
+.ev-title-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: transparent;      /* style.css:742-744 */
+  border: none;
+  outline: none;
+  font: inherit;
+  font-size: var(--text-xl);    /* style.css:744 */
+  font-weight: 700;
+  color: var(--color-text-strong);
+  padding: var(--space-1) 0;
+}
+.ev-title-input:focus {
+  border-bottom: var(--line-1) solid var(--color-primary);
+}
+.ev-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);   /* style.css:746 */
+  margin-top: var(--space-1);   /* style.css:746 */
+  font-size: var(--text-xs);    /* style.css:747 */
+  color: var(--color-text-faint);
+}
+.ev-meta-item {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 2. 任务设置区 */
+.ev-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);          /* style.css:748 */
+  flex: 1 1 320px;
+  min-width: 0;
+}
+.ev-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);          /* style.css:749 */
+  min-width: 0;
+}
+.ev-field--narrow {
+  max-width: 140px;             /* style.css:750 */
+}
+.ev-label {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+.ev-folder-input,
+.ev-parallel-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 44px;             /* FR-24 */
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+  font-size: var(--text-md);
+  color: var(--input-text);
+  background: var(--input-bg);
+  border: var(--line-1) solid var(--input-border);
+  border-radius: var(--input-radius);
+  transition: var(--input-transition);
+}
+.ev-folder-input:focus,
+.ev-parallel-input:focus {
+  outline: none;
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 0 var(--space-1) var(--input-ring);
+}
+.ev-path-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.ev-path-row .ev-folder-input {
+  flex: 1 1 200px;              /* style.css:755 */
+  min-width: 0;
+}
+.ev-check-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);          /* style.css:756 */
+  font-size: var(--text-xs);    /* style.css:756 */
+  color: var(--color-text-muted);
+  cursor: pointer;
+  min-height: 44px;             /* FR-24 */
+}
+.ev-check-line input {
+  width: var(--space-5);
+  height: var(--space-5);
+  accent-color: var(--color-primary);
+  cursor: pointer;
+}
+.ev-settings > .u-btn {
+  align-self: flex-start;
+}
+
+/* 3. 工具栏 */
+.ev-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);   /* style.css:761 */
+}
+.ev-search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 220px;
+  min-width: 0;
+  padding: 0 var(--space-3);
+  min-height: 44px;             /* FR-24 */
+  background: var(--input-bg);
+  border: var(--line-1) solid var(--input-border);
+  border-radius: var(--input-radius);
+}
+.ev-search:focus-within {
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 0 var(--space-1) var(--input-ring);
+}
+.ev-search-ico {
+  flex-shrink: 0;
+  font-size: var(--text-md);
+  color: var(--color-text-faint);
+}
+.ev-q-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  font: inherit;
+  font-size: var(--text-md);
+  color: var(--input-text);
+}
+.ev-q-input::placeholder { color: var(--input-placeholder); }
+.ev-toolbar .u-seg {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.ev-sel-btns {
+  display: flex;
+  gap: var(--space-2);
+}
+.ev-counts {
+  font-size: var(--text-xs);    /* style.css:765 */
+  color: var(--color-text-faint);
+  white-space: nowrap;
+}
+
+/* 4. 条目区状态（加载/失败/空态互斥） */
+.ev-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.ev-loading {
+  margin: var(--space-6) 0;
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+.ev-load-err {
+  margin: var(--space-4) 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-danger-soft);   /* editor.js:87-89 */
+  color: var(--color-danger-text);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  word-break: break-word;
+}
+.ev-empty-wrap {
+  padding: var(--space-6) 0;
+}
+
+/* 5. 条目列表（<768 卡片形态） */
+.ev-list {
+  min-width: 0;
+}
+.ev-lhead {
+  display: none;
+}
+.ev-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.ev-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;   /* 44px=FR-24 常量 */
+  grid-template-areas:
+    "check name st"
+    "msg   msg  msg"
+    "dur   date size"
+    "act   act  act";
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--line-1) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raise);
+  font-size: var(--text-sm);
+}
+.ev-row.is-checked {
+  border-color: var(--color-primary-soft);   /* style.css:795 */
+  background: var(--color-primary-soft);
+}
+.ev-cell {
+  min-width: 0;
+}
+.ev-c-check { grid-area: check; }
+.ev-c-name  { grid-area: name; }
+.ev-c-msg   { grid-area: msg; }
+.ev-c-dur   { grid-area: dur; }
+.ev-c-date  { grid-area: date; }
+.ev-c-size  { grid-area: size; }
+.ev-c-st    { grid-area: st; justify-self: end; }
+.ev-c-act   { grid-area: act; }
+
+.ev-c-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;          /* style.css:802-804 */
+  font-weight: 600;
+  color: var(--color-text-strong);
+}
+.ev-c-dur,
+.ev-c-date,
+.ev-c-size {
+  font-variant-numeric: tabular-nums;   /* style.css:800 */
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+/* 移动档补列语义前缀（≥768 撤销，列头承载） */
+.ev-c-dur::before  { content: "时长 "; }
+.ev-c-date::before { content: "日期 "; }
+.ev-c-size::before { content: "大小 "; }
+.ev-c-act {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-top: var(--space-1);
+  border-top: var(--line-1) solid var(--color-border);
+}
+
+/* 复选钮（FR-24；列宽 40px 出处 style.css:782） */
+.ev-cbox {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: var(--line-1) solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-on-primary);
+  font-size: var(--text-md);
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--dur-sm) var(--ease-standard),
+    border-color var(--dur-sm) var(--ease-standard);
+}
+.ev-cbox.is-on {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+/* 6. 消息列与展开详情 */
+.ev-c-msg {
+  cursor: pointer;              /* style.css:806 */
+}
+.ev-msg-line {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;          /* style.css:807-809 */
+  color: var(--color-text-muted);
+}
+.ev-c-msg.is-empty .ev-msg-line {
+  color: var(--color-text-faint);   /* style.css:811 */
+  font-style: italic;
+}
+.ev-c-msg:hover .ev-msg-line,
+.ev-c-msg:focus-visible .ev-msg-line {
+  color: var(--color-text);     /* style.css:812 */
+}
+.ev-detail {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3) var(--space-4);   /* style.css:829 */
+  border: var(--line-1) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunk);   /* style.css:827 */
+}
+.ev-detail-label {
+  margin-bottom: var(--space-2);   /* style.css:831 */
+  font-size: 11px;              /* style.css:831 */
+  color: var(--color-text-faint);
+}
+.ev-detail-text {
+  margin: 0;
+  font-family: inherit;
+  font-size: var(--text-sm);    /* style.css:833 */
+  line-height: 1.7;             /* style.css:834 */
+  color: var(--color-text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;            /* style.css:835 */
+  overflow-y: auto;
+}
+
+/* 7. 状态徽标 */
+.ev-badge {
+  display: inline-block;
+  padding: var(--space-1) 9px;  /* style.css:816 */
+  border-radius: var(--radius-pill);   /* style.css:816 */
+  border: var(--line-1) solid transparent;
+  font-size: 11px;              /* style.css:817 */
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ev-badge--done {
+  background: var(--color-surface-sunk);   /* style.css:819 */
+  color: var(--color-success);
+  border-color: var(--color-success);
+}
+.ev-badge--pending {
+  background: var(--color-warning-soft);   /* style.css:820 */
+  color: var(--color-warning);
+  border-color: var(--color-warning-soft);
+}
+.ev-badge--failed {
+  background: var(--color-danger-soft);    /* style.css:821 */
+  color: var(--color-danger-text);
+  border-color: var(--color-danger-soft);
+}
+.ev-badge--skipped {
+  background: var(--color-surface-sunk);   /* style.css:822 */
+  color: var(--color-text-faint);
+  border-color: var(--color-border);
+}
+
+/* 8. 小按钮与危险钮 */
+.ev-sm {
+  min-width: 44px;              /* FR-24（≥768 回落见 §9） */
+  min-height: 44px;
+}
+.ev-danger {
+  color: var(--btn-danger-text);
+}
+
+/* 9. ≥768 八列表格。
+   列宽出处 style.css:782-788（check40/dur70/date96/size84/st74/act168/
+   name21%）→ fr 等比（1fr≈100px），name:msg 收敛 1.6:2.4。 */
+@media (min-width: 768px) {
+  .ev-lhead,
+  .ev-row {
+    display: grid;
+    grid-template-columns:
+      var(--space-10)            /* check 40px */
+      minmax(0, 1.6fr)           /* name */
+      minmax(0, 2.4fr)           /* msg */
+      minmax(0, .7fr)            /* dur 70px */
+      minmax(0, 1fr)             /* date 96px */
+      minmax(0, .8fr)            /* size 84px */
+      minmax(0, .8fr)            /* st 74px */
+      minmax(0, 1.7fr);          /* act 168px */
+    grid-template-areas: none;
+  }
+  .ev-row > * { grid-area: auto; }
+  .ev-lhead {
+    display: grid;
+    position: sticky;
+    top: 0;
+    z-index: var(--z-sticky);    /* style.css:776-777 */
+    background: var(--color-surface);
+    border-bottom: var(--line-1) solid var(--color-border);
+  }
+  .ev-hcell {
+    padding: var(--space-2) var(--space-2);   /* style.css:779 */
+    font-size: var(--text-xs);  /* style.css:778 */
+    font-weight: 600;
+    color: var(--color-text-muted);
+    text-align: left;
+  }
+  .ev-rows {
+    gap: 0;
+  }
+  .ev-row {
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-2);   /* style.css:791 */
+    border: none;
+    border-bottom: var(--line-1) solid var(--color-border);
+    border-radius: 0;
+    background: transparent;
+    font-size: var(--text-sm);  /* style.css:793 */
+    transition: background var(--dur-sm) var(--ease-standard);
+  }
+  .ev-row:hover {
+    background: var(--gl-l-3);  /* style.css:796 */
+  }
+  .ev-row.is-checked:hover {
+    background: var(--color-primary-soft);   /* style.css:797 */
+  }
+  .ev-c-check {
+    display: flex;
+    justify-content: center;    /* style.css:798 */
+  }
+  .ev-cbox {
+    width: var(--space-8);      /* 32px 收进 40px 列 */
+    height: var(--space-8);
+  }
+  .ev-c-act {
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    padding-top: 0;
+    border-top: none;
+  }
+  .ev-c-dur::before,
+  .ev-c-date::before,
+  .ev-c-size::before { content: none; }
+  .ev-c-dur,
+  .ev-c-date,
+  .ev-c-size {
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
+  }
+  .ev-sm { min-width: 36px; min-height: 36px; }
+  .ev-detail {
+    margin: 0 0 var(--space-2) var(--space-10);   /* style.css:825 */
+    width: auto;
+  }
+}
+
+/* 10. 窄列兜底 */
+.ev-head-main .u-btn,
+.ev-settings .u-btn,
+.ev-c-act .u-btn { max-width: 100%; }
+
+/* [hidden] 防御（u-card/u-btn display 压 hidden；零改组件基座） */
+.vw-editor [hidden] { display: none !important; }
+.ev-move-mask [hidden] { display: none !important; }
+
+/* 11. T50 搬运弹层（z-index：旧壳 90，style.css:1251 → --z-sheet） */
+.ev-move-mask {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-sheet);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-scrim);   /* style.css:1253 */
+  backdrop-filter: blur(4px);       /* style.css:1254 */
+  animation: ev-fade-in var(--dur-sm) var(--ease-out);
+}
+.ev-move-layer {
+  width: min(430px, 92vw);     /* style.css:1258 */
+  box-sizing: border-box;
+  padding: var(--space-5) var(--space-5) var(--space-4);   /* style.css:1259 */
+  border-radius: var(--radius-lg);
+  background: var(--sheet-bg);      /* style.css:1261-1262 */
+  border: var(--line-1) solid var(--sheet-border);
+  box-shadow: var(--sheet-shadow);
+  animation: ev-rise var(--dur-md) var(--ease-spring);
+}
+.ev-move-title {
+  margin-bottom: var(--space-3);   /* style.css:1269 */
+  font-size: var(--text-md);
+  font-weight: 650;
+  color: var(--color-text-strong);
+}
+.ev-move-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-height: 17px;             /* style.css:1274 */
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+.ev-move-count {
+  margin-top: var(--space-1);   /* style.css:1277 */
+  min-height: 15px;             /* style.css:1278 */
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
+.ev-move-layer .u-progress {
+  margin-top: var(--space-2);   /* style.css:1281 */
+}
+.ev-move-bytes {
+  margin-top: var(--space-2);   /* style.css:1291 */
+  min-height: 15px;             /* style.css:1292 */
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
+.ev-move-err {
+  margin-top: var(--space-3);   /* style.css:1294 */
+}
+.ev-move-err-text {
+  font-size: var(--text-xs);
+  line-height: 1.55;            /* style.css:1297 */
+  color: var(--color-danger);
+  word-break: break-all;
+  max-height: 140px;            /* style.css:1298 */
+  overflow-y: auto;
+}
+.ev-move-err-hint {
+  margin-top: var(--space-2);   /* style.css:1301 */
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
+.ev-move-err .u-btn {
+  margin-top: var(--space-3);
+  width: 100%;                  /* style.css:1304 */
+}
+
+@keyframes ev-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ev-rise {
+  from { opacity: 0; transform: translateY(var(--space-4)); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 12. 动效双路归零（reduced-motion 铁律） */
+@media (prefers-reduced-motion: reduce) {
+  .ev-cbox { transition: none; }
+  .ev-row { transition: none; }
+  .ev-folder-input, .ev-parallel-input { transition: none; }
+  .ev-move-mask, .ev-move-layer { animation: none; }
+}
+#sh-root[data-v22-rm="on"] .ev-cbox { transition: none; }
+#sh-root[data-v22-rm="on"] .ev-row { transition: none; }
+#sh-root[data-v22-rm="on"] .ev-folder-input,
+#sh-root[data-v22-rm="on"] .ev-parallel-input { transition: none; }
+#sh-root[data-v22-rm="on"] .ev-move-mask,
+#sh-root[data-v22-rm="on"] .ev-move-layer { animation: none; }
