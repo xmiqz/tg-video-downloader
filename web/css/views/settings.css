@@ -1,2 +1,266 @@
-/* views/settings.css — T8 占位切片（极简）。
-   占位空态样式集中在 shell.css §8。T15 替换本文件。 */
+/* ============================================================
+   views/settings.css — T15 设置视图切片（替换 T8 占位）
+   所有权：本文件 + web/js/views/settings.js（恰两文件，零改基座）。
+
+   纪律：
+   - 只消费 tokens.css 令牌 + ui.css 组件类（.u-card/.u-seg/.u-btn/
+     .u-overlay）；类名 st- 前缀（与旧壳 .acct-*/.hint/.path-row 及外壳
+     .sh-/组件 .u-/其他视图 nw-/lg-/ac-/tk- 零碰撞）。
+   - 裸值就近注明旧壳出处（web/style.css / web/index.html 文件:行）；
+     能映射语义令牌的裸 hex/rgba 一律映射（同 tasks.css 口径）。
+   - 视觉口径逐段对照旧壳设置页（style.css:600-603 路径行/hint、
+     1339-1392 T52 账号区族、index.html:336-410 三卡）。
+   - 动效只走 --dur-*/--ease-*；双路归零成对保留（§10）。
+   ============================================================ */
+
+/* ---------- 0. 视图根与页头（对照 index.html:337） ---------- */
+.vw-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;                 /* 320/360 防横向溢出（FR-23） */
+}
+.st-head h2 {
+  margin: 0;
+  font-size: var(--text-xl);
+  color: var(--color-text-strong);
+  line-height: 1.4;
+}
+.st-sub {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+/* ---------- 1. 通用小件：hint / 错误行 / 视觉隐藏 label ---------- */
+.st-hint {
+  margin: var(--space-4) 0 0;   /* 旧壳 .hint margin-top 18px（style.css:603） */
+  font-size: var(--text-xs);    /* 旧壳 12px（style.css:603） */
+  line-height: 1.7;             /* 旧壳 1.7（style.css:603） */
+  color: var(--color-text-faint);
+}
+.st-err-line {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--color-danger-text);   /* 旧壳 .login-err danger 语义 */
+}
+.st-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- 2. 分组折叠卡片（u-card + 右上折叠钮） ---------- */
+.st-fold {
+  flex-shrink: 0;
+  min-width: 44px;              /* FR-24 命中区 */
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  line-height: 1;
+  cursor: pointer;
+  transition: transform var(--dur-sm) var(--ease-standard),
+    color var(--dur-sm) var(--ease-standard);
+}
+.st-fold:hover { color: var(--color-text); }
+.st-fold.is-collapsed { transform: rotate(-90deg); }   /* ▾ → ▸ */
+
+/* ---------- 3. 账号区（对照 style.css:1339-1373 .acct-* 族） ---------- */
+.st-region {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.st-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);          /* 旧壳 gap 10px（style.css:1340） */
+  padding: var(--space-2) var(--space-1);   /* 旧壳 9px 2px（style.css:1340） */
+  border-bottom: var(--line-1) solid var(--color-border);
+  flex-wrap: wrap;              /* 窄宽收敛不溢出（style.css:1342） */
+}
+.st-row:last-child { border-bottom: none; }
+.st-tag {
+  flex-shrink: 0;
+  font-size: 11px;              /* 旧壳 11px（style.css:1346）视觉常量 */
+  font-weight: 700;
+  letter-spacing: .5px;         /* 旧壳 .5px（style.css:1346） */
+  padding: var(--space-1) 9px;  /* 旧壳 3px 9px（style.css:1347） */
+  border-radius: var(--radius-pill);
+  /* 旧壳 rgba(91,134,255,.18)/#9db4ff/rgba(91,134,255,.4)（style.css:1348-1350）
+     → primary 语义令牌派生 */
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  border: var(--line-1) solid var(--color-primary-soft);
+}
+.st-tag--alt {
+  /* 旧壳紫系 rgba(139,91,255,.16)/#c8b6ff/rgba(139,91,255,.38)（style.css:1352-1354）
+     → primary-strong 语义派生（同 tasks.css §6 紫系映射口径） */
+  color: var(--color-primary-strong);
+  border-color: var(--color-primary-strong);
+}
+.st-info { flex: 1; min-width: 0; }
+.st-name {
+  font-size: 13.5px;            /* 旧壳 13.5px（style.css:1356）视觉常量 */
+  font-weight: 600;
+  color: var(--color-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.st-asub {
+  margin-top: var(--space-1);   /* 旧壳 2px（style.css:1358） */
+  font-size: 11.5px;            /* 旧壳 11.5px（style.css:1358）视觉常量 */
+  color: var(--color-text-faint);   /* 旧壳 --ink-mute（style.css:1358） */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.st-state {
+  flex-shrink: 0;
+  font-size: 11.5px;            /* 旧壳 11.5px（style.css:1361） */
+  padding: var(--space-1) var(--space-2);   /* 旧壳 2px 8px（style.css:1362） */
+  border-radius: var(--radius-xs);          /* 旧壳 6px（style.css:1362） */
+  background: var(--color-surface-sunk);    /* 旧壳 rgba(255,255,255,.06)（style.css:1363） */
+  color: var(--color-text-muted);           /* 旧壳 --ink-dim（style.css:1361） */
+}
+.st-state[data-st="ready"] { color: var(--color-success); }      /* 旧壳 #7ee2a8（style.css:1365） */
+.st-state[data-st="connecting"] { color: var(--color-warning); } /* 旧壳 #ffc78a（style.css:1366） */
+.st-state[data-st="standby"] { color: var(--color-primary); }    /* 旧壳 #9db4ff（style.css:1368） */
+.st-state[data-st="absent"] { color: var(--color-text-faint); }  /* 旧壳 --ink-mute（style.css:1369） */
+/* T58 3.4 重连行内错误小字（对照 style.css:1371-1374） */
+.st-reconn-err {
+  flex-shrink: 0;
+  max-width: 160px;             /* 旧壳 160px（style.css:1372）视觉常量 */
+  font-size: 11px;              /* 旧壳 11px（style.css:1372） */
+  color: var(--color-danger-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.st-sm {
+  min-width: 44px;              /* FR-24 命中区（触控档） */
+  min-height: 44px;
+}
+.st-add-btn { margin-top: var(--space-3); }
+
+/* ---------- 4. 游客行（对照 style.css:1376-1385 .acct-guest-row） ---------- */
+.st-guest-row {
+  padding: var(--space-3) var(--space-3);   /* 旧壳 10px 12px（style.css:1377） */
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-align: center;
+  font-size: 12.5px;            /* 旧壳 12.5px（style.css:1378）视觉常量 */
+  font-weight: 600;
+  color: var(--color-warning);  /* 旧壳 #ffc78a（style.css:1379） */
+  letter-spacing: .3px;         /* 旧壳 .3px（style.css:1379） */
+  user-select: none;
+  /* 旧壳暖色渐变 rgba(255,184,77,.14)→rgba(255,138,151,.12)
+     （style.css:1380-1382）→ warning-soft 语义派生（无渐变面采样需求） */
+  background: var(--color-warning-soft);
+  border: var(--line-1) solid var(--color-warning-soft);
+  transition: border-color var(--dur-sm) var(--ease-standard),
+    background var(--dur-sm) var(--ease-standard);
+}
+.st-guest-row:hover { border-color: var(--color-warning); }  /* 旧壳 rgba(255,184,77,.65)（style.css:1384） */
+
+/* ---------- 5. 添加小号三步卡（对照 style.css:1387-1393 .acct-add-card） ---------- */
+.st-add-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);   /* 旧壳 12px（style.css:1388） */
+  padding: var(--space-4) var(--space-4) var(--space-2);   /* 旧壳 14px 14px 6px（style.css:1388） */
+  border-radius: var(--radius-md);
+  /* 旧壳 dashed rgba(255,255,255,.18)（style.css:1390）→ border 语义 */
+  border: var(--line-1) dashed var(--color-border);
+  background: var(--color-surface-sunk);   /* 旧壳 rgba(255,255,255,.04)（style.css:1391） */
+}
+.st-add-card[hidden] { display: none; }
+.st-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.st-step[hidden] { display: none; }
+.st-label {
+  font-size: var(--text-sm);    /* 旧壳 label 随输入体系（index.html:350 区） */
+  color: var(--color-text-muted);
+}
+.st-input {
+  width: 100%;
+  min-height: 44px;             /* FR-24 命中区（表单输入同款） */
+  box-sizing: border-box;
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+  font-size: var(--text-md);
+  color: var(--input-text);
+  background: var(--input-bg);
+  border: var(--line-1) solid var(--input-border);
+  border-radius: var(--input-radius);
+  transition: var(--input-transition);
+}
+.st-input::placeholder { color: var(--input-placeholder); }
+.st-input:focus {
+  outline: none;
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 0 var(--space-1) var(--input-ring);
+}
+.st-block {
+  width: 100%;
+  min-height: 44px;             /* FR-24 命中区 */
+}
+.st-block[hidden] { display: none; }
+
+/* ---------- 6. 下载目录路径行（对照 style.css:600-601 .path-row） ---------- */
+.st-path-row {
+  display: flex;
+  gap: var(--space-3);          /* 旧壳 gap 10px（style.css:600） */
+  flex-wrap: wrap;              /* 窄宽按钮换行不溢出 */
+}
+.st-path-row .st-input {
+  flex: 1 1 200px;              /* 旧壳 input flex:1（style.css:601） */
+  min-width: 0;
+}
+
+/* ---------- 7. 确认弹层多行文案（app.js:650 两行逐字承载） ---------- */
+.st-confirm-lines { display: flex; flex-direction: column; gap: var(--space-1); }
+.st-confirm-lines p { margin: 0; }
+
+/* ---------- 8. 断点：≥768 平板/桌面密度（FR-23 ≥768 平板起桌面形态） ---------- */
+@media (min-width: 768px) {
+  /* 桌面键鼠档回落紧凑点按密度（<768 触控档保 44px 命中；同 tasks.css §8 口径） */
+  .st-sm { min-width: 36px; min-height: 36px; }
+  .st-fold { min-width: 36px; min-height: 36px; }
+  .st-path-row .st-input { flex: 1 1 280px; }
+}
+
+/* ---------- 9. 窄列兜底（320/360 防溢出） ---------- */
+.st-row .u-btn { max-width: 100%; }
+.st-info, .st-name, .st-asub { min-width: 0; }
+
+/* [hidden] 防御：.u-card/.u-card-body/.u-btn 的 display 会压过 hidden 属性
+   （折叠收起 card.body、多账号区/游客卡隐藏、添加卡/步骤/恢复钮均依赖
+   hidden 语义）；视图域内统一兜底，零改组件基座。 */
+.vw-settings [hidden] { display: none !important; }
+
+/* ---------- 10. 动效双路归零（任务书铁律：reduced-motion） ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .st-fold, .st-fold.is-collapsed { transition: none; }
+  .st-guest-row { transition: none; }
+  .st-input { transition: none; }
+}
+#sh-root[data-v22-rm="on"] .st-fold,
+#sh-root[data-v22-rm="on"] .st-fold.is-collapsed { transition: none; }
+#sh-root[data-v22-rm="on"] .st-guest-row { transition: none; }
+#sh-root[data-v22-rm="on"] .st-input { transition: none; }
