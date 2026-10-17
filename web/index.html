@@ -538,17 +538,16 @@
 <script src="app.js"></script>
 <script>
 /* ============================================================
-   v2.2 双壳开关（T8，集中一处、默认旧壳）
-   唯一规则：URL hash 含 v22shell=1 才引导新壳资源（tokens/shell
-   样式 + router.js 模块）；否则本片段零副作用返回 —— 不请求任何
-   新文件、不改任何旧 DOM/id/class，旧壳照常启动（TR-8.3 钉死）。
-   新壳启动后 router 会净化地址中的开关参数（保留 #t=token 供
-   bridge.js 使用）；开关是测试挂点，T18 翻版时整段移除。
+   v2.2 双壳开关（T18 翻转默认：新壳为默认壳）
+   翻版 commit1 规则：默认引导新壳资源（tokens/shell 样式 +
+   router.js 模块）；URL hash 含 v22shell=0 才走旧壳回归路径。
+   旧壳资源（app.js/style.css/旧 DOM）下一 commit 删除，本开关
+   随之整段移除（发版门审计项）。
    ============================================================ */
 (function () {
-  var on = false;
-  try { on = /[#&]v22shell=1(?!\w)/.test(location.hash); } catch (e) {}
-  if (!on) return; // 旧壳默认路径
+  var on = true;
+  try { on = !/[#&]v22shell=0(?!\w)/.test(location.hash); } catch (e) {}
+  if (!on) return; // 旧壳显式回归路径（临时，随删旧 commit 移除）
   var head = document.head;
   ["css/tokens.css", "css/shell.css"].forEach(function (p) {
     var l = document.createElement("link");
