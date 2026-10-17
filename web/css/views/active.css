@@ -363,7 +363,9 @@
   transition: border-color var(--dur-sm) var(--ease-standard),
     transform var(--dur-sm) var(--ease-standard);
 }
-.ac-card:hover { border-color: var(--color-border-strong); transform: translateY(-2px); } /* style.css:414 */
+@media (hover: hover) and (pointer: fine) {   /* T17 去 hover 依赖：触屏不粘滞 */
+  .ac-card:hover { border-color: var(--color-border-strong); transform: translateY(-2px); } /* style.css:414 */
+}
 .ac-card.is-sel {
   border-color: var(--color-primary);   /* 选择态描边（style.css:460） */
   background: var(--color-primary-soft);
@@ -485,7 +487,9 @@
     color var(--dur-sm) var(--ease-standard),
     transform var(--dur-sm) var(--ease-standard);
 }
-.ac-action:hover { background: var(--color-surface-sunk); color: var(--color-text); }
+@media (hover: hover) and (pointer: fine) {   /* T17 去 hover 依赖 */
+  .ac-action:hover { background: var(--color-surface-sunk); color: var(--color-text); }
+}
 .ac-action:active { transform: translateX(0) scale(.97); }  /* 微按压反馈（视觉常量，白名单） */
 .ac-action--danger { color: var(--color-danger-text); border-color: var(--color-danger); } /* style.css:667 */
 .ac-action.is-busy,

@@ -436,11 +436,13 @@
     font-size: var(--text-sm);  /* style.css:793 */
     transition: background var(--dur-sm) var(--ease-standard);
   }
-  .ev-row:hover {
-    background: var(--gl-l-3);  /* style.css:796 */
-  }
-  .ev-row.is-checked:hover {
-    background: var(--color-primary-soft);   /* style.css:797 */
+  @media (hover: hover) and (pointer: fine) {   /* T17 去 hover 依赖 */
+    .ev-row:hover {
+      background: var(--gl-l-3);  /* style.css:796 */
+    }
+    .ev-row.is-checked:hover {
+      background: var(--color-primary-soft);   /* style.css:797 */
+    }
   }
   .ev-c-check {
     display: flex;

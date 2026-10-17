@@ -14,6 +14,10 @@ import {
   el, createSegmented, createOverlay, createToaster,
   createEmptyState, createProgress, createBottomActionBar,
 } from "../ui/index.js";
+// T17 手势增量（边缘返回/滑动托盘/聚焦保持；见 evidence/T17/t17_diff_list.md）
+import {
+  attachEdgeBack, attachSwipeActions, attachFocusKeep, trayFromButtons,
+} from "../gestures.js";
 
 export const path = "task/:id/edit";
 
@@ -917,6 +921,7 @@ export function onEnter(params) {
   state.loading = false;
   state.error = "";
   if (!refs) return;
+  attachGestures();   // T17 手势增量（幂等）
   refs.qInput.value = "";
   refs.filterSeg.set("all");
   refs.titleInput.value = "";
@@ -936,4 +941,21 @@ export function onLeave() {
   stopRefetch();
   teardownMove();
   destroyConfirm();
+  // T17 手势增量对称回收（attach* 均返回 detach）
+  for (let i = 0; i < gsDetach.length; i++) gsDetach[i]();
+  gsDetach = [];
+}
+
+// T17 手势增量：边缘返回 + 行滑动托盘（透传 .ev-c-act 既有按钮）+ 聚焦保持
+let gsDetach = [];
+function attachGestures() {
+  if (gsDetach.length) return;
+  gsDetach = [
+    attachEdgeBack(),
+    attachSwipeActions(refs.root, {
+      itemSel: ".ev-row",
+      actions: function (row) { return trayFromButtons(row, ".ev-c-act .u-btn"); },
+    }),
+    attachFocusKeep(refs.root),
+  ];
 }

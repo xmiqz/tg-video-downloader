@@ -66,6 +66,9 @@ import {
   el, createCard, createSegmented, createOverlay, createToaster,
 } from "../ui/index.js";
 
+// T17 手势增量（边缘返回/聚焦保持；见 evidence/T17/t17_diff_list.md）
+import { attachEdgeBack, attachFocusKeep } from "../gestures.js";
+
 export const path = "settings";
 
 export const title = "设置 - TG 视频下载器";
@@ -380,8 +383,16 @@ export function mount() {
 export function onEnter() {
   if (cached && refs) {
     bindHint();
+    attachGestures();   // T17 手势增量（幂等）
     loadAll();
   }
+}
+
+// T17 手势增量：边缘返回 + 聚焦保持（虚拟键盘遮挡补偿）
+let gsDetach = [];
+function attachGestures() {
+  if (gsDetach.length) return;
+  gsDetach = [attachEdgeBack(), attachFocusKeep(refs.root)];
 }
 
 export function onLeave() {
@@ -390,6 +401,9 @@ export function onLeave() {
   destroyConfirm();
   closeAddQuiet();
   unbindHint();
+  // T17 手势增量对称回收（attach* 均返回 detach）
+  for (let i = 0; i < gsDetach.length; i++) gsDetach[i]();
+  gsDetach = [];
   removingId = null;
   logoutBusy = false;
 }
@@ -974,7 +988,7 @@ async function reconnectMain(btn, errSlot) {
 // ============================================================
 function buildAddCard() {
   const inputPhone = el("input", {
-    id: "st-add-phone", type: "text", class: "st-input",
+    id: "st-add-phone", type: "tel", class: "st-input",   /* FR-24 数字键盘正确（T17） */
     placeholder: "8613800000000", autocomplete: "off",
   });
   const inputCode = el("input", {

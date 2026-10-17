@@ -23,6 +23,10 @@ import { el, createCard } from "../ui/index.js";
 // ------------------------------------------------------------
 // ① 契约导出（t8_contract.md §1 恰五员）
 // ------------------------------------------------------------
+// T17 手势增量（聚焦保持；登录流无返回目标，刻意不挂边缘返回——见 t17_diff_list.md）
+import { attachFocusKeep } from "../gestures.js";
+let gsDetach = [];
+
 export const path = "login";
 
 // 非空静态 title：router 进入视图后写入 document.title（保 T8 占位原值，
@@ -606,6 +610,8 @@ function resetTransient() {
 //   已就绪 → 账号卡。guest 态卡片前台期间起 2s 轮询。
 export function onEnter(params) {
   resetTransient();
+  // T17 手势增量：聚焦保持（虚拟键盘遮挡补偿；幂等）
+  if (!gsDetach.length && root) gsDetach = [attachFocusKeep(root)];
   const my = ++epoch;
   (async function () {
     const bridgeOk = await bridgeReady(BRIDGE_TIMEOUT_MS);
@@ -663,4 +669,7 @@ export function onLeave() {
   stopPoll();
   pollBusy = false;
   if (busy) setBusyUi(false);
+  // T17 手势增量对称回收（attach* 均返回 detach）
+  for (let i = 0; i < gsDetach.length; i++) gsDetach[i]();
+  gsDetach = [];
 }

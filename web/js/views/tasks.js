@@ -50,6 +50,10 @@
 import {
   el, append, createSegmented, createOverlay, createToaster, createEmptyState,
 } from "../ui/index.js";
+// T17 手势增量（边缘返回/滑动托盘/聚焦保持；见 evidence/T17/t17_diff_list.md）
+import {
+  attachEdgeBack, attachSwipeActions, attachFocusKeep, trayFromButtons,
+} from "../gestures.js";
 
 export const path = "tasks";
 
@@ -347,8 +351,23 @@ export function mount() {
 export function onEnter() {
   if (cached && refs) {
     bindList();
+    attachGestures();   // T17 手势增量（幂等）
     loadTasks();   // 旧壳 switchView("tasks") → renderTasks()（app.js:174）
   }
+}
+
+// T17 手势增量：边缘返回 + 卡片滑动托盘（透传 .tk-act 既有按钮）+ 聚焦保持
+let gsDetach = [];
+function attachGestures() {
+  if (gsDetach.length) return;
+  gsDetach = [
+    attachEdgeBack(),
+    attachSwipeActions(refs.root, {
+      itemSel: ".tk-card",
+      actions: function (card) { return trayFromButtons(card, ".tk-act"); },
+    }),
+    attachFocusKeep(refs.root),
+  ];
 }
 
 export function onLeave() {
@@ -367,6 +386,9 @@ export function onLeave() {
   destroyConfirm();
   resetPhaseTimers();
   unbindList();
+  // T17 手势增量对称回收（attach* 均返回 detach）
+  for (let i = 0; i < gsDetach.length; i++) gsDetach[i]();
+  gsDetach = [];
 }
 
 function bindList() {

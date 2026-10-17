@@ -30,6 +30,9 @@ import {
   el, append, createCard, createProgress, createSegmented, createToaster,
 } from "../ui/index.js";
 
+// T17 手势增量（边缘返回/聚焦保持；见 evidence/T17/t17_diff_list.md）
+import { attachEdgeBack, attachFocusKeep } from "../gestures.js";
+
 export const path = "new";
 
 export const title = "新建下载 - TG 视频下载器";
@@ -273,7 +276,17 @@ export function mount() {
 }
 
 export function onEnter() {
-  if (cached && refs) bindList();
+  if (cached && refs) {
+    bindList();
+    attachGestures();   // T17 手势增量（幂等）
+  }
+}
+
+// T17 手势增量：边缘返回 + 聚焦保持（虚拟键盘遮挡补偿；本视图无列表不挂托盘）
+let gsDetach = [];
+function attachGestures() {
+  if (gsDetach.length) return;
+  gsDetach = [attachEdgeBack(), attachFocusKeep(refs.root)];
 }
 
 export function onLeave() {
@@ -281,6 +294,9 @@ export function onLeave() {
   cancelSearchJobQuietly();
   // ②移除 window 事件监听（tg:search_items / tg:job_update / pywebviewready）
   unbindList();
+  // ②b T17 手势增量对称回收（attach* 均返回 detach）
+  for (let i = 0; i < gsDetach.length; i++) gsDetach[i]();
+  gsDetach = [];
   // ③toaster 生命周期：view 常驻不随 onLeave 销毁（TR12-1 G5 揪出的产品
   //   缺陷：need_login 分支 toast 提示后立即 navigate('/login')，若离开
   //   视图即销毁 host，提示被闪杀、用户永远看不到）。卡自动消失后 host

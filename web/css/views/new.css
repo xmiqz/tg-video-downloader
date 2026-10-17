@@ -286,7 +286,9 @@
   transition: border-color var(--dur-sm) var(--ease-standard),
     transform var(--dur-sm) var(--ease-standard);
 }
-.nw-row:hover { border-color: var(--color-border-strong); transform: translateX(3px); } /* style.css:577 */
+@media (hover: hover) and (pointer: fine) {   /* T17 去 hover 依赖 */
+  .nw-row:hover { border-color: var(--color-border-strong); transform: translateX(3px); } /* style.css:577 */
+}
 .nw-row:focus-visible {
   outline: none;
   box-shadow: 0 0 0 var(--space-1) var(--input-ring);

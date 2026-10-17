@@ -37,6 +37,10 @@ import {
   el, createProgress, createSegmented, createToaster, createOverlay,
   createSelectionController, createBottomActionBar,
 } from "../ui/index.js";
+// T17 手势增量（边缘返回/滑动托盘/聚焦保持；见 evidence/T17/t17_diff_list.md）
+import {
+  attachEdgeBack, attachSwipeActions, attachFocusKeep, trayFromButtons,
+} from "../gestures.js";
 
 export const path = "active";
 
@@ -419,6 +423,7 @@ const deferTimers = new Set();    // 250/300/400ms 一次性补拉 timer（onLea
 let offline = false;              // 断网 banner 态
 let hintText = "";                // acct_hint 限速提示行文案（空=不显示）
 let ptr = { touching: false, startY: 0, top: 0, dy: 0, firing: false };
+let ptrX0 = 0; // T17 轴锁起点（横向占优让位滑动托盘）
 let winListeners = 0;             // window 监听计数（onLeave 归零探针）
 let pyReadyHandler = null;
 let apiReadyP = null;
@@ -580,6 +585,17 @@ function bindEvents() {
   refs.root.addEventListener("touchmove", bound.touchMove, { passive: true });
   refs.root.addEventListener("touchend", bound.touchEnd, { passive: true });
   refs.root.addEventListener("touchcancel", bound.touchCancel, { passive: true });
+  // T17 手势增量：边缘返回 + 卡片滑动托盘（透传 .ac-action 既有按钮）+ 聚焦保持
+  bound.gs = [
+    attachEdgeBack(),
+    attachSwipeActions(refs.root, {
+      itemSel: ".ac-card",
+      actions: function (card) {
+        return trayFromButtons(card, ".ac-cactions .ac-action", ACTION_TITLE);
+      },
+    }),
+    attachFocusKeep(refs.root),
+  ];
 }
 function unbindEvents() {
   if (!bound) return;
@@ -594,6 +610,11 @@ function unbindEvents() {
     refs.root.removeEventListener("touchmove", bound.touchMove);
     refs.root.removeEventListener("touchend", bound.touchEnd);
     refs.root.removeEventListener("touchcancel", bound.touchCancel);
+  }
+  // T17 手势增量对称回收（attach* 均返回 detach）
+  if (bound.gs) {
+    for (let i = 0; i < bound.gs.length; i++) bound.gs[i]();
+    bound.gs = null;
   }
   bound = null;
 }
@@ -1635,6 +1656,7 @@ function ptrStart(e) {
   if (!t) return;
   ptr.touching = true;
   ptr.startY = t.clientY;
+  ptrX0 = t.clientX;
   ptr.top = scrollViewTop();
   ptr.dy = 0;
 }
@@ -1643,6 +1665,8 @@ function ptrMove(e) {
   const t = e.touches && e.touches[0];
   if (!t) return;
   ptr.dy = Math.round(t.clientY - ptr.startY);
+  // T17 轴锁：横向占优让位滑动托盘（dy 熄火防本拍误触发刷新）
+  if (Math.abs(t.clientX - ptrX0) > Math.abs(ptr.dy)) { ptr.dy = 0; setPtrUI(null); return; }
   if (ptr.top > 0 || ptr.dy <= 0 || ptr.firing) { setPtrUI(null); return; }
   setPtrUI(ptr.dy >= 64 ? "armed" : "pulling");
 }
