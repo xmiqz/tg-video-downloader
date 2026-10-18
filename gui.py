@@ -2178,6 +2178,30 @@ class Api:
             return {"ok": False, "error": str(e)}
 
     # ---------- 其它 ----------
+    def open_editor(self, task_id):
+        """弹出独立任务编辑窗口（2.1 双窗模式；T19h 用户裁决恢复）。
+        加载 web/taskedit.html（2.1 editor.html 布局/样式/行为原样承载，
+        文件名避开 WC-4d 旧壳四资源断言），create_aux_window 与主窗同壳。"""
+        if not self.host:
+            return {"ok": False, "error": "窗口宿主未就绪"}
+        t = self._load_one(task_id)
+        if t is None:
+            return {"ok": False, "error": "任务不存在"}
+        from urllib.parse import quote
+        url = (self.base_url + "/taskedit.html?id=" + quote(str(task_id))
+               + "#t=" + self.token)
+        s = _dpi_scale()
+        mode = str(self.cfg.get("appearance") or "")
+        bg = "#e9ecf5" if mode == "light" else "#07080f"
+        self.host.create_aux_window(
+            "任务编辑 · " + str(t.get("channel_title", "")),
+            url, self,
+            int(1080 * s), int(740 * s),
+            (int(360 * s), int(640 * s)),   # T19h：最小 360x640 同主窗（可拉移动尺寸）
+            bg,
+        )
+        return {"ok": True}
+
     def open_folder(self, path):
         if not path:
             path = str(core.get_download_root(self.cfg))

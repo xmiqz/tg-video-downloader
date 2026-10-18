@@ -22,9 +22,10 @@
 //
 // 组件消费：T10 桶唯一入口 ../ui/index.js（createSegmented/createOverlay/
 //   createToaster/createEmptyState/el/append），签名见 t10_contract.md。
-// RPC 白名单消费恰 8 个（45 集合内）：list_tasks / get_task /
+// RPC 白名单消费 11 个（45 集合内）：list_tasks / get_task /
 //   items_file_info / resume_task / delete_task / open_item_file /
-//   set_item / remove_items。禁 open_editor（编辑入口走 router 深链）。
+//   set_item / remove_items / edit_task / account_list（T52 选号）/
+//   open_editor（T19h 恢复 2.1 独立编辑窗）。
 //
 // thenable 桥不变量（W4 hard 教训）：bridge.js:69-74 的
 //   window.pywebview.api 是 Proxy，任意属性（含 then）访问皆返回 RPC
@@ -644,7 +645,7 @@ function buildCard(t) {
       el("span", { class: "tk-acct-label", text: "本任务后续下载使用" }),
       (function () {
         const host = el("div", {
-          class: "tk-acct-seg u-seg", dataset: { acctTid: t.id },
+          class: "tk-acct-seg u-seg", dataset: { "acct-tid": t.id },
           role: "radiogroup", "aria-label": "本任务后续下载账号",
         });
         renderAcctSeg(host);
@@ -901,8 +902,8 @@ function resetSheetBody() {
     ]),
     el("div", { class: "tk-dlist", role: "list", "aria-label": "任务条目" }),
     el("div", { class: "tk-sfoot" }, [
-      // 编辑入口：router 深链 task/:id/edit（任务书 §5 行为需求；
-      // 禁调 RPC open_editor——T16 编辑器波次承接）
+      // 编辑入口（T19h）：open_editor 独立编辑窗（2.1 双窗恢复），
+      // 失败回落 router 深链 task/:id/edit
       el("button", {
         class: "u-btn u-btn--ghost", type: "button", text: "编辑任务",
         onclick: function () {
@@ -1338,9 +1339,24 @@ function extractFiles(r) {
   return n ? out : null;
 }
 
-// app.js:1898-1900 openSheetEditor —— 新壳改为 router 深链跳转
-// /task/:id/edit（T16 编辑器视图承接；禁调 RPC open_editor）
+// app.js:1898-1900 openSheetEditor —— T19h 用户裁决恢复 2.1 双窗：
+// 编辑入口开独立编辑窗（open_editor 辅助窗 + taskedit.html 2.1 布局；
+// T16「禁调 open_editor」口径随用户指令废止），/task/:id/edit 深链视图
+// 保留作兜底：开窗失败（含桩返回非 ok）静默回落深链。
 function openSheetEditor(taskId) {
   if (!taskId) return;
-  navigate("/task/" + encodeURIComponent(taskId) + "/edit");
+  const fallback = function () {
+    navigate("/task/" + encodeURIComponent(taskId) + "/edit");
+  };
+  try {
+    const p = window.pywebview && window.pywebview.api
+      ? window.pywebview.api.open_editor(taskId) : null;
+    if (!p || typeof p.then !== "function") return fallback();
+    p.then(function (r) {
+      if (r && r.ok) return;
+      fallback();
+    }).catch(fallback);
+  } catch (e) {
+    fallback();
+  }
 }
