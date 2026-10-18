@@ -172,7 +172,58 @@ export function createRouter(deps) {
     return parseHash(location.hash).extra;
   }
 
+  // —— 登录 = 叠加弹层（对齐 2.1 #login.login-mask：fixed 遮罩盖在当前
+  //    版面上、底层视图保持挂载可见；/login 不参与视图切换，进入只叠卡、
+  //    离开只收卡，不触发底层视图 onLeave/重入）——
+  let loginOpen = false;
+
+  async function renderLogin(params, path) {
+    const lv = viewSet.login;
+    if (!lv || typeof lv.mount !== "function") {
+      throw new Error("[router] 视图模块缺失: login");
+    }
+    // 深链直进 #/login：先落默认视图（2.1 启动壳先可见），再叠卡
+    if (!state.currentView) {
+      const t0 = navToken;
+      await render(DEFAULT_VIEW, {}, DEFAULT_ROUTE);
+      if (navToken !== t0) return; // 期间有更新导航 → 放弃本次叠卡
+    }
+    const token = navToken;
+    let node = nodes.get("login");
+    if (!node) {
+      let pending = mounts.get("login");
+      if (!pending) {
+        pending = Promise.resolve(lv.mount(null));
+        mounts.set("login", pending);
+      }
+      const r = await pending;
+      if (token !== navToken) return;
+      node = r && r.nodeType ? r : null;
+      nodes.set("login", node);
+      mounts.delete("login");
+    }
+    // 弹层节点直挂 body（fixed 遮罩；视图宿主之外不占版面流）
+    if (node && node.parentNode !== doc.body) doc.body.appendChild(node);
+    loginOpen = true;
+    if (typeof lv.onEnter === "function") lv.onEnter(params || {});
+    if (typeof lv.title === "string" && lv.title) doc.title = lv.title;
+    state.current = path;
+    // 导航高亮保持底层视图（版面未切换，对齐 2.1 登录卡盖在主界面上）
+    if (onNav) { try { onNav(state.currentView, path); } catch (e) { /* 装饰性回调不阻塞路由 */ } }
+  }
+
+  function closeLoginOverlay() {
+    if (!loginOpen) return;
+    loginOpen = false;
+    const lv = viewSet.login;
+    if (lv && typeof lv.onLeave === "function") lv.onLeave();
+    const ln = nodes.get("login");
+    if (ln && ln.parentNode) ln.parentNode.removeChild(ln);
+  }
+
   async function render(name, params, path) {
+    if (name === "login") return renderLogin(params, path);
+    closeLoginOverlay();
     const token = ++navToken;
     const prev = state.currentView;
     if (prev && prev !== name) {
@@ -225,8 +276,14 @@ export function createRouter(deps) {
 
   async function navigate(path, opts) {
     const r = resolve(routes, path);
-    if (r.path === path && path === state.current && state.currentView) return; // 同路径幂等
+    // 同路径幂等（force 除外：/login 重开需重跑 onEnter 收受控提示与连接复核）
+    if (!(opts && opts.force) && r.path === path && path === state.current && state.currentView) return;
     applyAddress(r, path, !!(opts && opts.replace));
+    // /login 携受控提示（2.1 showLoginCard(notice)）：opts.notice 直达 onEnter
+    if (r.name === "login") {
+      await renderLogin({ notice: (opts && opts.notice) || "" }, r.path);
+      return;
+    }
     await render(r.name, r.params, r.path);
   }
 
@@ -358,8 +415,11 @@ function buildShellDom() {
     '<nav class="sh-drawer-nav">' + sideNav + "</nav>" +
     '<div class="sh-drawer-foot">' + navLinkHtml("login", "登录", "👤") + "</div>" +
     "</aside>" +
-    // 主内容（视图宿主）
+    // 主内容（视图宿主）；guest-bar/boot-err 置顶（对齐 2.1 .main 首子：
+    // 旧壳 index.html:117-119 guest-bar 在 #sheet 前、随内容滚动）
     '<main class="sh-main"><div class="sh-scroll" id="sh-scroll">' +
+    '<div class="sh-guestbar" id="sh-guestbar" tabindex="0" hidden></div>' +
+    '<div class="sh-booterr" id="sh-booterr" hidden></div>' +
     '<div class="sh-viewhost" id="sh-viewhost"></div>' +
     "</div></main>" +
     // 手机悬浮液态玻璃底栏（<640）
@@ -579,4 +639,182 @@ export async function boot() {
   });
 
   await router.start();
+
+  // —— 启动登录态提示（对齐 2.1 bootLogin/bootConnect：旧壳 app.js:188-272）——
+  // 主壳先可见 → guest-bar 显中性「正在连接 Telegram…」不可点 → connect()
+  // 按 stage 分流：就绪隐藏条 / 未登录开登录弹层（卡内步骤由 login onEnter
+  // 复核定）/ 网络错·超时·busy 留壳内转「未登录 · 点此重试」+ 非阻断小字
+  //（#boot-err，app.js:274-284）。点击条 = 开登录弹层（app.js:312-316）。
+  const guestBar = doc.getElementById("sh-guestbar");
+  const bootErr = doc.getElementById("sh-booterr");
+  let booting = false;
+  let guestPollId = null;
+  let guestPollBusy = false;
+
+  function guestBarShow(text) {
+    if (!guestBar) return;
+    guestBar.textContent = text || "未登录 · 点此登录";
+    guestBar.hidden = false;
+  }
+  function guestBarHide() {
+    if (guestBar) guestBar.hidden = true;
+    guestBarBootOff();
+    guestPollStop();
+  }
+  function guestBarBootOn() {
+    if (!guestBar) return;
+    booting = true;
+    guestBar.textContent = "正在连接 Telegram…";
+    guestBar.hidden = false;
+    guestBar.classList.add("sh-guestbar--booting");
+  }
+  function guestBarBootOff() {
+    booting = false;
+    if (guestBar) guestBar.classList.remove("sh-guestbar--booting");
+  }
+  function bootErrShow(msg) {
+    if (!bootErr) return;
+    bootErr.textContent = msg || "";
+    bootErr.hidden = !msg;
+  }
+
+  // 游客态登录状态轮询（app.js:379-415）：guest-bar 可见期间约 2s 一拍，
+  // 发现 logged_in&&!guest → 收条；发现登出（!guest&&!logged_in）→ 开登录
+  // 弹层停轮询。boot 中性态不发（app.js:395）。
+  function guestPollStart() {
+    if (guestPollId != null) return;
+    guestPollId = win.setInterval(guestPollTick, 2000);
+  }
+  function guestPollStop() {
+    if (guestPollId != null) {
+      win.clearInterval(guestPollId);
+      guestPollId = null;
+    }
+  }
+  async function guestPollTick() {
+    if (booting || guestPollBusy || doc.hidden) return;
+    const api = win.pywebview && win.pywebview.api;
+    if (!api) return;
+    guestPollBusy = true;
+    try {
+      const st = await api.login_state();
+      if (st && st.logged_in && st.guest !== true) {
+        guestPollStop();
+        guestBarHide();
+      } else if (st && st.guest !== true && st.logged_in !== true) {
+        guestPollStop();
+        guestBarHide();
+        if (win.__t8router.current !== "/login") {
+          win.__t8router.navigate("/login", { force: true });
+        }
+      }
+    } catch (e) { /* 轮询静默容错（app.js:412 catch） */ } finally {
+      guestPollBusy = false;
+    }
+  }
+
+  // login.js 钩子：doGuest 成功显条+轮询（app.js:437-438）、登录成功收条
+  //（afterLogin → hideGuestBar）。sync 为保底同步（按 login_state 裁决）。
+  win.__t8guest = {
+    show: function (text) {
+      guestBarBootOff();
+      guestBarShow(text);
+      bootErrShow("");
+      guestPollStart();
+    },
+    hide: function () {
+      guestBarHide();
+      bootErrShow("");
+    },
+    sync: async function () {
+      const api = win.pywebview && win.pywebview.api;
+      if (!api) return;
+      try {
+        const st = await api.login_state();
+        if (st && st.logged_in && st.guest !== true) guestBarHide();
+        else {
+          guestBarShow("未登录 · 点此登录");
+          guestPollStart();
+        }
+      } catch (e) { /* 保底同步静默容错 */ }
+    },
+  };
+
+  function openLoginOverlay() {
+    if (booting) return; // T56 Bug4：boot 中性态条不可点（app.js:313）
+    if (win.__t8router.current === "/login") return;
+    win.__t8router.navigate("/login", { force: true });
+  }
+  if (guestBar) {
+    guestBar.addEventListener("click", openLoginOverlay);
+    guestBar.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openLoginOverlay();
+      }
+    });
+  }
+
+  // bridge 就绪等待（同 login.js bridgeReady 口径；桩宿主立即就绪）
+  function apiReady(timeoutMs) {
+    return new Promise(function (res) {
+      if (win.pywebview && win.pywebview.api) return res(win.pywebview.api);
+      let done = false;
+      function fin() {
+        if (done) return;
+        done = true;
+        win.removeEventListener("pywebviewready", fin);
+        clearTimeout(timer);
+        res(win.pywebview && win.pywebview.api ? win.pywebview.api : null);
+      }
+      const timer = setTimeout(fin, timeoutMs);
+      win.addEventListener("pywebviewready", fin);
+    });
+  }
+
+  async function bootAuth() {
+    if (!guestBar) return;
+    guestBarBootOn();
+    bootErrShow("");
+    const api = await apiReady(8000);
+    let r = null;
+    try {
+      r = api ? await api.connect() : { ok: false, error: "应用服务未就绪，请稍后重试" };
+    } catch (e) {
+      r = { ok: false, error: (e && e.message) || String(e) };
+    }
+    // 已就绪（stage=ready，或 client 已在场的 {ok:true} 无 stage 形状）
+    if (r && r.ok && (r.stage === "ready" || !r.stage)) {
+      guestBarHide();
+      bootErrShow("");
+      return;
+    }
+    // need_code（含软成功 warning）→ 登录弹层停码步；否则复核 login_state
+    //（T58 2.3：has_session=后端内存标志「本轮已发码待验证」，零本地推断）
+    let codeStep = !!(r && r.ok && r.stage === "need_code");
+    if (!codeStep && api) {
+      let st = null;
+      try { st = await api.login_state(); } catch (e) { st = null; }
+      if (st && st.logged_in) {
+        guestBarHide();
+        bootErrShow("");
+        return;
+      }
+      codeStep = !!(st && st.has_session && !(r && r.busy));
+    }
+    if (codeStep || (r && r.ok && r.stage === "need_phone")) {
+      // 未登录：收中性条、开登录弹层（need_phone 的 phone_prefill 预填由
+      // login onEnter 的 connect 复核承接，app.js:253-263 口径零发码）
+      guestBarHide();
+      bootErrShow("");
+      if (win.__t8router.current !== "/login") {
+        win.__t8router.navigate("/login", { force: true });
+      }
+      return;
+    }
+    // 网络错/超时/busy：留在壳内，条转可点重试（错误仅非阻断小字）
+    guestBarShow("未登录 · 点此重试");
+    bootErrShow((r && (r.warning || r.error)) || "连接 Telegram 失败");
+  }
+  bootAuth();
 }

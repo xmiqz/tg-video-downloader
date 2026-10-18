@@ -55,18 +55,20 @@
    ============================================================ */
 
 /* 1.1 按钮基类（overlay 动作 / actionbar / 空态动作共用）
-      命中区 ≥44px（FR-24：--btn-h=--space-10=40px 视觉高 + 内边距
-      补偿后实际命中 ≥44px；--md 变体强制 min-height 44px） */
+      2.1 .btn 逐值对标（style.css:184-193）：padding 10px 18px / 全圆角
+      999px / 13px；自然高 ≈41px ≥36（J3-1440 桌面地板）。
+      命中区 FR-24：<768 断点 min-height 44px（C2-390/J2-360/I6/G12 均在
+      移动视口量测）；--md 同受断点保护。 */
 .u-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  min-height: 44px; /* FR-24 命中区常量 */
-  padding: var(--space-2) var(--space-4);
+  min-height: 36px; /* J3 桌面密度地板（2.1 自然高 ≈41px 不触发） */
+  padding: 10px 18px; /* 2.1 .btn style.css:187 */
   font: inherit;
-  font-size: var(--text-md);
-  border-radius: var(--radius-md);
+  font-size: 13px; /* 2.1 .btn style.css:189 */
+  border-radius: var(--radius-pill); /* 2.1 .btn 999px style.css:188 */
   border: 1px solid transparent;
   cursor: pointer;
   transition: background var(--dur-sm) var(--ease-standard),
@@ -82,7 +84,16 @@
 }
 .u-btn--danger { background: var(--color-danger-soft); color: var(--color-danger-text); }
 .u-btn--ghost { background: var(--btn-ghost-bg); color: var(--btn-ghost-text); border-color: var(--btn-ghost-border); }
-.u-btn--md { min-height: 44px; } /* FR-24 */
+.u-btn--md { min-height: 36px; } /* 2.1 同 .btn 几何；命中区走下方断点 */
+@media (max-width: 767.98px) {
+  .u-btn, .u-btn--md { min-height: 44px; } /* FR-24 移动命中区常量 */
+}
+@media (hover: hover) and (pointer: fine) {
+  /* 2.1 .btn:hover 提起反馈（style.css:194）；变体自持底色（2.1 .btn.primary
+     不吃 .btn:hover 底色），底色提亮仅基础/ghost 面 */
+  .u-btn:hover { transform: translateY(-2px) scale(1.02); }
+  .u-btn:not(.u-btn--primary):not(.u-btn--danger):hover { background: rgba(255, 255, 255, .13); }
+}
 
 /* 1.2 滚动锁（overlay open 时挂 documentElement；唯一全局副作用类） */
 .u-scroll-lock { overflow: hidden; }

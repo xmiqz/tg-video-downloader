@@ -141,7 +141,6 @@ let busy = false;               // 提交互斥（防重复发码/重复校验�
 
 const $ = {};                   // 节点引用（mount 时赋值）
 const stepEls = {};             // step 名 → 步骤块元素（phone|code|pwd，动态访问映射）
-const dotEls = {};              // step 名 → 步骤指示节点（同上）
 const submitLabels = new Map(); // busy 换文案用：按钮 -> 默认文案
 
 // —— 桥就绪（bridge 未起时等 pywebviewready；解析后监听即除）——
@@ -174,20 +173,23 @@ function goTasks() {
   else window.location.hash = "#/tasks";
 }
 
+// —— 登录 = 叠加弹层唯一入口（active/new 的 need_login 与受限动作共用）——
+// 受控提示暂存 pendingNotice，弹层重开时由 onEnter 消费（2.1 showLoginCard
+// app.js:360-369：phone 步起、清错误、notice 与错误互不残留）。
+let pendingNotice = "";
+export function openLogin(notice) {
+  pendingNotice = notice || "";
+  const r = window.__t8router;
+  if (r && typeof r.navigate === "function") r.navigate("/login", { force: true });
+  else window.location.hash = "#/login";
+}
+
 // —— 三步向导 ——
 function setStep(step) {
   const s = STEP_CHAIN.indexOf(step) >= 0 ? step : "phone";
-  const curIdx = STEP_CHAIN.indexOf(s);
-  STEP_CHAIN.forEach(function (k, idx) {
+  STEP_CHAIN.forEach(function (k) {
     const node = stepEls[k];
     if (node) node.hidden = k !== s;
-    const dot = dotEls[k];
-    if (!dot) return;
-    dot.classList.toggle("is-active", idx === curIdx);
-    dot.classList.toggle("is-done", idx < curIdx);
-    if (idx === curIdx) dot.setAttribute("aria-current", "step");
-    else dot.removeAttribute("aria-current");
-    dot.querySelector(".lg-dot-num").textContent = idx < curIdx ? "✓" : String(idx + 1);
   });
   // T58 3.2：每次进入 phone 步重置“直接输入”恢复入口。
   if (s === "phone") hideRecover();
@@ -222,14 +224,13 @@ function setBusyUi(on, targetBtn, pendingText) {
   if ($.btnCode) $.btnCode.disabled = on;
   if ($.btnPwd) $.btnPwd.disabled = on;
   if ($.btnGuestEnter) $.btnGuestEnter.disabled = on;
-  if ($.btnGuestBrowse) $.btnGuestBrowse.disabled = on;
   if ($.btnRetryMe) $.btnRetryMe.disabled = on;
   if (on && targetBtn) {
     if (targetBtn) targetBtn.textContent = pendingText;
   } else {
     submitLabels.forEach(function (label, b) { b.textContent = label; });
   }
-  if ($.loginCard) $.loginCard.el.setAttribute("aria-busy", on ? "true" : "false");
+  if ($.loginCard) $.loginCard.setAttribute("aria-busy", on ? "true" : "false");
 }
 
 async function withSubmit(targetBtn, pendingText, fn) {
@@ -311,10 +312,15 @@ function doVerifyPassword() {
   });
 }
 
-// —— 游客入口（app.js doGuest 418-440）——
-function doGuestEnter() {
-  // anonymous 态：“暂不登录（游客模式）”→ set_guest(true)；成功跳任务库；
-  // 失败内联显错（app.js:425-431 文案口径）。
+// —— 「暂不登录（游客模式）」（2.1 doGuest 单钮合一：app.js:418-440）——
+// guest 态（已激活）点击=仅收卡回任务库；anonymous 点击=set_guest(true)
+// 成功后收卡跳任务库并显 guest-bar，失败内联显错。
+let isGuestEntry = false;
+function doGuest() {
+  if (isGuestEntry) {
+    goTasks();
+    return;
+  }
   withSubmit($.btnGuestEnter, "进入中…", async function () {
     let r = null;
     let exc = null;
@@ -324,13 +330,11 @@ function doGuestEnter() {
       return errShow("进入游客模式失败：" + (exc && exc.message ? exc.message : String(exc)));
     }
     if (!r || !r.ok) return errShow((r && r.error) || "进入游客模式失败");
+    // 2.1 doGuest 成功：showGuestBar()+startGuestPoll（app.js:437-438）→ 跳任务库
+    const g = window.__t8guest;
+    if (g && typeof g.show === "function") g.show("未登录 · 点此登录");
     goTasks();
   });
-}
-
-function doGuestBrowse() {
-  // guest 态：“继续游客浏览”仅收卡跳任务库（不调 set_guest —— 任务书 §2.6）。
-  goTasks();
 }
 
 // —— 登录成功：账号卡 + me（app.js afterLogin 503-531 / T58 3.3）——
@@ -373,8 +377,7 @@ async function fetchMe(my) {
 }
 
 function showAccountCard() {
-  $.loginCard.el.hidden = true;
-  $.guestNote.hidden = true;
+  $.loginCard.hidden = true;
   $.acctCard.el.hidden = false;
   renderMePending();
 }
@@ -382,6 +385,9 @@ function showAccountCard() {
 function afterLoginAction() {
   stopPoll();
   showAccountCard();
+  // 登录成功收起未登录提示条（2.1 afterLogin → hideGuestBar）
+  const g = window.__t8guest;
+  if (g && typeof g.hide === "function") g.hide();
   return fetchMe(epoch);
 }
 
@@ -439,10 +445,11 @@ async function pollTick() {
 // —— 登录卡形态切换 ——
 function showLoginForm(entryState) {
   $.acctCard.el.hidden = true;
-  $.loginCard.el.hidden = false;
-  $.guestNote.hidden = entryState !== "guest";
-  $.btnGuestEnter.hidden = entryState !== "anonymous";
-  $.btnGuestBrowse.hidden = entryState !== "guest";
+  $.loginCard.hidden = false;
+  isGuestEntry = entryState === "guest";
+  // 2.1 #guest-btn 恒显（app.js:66）：guest 态点击=收卡继续浏览；
+  // anonymous 点击=进游客模式（doGuest 合一分支）。
+  if ($.btnGuestEnter) $.btnGuestEnter.hidden = false;
 }
 
 // ------------------------------------------------------------
@@ -478,56 +485,40 @@ function buildDom() {
     onClick: function () { $.btnRecover.hidden = true; setStep("code"); },
   });
   $.btnCode = el("button", { class: "u-btn u-btn--primary lg-block", type: "button", text: "登录", onClick: function () { doVerifyCode(); } });
-  $.btnBackCode = el("button", { class: "u-btn u-btn--ghost lg-block", type: "button", text: "返回上一步", onClick: function () { setStep(prevStep("code")); } });
+  // 2.1 code 步返回钮逐字「返回」（index.html:57）；pwd 步无返回钮（:59-62）
+  $.btnBackCode = el("button", { class: "u-btn u-btn--ghost lg-block", type: "button", text: "返回", onClick: function () { setStep(prevStep("code")); } });
   $.btnPwd = el("button", { class: "u-btn u-btn--primary lg-block", type: "button", text: "确认", onClick: function () { doVerifyPassword(); } });
-  $.btnBackPwd = el("button", { class: "u-btn u-btn--ghost lg-block", type: "button", text: "返回上一步", onClick: function () { setStep(prevStep("pwd")); } });
 
   $.stepPhone = el("div", { class: "lg-step", dataset: { step: "phone" } },
     [labelPhone, $.inputPhone, $.btnPhone, $.btnRecover]);
   $.stepCode = el("div", { class: "lg-step", dataset: { step: "code" }, hidden: true },
     [labelCode, $.inputCode, $.btnCode, $.btnBackCode]);
   $.stepPwd = el("div", { class: "lg-step", dataset: { step: "pwd" }, hidden: true },
-    [labelPwd, $.inputPwd, $.btnPwd, $.btnBackPwd]);
+    [labelPwd, $.inputPwd, $.btnPwd]);
   stepEls.phone = $.stepPhone;
   stepEls.code = $.stepCode;
   stepEls.pwd = $.stepPwd;
-
-  // 步骤指示（a11y：role=group + aria-label；active 项 aria-current=step）。
-  function dot(key, num, labelText) {
-    const n = el("span", { class: "lg-dot-num", "aria-hidden": "true", text: String(num) });
-    const l = el("span", { class: "lg-dot-label", text: labelText });
-    return el("li", { class: "lg-dot", dataset: { dot: key } }, [n, l]);
-  }
-  $.dotPhone = dot("phone", 1, "手机号");
-  $.dotCode = dot("code", 2, "验证码");
-  $.dotPwd = dot("pwd", 3, "密码");
-  dotEls.phone = $.dotPhone;
-  dotEls.code = $.dotCode;
-  dotEls.pwd = $.dotPwd;
-  const steps = el("div", { class: "lg-steps", role: "group", "aria-label": "登录步骤" },
-    el("ol", { class: "lg-steps-list" }, [$.dotPhone, $.dotCode, $.dotPwd]));
 
   $.err = el("p", { class: "lg-err", role: "alert", hidden: true, text: "" });
   $.notice = el("p", { class: "lg-notice", hidden: true, text: "" });
 
   $.btnGuestEnter = el("button", {
-    class: "u-btn u-btn--ghost lg-block", type: "button", hidden: true,
+    class: "u-btn u-btn--ghost lg-block lg-guest-btn", type: "button",
     text: "暂不登录（游客模式）",
-    onClick: function () { doGuestEnter(); },
-  });
-  $.btnGuestBrowse = el("button", {
-    class: "u-btn u-btn--ghost lg-block", type: "button", hidden: true,
-    text: "继续游客浏览",
-    onClick: function () { doGuestBrowse(); },
+    onClick: function () { doGuest(); },
   });
 
-  const brand = el("div", { class: "lg-brand", "aria-hidden": "true" },
-    el("div", { class: "lg-logo", text: "TG" }));
+  // 登录卡（2.1 .login-card 解剖逐序：logo-badge→h1→sub→三步→err→notice→
+  // #guest-btn；旧壳 index.html:40-67。步骤指示点/lg-note 为 2.1 所无，不设）
+  const logoBadge = el("div", { class: "lg-logo-badge", "aria-hidden": "true", text: "TG" });
+  const cardTitle = el("h1", { class: "lg-title", text: "TG 视频下载器" });
+  const cardSub = el("p", { class: "lg-sub", text: "登录后开始下载频道视频" });
 
-  $.loginCard = createCard({ title: "登录", sub: "登录后开始下载频道视频", ariaLabel: "登录" });
-  $.loginCard.el.classList.add("lg-card"); // 进场动效挂点（login.css §8）
-  $.loginCard.body.append(brand, steps, $.stepPhone, $.stepCode, $.stepPwd,
-    $.err, $.notice, $.btnGuestEnter, $.btnGuestBrowse);
+  $.loginCard = el("div", {
+    class: "u-card lg-card lg-login-card", role: "dialog",
+    "aria-label": "登录", "aria-busy": "false",
+  }, [logoBadge, cardTitle, cardSub, $.stepPhone, $.stepCode, $.stepPwd,
+    $.err, $.notice, $.btnGuestEnter]);
 
   // 账号卡（已登录态渲染账号信息/资料重试；成功态提供“去任务库”导航）。
   $.meAvatar = el("div", { class: "lg-avatar", "aria-hidden": "true", text: "…" });
@@ -551,22 +542,15 @@ function buildDom() {
   $.acctCard.body.append(meRow, $.acctErr, $.btnRetryMe, $.btnGoTasks);
   $.acctCard.el.hidden = true;
 
-  // 游客受限提示条（对齐旧 guest-bar 语义，style.css:1021 起；说明游客
-  // 可离线浏览任务库、下载/搜索等动作需登录）。
-  $.guestNote = el("div", {
-    class: "lg-note", role: "status", hidden: true,
-    text: "游客模式：可离线浏览任务库；下载、搜索等动作需登录后使用",
-  });
-
   submitLabels.set($.btnPhone, "发送验证码");
   submitLabels.set($.btnCode, "登录");
   submitLabels.set($.btnPwd, "确认");
   submitLabels.set($.btnRetryMe, "重试获取资料");
   submitLabels.set($.btnGuestEnter, "暂不登录（游客模式）");
 
+  // 弹层根（2.1 .login-mask：fixed 遮罩盖在当前版面上，只含卡）
   const view = el("div", { class: "lg-view", "data-view-name": "login" },
-    [$.guestNote, $.loginCard.el, $.acctCard.el]);
-  $.loginCard.el.setAttribute("aria-busy", "false");
+    [$.loginCard, $.acctCard.el]);
   return view;
 }
 
@@ -610,6 +594,11 @@ function resetTransient() {
 //   已就绪 → 账号卡。guest 态卡片前台期间起 2s 轮询。
 export function onEnter(params) {
   resetTransient();
+  // 受控提示消费（2.1 showLoginCard(notice) 口径：notice 与错误互不残留；
+  // params.notice 经 router.navigate opts 直达，pendingNotice 兜 openLogin 入口）
+  const notice = (params && params.notice) || pendingNotice;
+  pendingNotice = "";
+  if (notice) noticeShow(notice);
   // T17 手势增量：聚焦保持（虚拟键盘遮挡补偿；幂等）
   if (!gsDetach.length && root) gsDetach = [attachFocusKeep(root)];
   const my = ++epoch;

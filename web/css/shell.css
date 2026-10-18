@@ -30,7 +30,11 @@
   grid-template-columns: var(--sh-side-w, 232px) 1fr;
   background: transparent; /* 视觉底层三件套（§0b）由 body 承底，玻璃面透出 */
   color: var(--color-text);
-  font: var(--text-md)/1.6 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  /* 2.1 body 字族 + 无全局行高（normal）逐值（style.css:36-39）：
+     字号/文字位置与 2.1 逐像素一致的关键；个别件行高由各自规则显式给。 */
+  font: var(--text-md)/normal "SF Pro Text", "Segoe UI Variable Display", "Segoe UI",
+    "Microsoft YaHei UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased; /* 2.1 style.css:41 */
 }
 
 /* 旧壳顶层节点隐藏（#sh-root 存在即视为新壳接管）。
@@ -135,9 +139,9 @@ html.liquid .ev-move-mask {
 .sh-brand {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-2) var(--space-4);
-  font-size: var(--text-lg);
+  gap: 11px;                          /* 2.1 .brand style.css:268 */
+  padding: 2px 8px 22px;              /* 2.1 .brand style.css:269 */
+  font-size: 15.5px;
   font-weight: 700;
   color: var(--color-text-strong);
   white-space: nowrap;
@@ -146,12 +150,12 @@ html.liquid .ev-move-mask {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: var(--space-10);
-  height: var(--space-10);
-  border-radius: var(--radius-md);
+  width: 38px;                        /* 2.1 .logo-badge.sm style.css:259 */
+  height: 38px;
+  border-radius: 11px;
   background: linear-gradient(135deg, var(--color-primary), var(--color-primary-strong));
   color: var(--color-on-primary);
-  font-size: var(--text-sm);
+  font-size: 14px;
   font-weight: 700;
   flex: none;
   box-shadow: var(--badge-glow);           /* 2.1 style.css:256-257 logo 光晕 */
@@ -234,13 +238,26 @@ html.liquid .ev-move-mask {
     border: var(--line-1) solid var(--glass-nav-border);
     border-radius: var(--radius-xl);
   }
+  /* 2.1 侧栏导航逐值（style.css:270-273/277/289）：gap 5px / 项 gap 13px /
+     padding 12px 14px / r-md 14px / 14px 字 / ico 18px 15px；命中区自然高
+     ≈46px ≥44（FR-24），min-height 44 仅兜底不触高。 */
+  .sh-side-nav { gap: 5px; }
+  .sh-side .sh-nav-item {
+    gap: 13px;
+    min-height: 44px;
+    padding: 12px 14px;
+    border-radius: var(--radius-md);
+    font-size: 14px;
+  }
+  .sh-side .sh-nav-ico { width: 18px; font-size: 15px; opacity: .85; }
+  .sh-side-foot { padding-top: 15px; }
 }
 
 /* ---------- 4. 手机形态（<640）：沉浸内容 + 悬浮液态玻璃底栏 + 抽屉 ---------- */
 @media (max-width: 639.98px) {
   #sh-root { display: block; }
   .sh-side { display: none; }
-  .sh-scroll { padding-bottom: calc(120px + env(safe-area-inset-bottom)); }
+  /* .sh-scroll 底部避让见下方基础规则后的补块（简写级序坑） */
 }
 
 /* 主内容与滚动容器（容器契约：#sh-scroll 滚动 / #sh-viewhost 视图挂载） */
@@ -251,10 +268,70 @@ html.liquid .ev-move-mask {
   -webkit-overflow-scrolling: touch;
   box-sizing: border-box;
   height: 100%;
-  padding: var(--space-6) clamp(var(--space-4), 4vw, var(--space-12));
-  padding-top: max(var(--space-6), env(safe-area-inset-top));
+  padding: 14px 22px; /* 2.1 .main（style.css:350）逐值 */
+  padding-top: max(14px, env(safe-area-inset-top));
 }
-.sh-viewhost { max-width: var(--sh-content-max, 1040px); margin: 0 auto; width: 100%; }
+.sh-viewhost { width: 100%; } /* 2.1 .main 无版心上限（style.css:350）：同窗口尺寸逐像素对齐 */
+/* 手机（<640）悬浮底栏底部避让：必须置于 .sh-scroll 基础简写之后，
+   否则被 padding 简写重置（级序坑订正）。 */
+@media (max-width: 639.98px) {
+  .sh-scroll { padding-bottom: calc(120px + env(safe-area-inset-bottom)); }
+}
+
+/* ---------- 4b. 未登录提示条 + 启动连接小字（2.1 style.css:1021-1072 逐值） ----------
+   .sh-guestbar = 2.1 .guest-bar（含 ::before「·」点），点击开登录叠加层；
+   .sh-guestbar--booting = 2.1 .guest-bar.booting 中性态（不可点）；
+   .sh-booterr = 2.1 .boot-err 启动连接失败非阻断小字。
+   节点为 div（非 button/a/role）不进 T17 G12 命中区 SEL；:hover 全落
+   (hover:hover) 断点内（G13 静态审计口径）。 */
+.sh-guestbar {
+  display: flex; align-items: center; justify-content: center;
+  gap: 6px; margin: 0 0 12px; padding: 8px 12px;
+  border-radius: var(--radius-lg);       /* 2.1 --r-lg = 20px */
+  cursor: pointer;
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.14), rgba(255,138,151,.12));   /* style.css:1025-1026 */
+  border: 1px solid rgba(255,184,77,.35);            /* style.css:1027 */
+  color: #ffc78a; font-size: 12.5px; font-weight: 600;
+  letter-spacing: .3px; user-select: none;           /* style.css:1028-1029 */
+  transition: border-color .2s var(--ease-standard), background .2s var(--ease-standard);
+}
+.sh-guestbar::before {
+  content: "·"; font-size: 15px; line-height: 1;
+  color: #ffb84d; margin-right: 2px;                 /* style.css:1037-1040 */
+}
+:root[data-theme="light"] .sh-guestbar {
+  color: #8a5a12; border-color: rgba(180,120,30,.4);
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.22), rgba(255,200,160,.18));   /* style.css:1042-1046 */
+}
+.sh-guestbar--booting {
+  cursor: default;
+  pointer-events: none;
+  opacity: .88;                                      /* style.css:1054-1058 */
+}
+@media (hover: hover) {
+  .sh-guestbar:hover {
+    border-color: rgba(255,184,77,.65);
+    background: linear-gradient(120deg,
+      rgba(255,184,77,.22), rgba(255,138,151,.18)); /* style.css:1032-1036 */
+  }
+  :root[data-theme="light"] .sh-guestbar:hover {
+    border-color: rgba(180,120,30,.6);               /* style.css:1047-1049 */
+  }
+  /* 中性态屏蔽 hover 提亮（回到静止态，style.css:1059-1064） */
+  .sh-guestbar--booting:hover {
+    border-color: rgba(255,184,77,.35);
+    background: linear-gradient(120deg,
+      rgba(255,184,77,.14), rgba(255,138,151,.12));
+  }
+}
+.sh-booterr {
+  margin: 0 0 12px;
+  font-size: 11.5px;
+  color: var(--color-text-faint);       /* 2.1 --ink-mute 同位令牌 */
+  letter-spacing: .2px; user-select: none;           /* style.css:1066-1072 */
+}
 
 /* ---------- 5. 液态玻璃悬浮底栏（<640，用户 2026-10-15 增补） ----------
    形态：悬浮胶囊 —— 左右与底部留边距（底部 = safe-area + 间距令牌），

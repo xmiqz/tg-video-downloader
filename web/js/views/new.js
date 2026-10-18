@@ -227,10 +227,10 @@ function human(n) {
 }
 
 // 导航：优先新壳 router 探针，降级 hash（任务书 §1.4）
-function navigate(path) {
+function navigate(path, opts) {
   if (typeof window !== "undefined" && window.__t8router &&
       typeof window.__t8router.navigate === "function") {
-    window.__t8router.navigate(path);
+    window.__t8router.navigate(path, opts);
   } else if (typeof location !== "undefined") {
     location.hash = "#" + path;
   }
@@ -638,9 +638,9 @@ async function doPreview() {
   refs.noteBox.textContent = "";
   const c = classifyPreviewAck(r);
   if (c.kind === "needLogin") {
-    // T46：need_login:true（app.js:757）→ toast 提示 + 导航登录（任务书 §2.3）
-    toast("warn", "该功能需要登录，登录后将自动继续刚才的操作");
-    navigate("/login");
+    // T46：need_login:true（app.js:757）→ 登录弹层 + 卡内受控提示
+    //（2.1 showLoginCard(notice) 口径：提示随卡呈现，不另发 toast）
+    navigate("/login", { force: true, notice: "该功能需要登录，登录后将自动继续刚才的操作" });
     return;
   }
   if (c.kind === "error") {

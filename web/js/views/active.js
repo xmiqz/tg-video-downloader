@@ -312,9 +312,9 @@ function qAttr(v) { return String(v).replace(/["\\]/g, "\\$&"); }
 // 恢复跳过按钮文案（app.js:63 resumeSkipLabel）
 const resumeSkipLabel = (n) => "恢复跳过 " + n + " 个";
 // 导航（T12 同款路由探针优先/降级 hash）
-function navigate(p) {
+function navigate(p, opts) {
   if (typeof window !== "undefined" && window.__t8router && typeof window.__t8router.navigate === "function") {
-    window.__t8router.navigate(p);
+    window.__t8router.navigate(p, opts);
   } else if (typeof location !== "undefined") {
     location.hash = "#" + p;
   }
@@ -463,11 +463,11 @@ function showErr(summary, e) {
   const d = e && e.message ? e.message : (typeof e === "string" ? e : JSON.stringify(e));
   toast("error", summary, d);
 }
-// 通用 need_login 兜底（app.js:352-358 同义；新壳无全局登录卡→提示+导航）
+// 通用 need_login 兜底（app.js:352-358 同义）：开登录弹层，受控提示进卡内
+//（2.1 showLoginCard(notice) 口径：提示随卡呈现，不另发 toast）
 function needLoginToasted(r) {
   if (r && r.need_login) {
-    toast("warn", "该功能需要登录，登录后将自动继续刚才的操作");
-    navigate("/login");
+    navigate("/login", { force: true, notice: "该功能需要登录，登录后将自动继续刚才的操作" });
     return true;
   }
   return false;
