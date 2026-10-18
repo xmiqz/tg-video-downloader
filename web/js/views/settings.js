@@ -1,7 +1,12 @@
 // ============================================================
-// views/settings.js — T15 设置视图（分组折叠卡片：外观/凭据/下载目录/
-//                   多账号区/游客相关）
+// views/settings.js — T15 设置视图（T19b 回 2.1 三卡平铺形态：
+//                   账号 / 界面外观 / 下载根目录）
 //
+// T19b（2026-10-18，用户实测 Q1/Q3）：撤销 T15 五折叠分组（外观/凭据/
+//   下载目录/多账号区/游客相关），逐值回 2.1 三张 .glass.form-card.narrow
+//   平铺卡（index.html:342-409：label 卡题、无折叠、卡片间距 0）；凭据+
+//   多账号区合并回「账号」卡（主号/小号行同区，2.1 #acct-region 单区），
+//   游客相关卡删除（2.1 无此卡，游客态仅账号行兜登录入口）。
 // 归属波次：T15（v2.2 W6），替换 T8 占位。所有权恰两文件：
 //   web/js/views/settings.js（本文件）+ web/css/views/settings.css。
 //
@@ -64,7 +69,7 @@
 // ============================================================
 
 import {
-  el, createCard, createSegmented, createOverlay, createToaster,
+  el, createSegmented, createOverlay, createToaster,
 } from "../ui/index.js";
 
 // T17 手势增量（边缘返回/聚焦保持；见 evidence/T17/t17_diff_list.md）
@@ -448,7 +453,29 @@ function buildDom() {
     el("p", { class: "st-sub", text: "外观、下载目录与数据" }),
   ]));
 
-  // —— 分组一：外观 ——
+  // —— 卡一：账号（index.html:342-379 逐序：label→账号行区→错误行→
+  //    添加小号→三步卡→hint；T19b 凭据/多账号合并回 2.1 单区，
+  //    主号/小号行同落 #acct-region 等价位）——
+  const acctRegion = el("div", {
+    class: "st-region", role: "list", "aria-label": "账号凭据",
+  });
+  const acctErr = el("p", { class: "st-err-line", role: "alert", text: "" });
+  const btnAdd = el("button", {
+    class: "u-btn u-btn--ghost st-add-btn", type: "button",
+    text: "＋ 添加小号",
+    onclick: function () { openAdd(); },
+  });
+  const addCard = buildAddCard();
+  const credHint = el("p", {
+    class: "st-hint",
+    // index.html:378 逐字（2.1 静态恒显，不随登录态隐现）
+    text: "退出后本地登录授权将被删除，重新登录需输入手机号与验证码；任务清单和已下载视频不会被删除。下载进行中无法退出。",
+  });
+  root.append(makeCard("账号",
+    // addCard.el：DOM 节点才可入树（el() 对非节点子项会 String() 化）
+    [acctRegion, acctErr, btnAdd, addCard.el, credHint]));
+
+  // —— 卡二：界面外观（index.html:391-399）——
   // createSegmented 构造 set(初值) 会触发 onChange（segmented.js:149→129）：
   // 静默构造，杜绝 mount 期 set_appearance 副作用覆盖已存外观。
   segSilent = true;
@@ -457,30 +484,16 @@ function buildDom() {
     onChange: function (v) { onAppearanceSeg(v); },
   });
   segSilent = false;
-  const appearanceBody = el("div", {}, [
+  root.append(makeCard("界面外观", [
     appearanceSeg.el,
     el("p", {
       class: "st-hint",
       // index.html:398 逐字
       text: "静态暗（默认）：经典深色玻璃；静态亮：浅色玻璃。二者不做屏幕采样。液态玻璃：实时采样窗口正后方的真实画面（仅 Windows），更耗性能。",
     }),
-  ]);
-  const appearanceGroup = makeGroup("外观", appearanceBody);
-  root.append(appearanceGroup.el);
+  ]));
 
-  // —— 分组二：凭据 ——
-  const acctRegion = el("div", {
-    class: "st-region", role: "list", "aria-label": "账号凭据",
-  });
-  const credHint = el("p", {
-    class: "st-hint",
-    // index.html:378 逐字
-    text: "退出后本地登录授权将被删除，重新登录需输入手机号与验证码；任务清单和已下载视频不会被删除。下载进行中无法退出。",
-  });
-  const credGroup = makeGroup("凭据", el("div", {}, [acctRegion, credHint]));
-  root.append(credGroup.el);
-
-  // —— 分组三：下载目录 ——
+  // —— 卡三：下载根目录（index.html:400-409）——
   const rootInput = el("input", {
     id: "st-root", type: "text", class: "st-input", readonly: true,
     autocomplete: "off",
@@ -497,7 +510,7 @@ function buildDom() {
     class: "u-btn u-btn--primary", type: "button", text: "保存",
     onclick: function () { saveRoot(rootInput, btnSave); },
   });
-  const rootBody = el("div", {}, [
+  root.append(makeCard("下载根目录", [
     el("div", { class: "st-path-row" }, [
       el("label", { class: "st-sr-only", for: "st-root", text: "下载根目录" }),
       rootInput,
@@ -510,79 +523,28 @@ function buildDom() {
       // index.html:408 逐字
       text: "账号会话、任务清单与下载内容都保存在程序平级的「TG视频下载器数据」目录，不会上传。",
     }),
-  ]);
-  const rootGroup = makeGroup("下载目录", rootBody);
-  root.append(rootGroup.el);
-
-  // —— 分组四：多账号区 ——
-  const altRegion = el("div", {
-    class: "st-region", role: "list", "aria-label": "小号列表",
-  });
-  const acctErr = el("p", { class: "st-err-line", role: "alert", hidden: true, text: "" });
-  const btnAdd = el("button", {
-    class: "u-btn u-btn--ghost st-add-btn", type: "button",
-    text: "＋ 添加小号",
-    onclick: function () { openAdd(); },
-  });
-  const addCard = buildAddCard();
-  const altGroup = makeGroup("多账号区",
-    // addCard.el：DOM 节点才可入树（el() 对非节点子项会 String() 化）
-    el("div", {}, [altRegion, acctErr, btnAdd, addCard.el]));
-  root.append(altGroup.el);
-
-  // —— 分组五：游客相关 ——
-  const guestNote = el("p", {
-    class: "st-hint",
-    // login.js:554 逐字（旧 guest-bar 语义）
-    text: "游客模式：可离线浏览任务库；下载、搜索等动作需登录后使用",
-  });
-  const btnGoLogin = el("button", {
-    class: "u-btn u-btn--primary", type: "button", text: "去登录",
-    onclick: function () { navigate("/login"); },
-  });
-  const guestGroup = makeGroup("游客相关",
-    el("div", {}, [guestNote, btnGoLogin]));
-  root.append(guestGroup.el);
+  ]));
 
   refs = {
     root: root,
     appearanceSeg: appearanceSeg,
-    appearanceGroup: appearanceGroup,
     acctRegion: acctRegion,
-    credGroup: credGroup,
-    credHint: credHint,
-    rootInput: rootInput,
-    altGroup: altGroup,
-    altRegion: altRegion,
     acctErr: acctErr,
     btnAdd: btnAdd,
     addCard: addCard.el,
     add: addCard,
-    guestGroup: guestGroup,
+    credHint: credHint,
+    rootInput: rootInput,
   };
   return root;
 }
 
-// 分组折叠卡片：u-card 玻璃容器 + 标题行右侧折叠钮（aria-expanded）
-function makeGroup(title, body) {
-  const bodyId = "st-body-" + title;
-  const fold = el("button", {
-    class: "st-fold", type: "button",
-    "aria-expanded": "true", "aria-controls": bodyId,
-    "aria-label": "折叠/展开" + title,
-    text: "▾",
-    onclick: function () { toggle(); },
-  });
-  const card = createCard({ title: title, hostRight: fold });
-  body.id = bodyId;
-  card.add(body);
-  function toggle() {
-    const collapsed = card.body.hidden;
-    card.body.hidden = !collapsed;
-    fold.setAttribute("aria-expanded", collapsed ? "true" : "false");
-    fold.classList.toggle("is-collapsed", !collapsed);
-  }
-  return { el: card.el, card: card, fold: fold };
+// 2.1 平铺窄卡（.glass.form-card.narrow + label 卡题，index.html:342-409）：
+// T19b 回 2.1 形态——无折叠、无分组标题行，label 即卡题；内部节奏走
+// 2.1 margin 语汇（label 16/7、hint 18、block 钮 10），不做 flex gap。
+function makeCard(label, children) {
+  return el("div", { class: "st-card" },
+    [el("label", { class: "st-card-label", text: label })].concat(children));
 }
 
 // ============================================================
@@ -808,21 +770,16 @@ function renderAccounts() {
   if (!refs) return;
   const region = refs.acctRegion;
   while (region.firstChild) region.removeChild(region.firstChild);
-  const alts = refs.altRegion;
-  while (alts.firstChild) alts.removeChild(alts.firstChild);
   setErr("");
 
-  // 游客/未登录：凭据行="未登录 · 点此登录"，多账号区收起（T46 口径）
+  // 游客/未登录：账号行="未登录 · 点此登录"，不显添加小号控件（T46 口径；
+  // 2.1 游客分支同步 closeAddQuiet，app.js:3266-3272）
   if (loginMode !== "connected") {
     region.append(guestRow());
-    refs.altGroup.el.hidden = true;
-    refs.guestGroup.el.hidden = loginMode !== "guest";
-    refs.credHint.hidden = true;
+    refs.btnAdd.hidden = true;
+    closeAddQuiet();
     return;
   }
-  refs.guestGroup.el.hidden = true;
-  refs.credHint.hidden = false;
-  refs.altGroup.el.hidden = false;
 
   if (!accounts.length) {
     // 后端方法缺失/返回异常：安静降级"当前账号"口径（app.js:3274-3288）
@@ -832,7 +789,8 @@ function renderAccounts() {
   }
   const main = mainAccount();
   if (main) region.append(mainRow(main));
-  for (const a of altAccounts()) alts.append(altRow(a));
+  // 2.1 #acct-region 单区：小号行随主号行同区排下（app.js:3309-3321）
+  for (const a of altAccounts()) region.append(altRow(a));
   refs.btnAdd.hidden = false;
 }
 
@@ -926,10 +884,11 @@ function logoutButton() {
   });
 }
 
+// 2.1 .login-err 口径（style.css:250）：只写文案、不隐现——常驻 min-height
+// 占位（app.js:3265/3362 同口径），卡内节奏与 2.1 逐像素一致
 function setErr(msg) {
   if (!refs || !refs.acctErr) return;
   refs.acctErr.textContent = msg || "";
-  refs.acctErr.hidden = !msg;
 }
 
 // ============================================================
@@ -1010,7 +969,7 @@ function buildAddCard() {
     id: "st-add-pwd", type: "password", class: "st-input",
     placeholder: "2FA 密码", autocomplete: "off",
   });
-  const addErrEl = el("p", { class: "st-err-line", role: "alert", hidden: true, text: "" });
+  const addErrEl = el("p", { class: "st-err-line", role: "alert", text: "" });
 
   const btnRecover = el("button", {
     class: "u-btn u-btn--ghost st-block", type: "button", hidden: true,
@@ -1120,8 +1079,7 @@ function closeAddQuiet() {
 
 function addErr(msg) {
   if (!refs || !refs.add) return;
-  refs.add.errEl.textContent = msg || "";
-  refs.add.errEl.hidden = !msg;
+  refs.add.errEl.textContent = msg || "";   // 2.1 同 setErr 口径（app.js:3362）
 }
 
 function showAddRecover() {

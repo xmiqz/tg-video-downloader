@@ -1,5 +1,6 @@
 /* ============================================================
-   views/settings.css — T15 设置视图切片（替换 T8 占位）
+   views/settings.css — T15 设置视图切片（替换 T8 占位；T19b 回 2.1
+   三卡平铺形态：账号/界面外观/下载根目录，卡壳 .st-card 逐值 2.1）
    所有权：本文件 + web/js/views/settings.js（恰两文件，零改基座）。
 
    纪律：
@@ -13,12 +14,20 @@
    - 动效只走 --dur-*/--ease-*；双路归零成对保留（§10）。
    ============================================================ */
 
-/* ---------- 0. 视图根与页头（对照 index.html:337） ---------- */
+/* ---------- 0. 视图根、页头与 2.1 平铺窄卡（T19b 回 2.1 形态） ----------
+   卡壳逐值 = 2.1 .glass.form-card.narrow（style.css:523-524 + 175-181）：
+   max-width 540px / padding 26px 28px / r-xl 28px；label 卡题逐值 =
+   2.1 全局 label（style.css:219：block / 12px / --ink-dim / margin 16px 0 7px）。
+   卡距 = 2.1 实测 0（card1.bottom === card2.top，*{margin:0} 重置口径）；
+   视觉舒展感来自 26px 内边距 + label 16px 上边距的内部节奏。 */
 .vw-settings {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: 0;                       /* 2.1 卡距实测=0 */
   min-width: 0;                 /* 320/360 防横向溢出（FR-23） */
+}
+.st-head {
+  margin: 0 0 22px;             /* 2.1 .page-head margin-bottom 22px（style.css:354） */
 }
 .st-head h2 {
   margin: 0;
@@ -32,19 +41,39 @@
   font-size: var(--text-sm);
   color: var(--color-text-muted);
 }
+.st-card {
+  /* 2.1 .glass.form-card.narrow 逐值（style.css:523-524；材质对齐 .glass
+     style.css:175-181，与 T19a 玻璃面同令牌） */
+  max-width: 540px;             /* style.css:524 */
+  padding: 26px 28px;           /* style.css:523 */
+  border-radius: var(--radius-xl);   /* 2.1 --r-xl = 28px（style.css:523） */
+  background: var(--glass-card-bg);
+  -webkit-backdrop-filter: blur(var(--glass-card-blur)) saturate(var(--gl-sat));
+  backdrop-filter: blur(var(--glass-card-blur)) saturate(var(--gl-sat));
+  border: var(--line-1) solid var(--glass-card-border);
+  box-shadow: var(--glass-card-hi), var(--glass-card-shadow);
+}
+.st-card-label {
+  /* 2.1 全局 label 逐值（style.css:219） */
+  display: block;
+  font-size: 12px;
+  color: var(--color-text-muted);   /* 2.1 --ink-dim */
+  margin: 16px 0 7px;
+}
 
 /* ---------- 1. 通用小件：hint / 错误行 / 视觉隐藏 label ---------- */
 .st-hint {
-  margin: var(--space-4) 0 0;   /* 旧壳 .hint margin-top 18px（style.css:603） */
-  font-size: var(--text-xs);    /* 旧壳 12px（style.css:603） */
+  margin: 18px 0 0;             /* 旧壳 .hint margin-top 18px 逐值（style.css:603） */
+  font-size: 12px;              /* 旧壳 12px（style.css:603） */
   line-height: 1.7;             /* 旧壳 1.7（style.css:603） */
   color: var(--color-text-faint);
 }
 .st-err-line {
-  margin: var(--space-2) 0 0;
-  font-size: var(--text-sm);
-  line-height: 1.6;
-  color: var(--color-danger-text);   /* 旧壳 .login-err danger 语义 */
+  /* 2.1 .login-err 逐值（style.css:250）：常驻 min-height 占位、只写文案 */
+  margin: 12px 0 0;
+  font-size: 12px;
+  min-height: 16px;
+  color: var(--color-danger-text);   /* 2.1 #ff8a97 danger 语义 */
 }
 .st-sr-only {
   position: absolute;
@@ -58,27 +87,7 @@
   border: 0;
 }
 
-/* ---------- 2. 分组折叠卡片（u-card + 右上折叠钮） ---------- */
-.st-fold {
-  flex-shrink: 0;
-  min-width: 44px;              /* FR-24 命中区 */
-  min-height: 44px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--color-text-muted);
-  font-size: var(--text-md);
-  line-height: 1;
-  cursor: pointer;
-  transition: transform var(--dur-sm) var(--ease-standard),
-    color var(--dur-sm) var(--ease-standard);
-}
-@media (hover: hover) and (pointer: fine) {   /* T17 去 hover 依赖 */
-  .st-fold:hover { color: var(--color-text); }
-}
-.st-fold.is-collapsed { transform: rotate(-90deg); }   /* ▾ → ▸ */
-
-/* ---------- 3. 账号区（对照 style.css:1339-1373 .acct-* 族） ---------- */
+/* ---------- 2. 账号区（对照 style.css:1339-1373 .acct-* 族） ---------- */
 .st-region {
   display: flex;
   flex-direction: column;
@@ -155,7 +164,13 @@
   min-width: 44px;              /* FR-24 命中区（触控档） */
   min-height: 44px;
 }
-.st-add-btn { margin-top: var(--space-3); }
+.st-add-btn {
+  /* 2.1 #acct-add-btn .btn.block 逐值（style.css:209：width 100% /
+     margin-top 10px / r-md 14px） */
+  width: 100%;
+  margin-top: 10px;
+  border-radius: var(--radius-md);
+}
 
 /* ---------- 4. 游客行（对照 style.css:1376-1385 .acct-guest-row） ---------- */
 .st-guest-row {
@@ -230,7 +245,7 @@
 /* ---------- 6. 下载目录路径行（对照 style.css:600-601 .path-row） ---------- */
 .st-path-row {
   display: flex;
-  gap: var(--space-3);          /* 旧壳 gap 10px（style.css:600） */
+  gap: 10px;                    /* 旧壳 gap 10px 逐值（style.css:600） */
   flex-wrap: wrap;              /* 窄宽按钮换行不溢出 */
 }
 .st-path-row .st-input {
@@ -246,7 +261,6 @@
 @media (min-width: 768px) {
   /* 桌面键鼠档回落紧凑点按密度（<768 触控档保 44px 命中；同 tasks.css §8 口径） */
   .st-sm { min-width: 36px; min-height: 36px; }
-  .st-fold { min-width: 36px; min-height: 36px; }
   .st-path-row .st-input { flex: 1 1 280px; }
 }
 
@@ -254,18 +268,20 @@
 .st-row .u-btn { max-width: 100%; }
 .st-info, .st-name, .st-asub { min-width: 0; }
 
-/* [hidden] 防御：.u-card/.u-card-body/.u-btn 的 display 会压过 hidden 属性
-   （折叠收起 card.body、多账号区/游客卡隐藏、添加卡/步骤/恢复钮均依赖
-   hidden 语义）；视图域内统一兜底，零改组件基座。 */
+/* [hidden] 防御：.u-btn 的 display 会压过 hidden 属性（添加小号钮/三步卡/
+   步骤/恢复钮均依赖 hidden 语义）；视图域内统一兜底，零改组件基座。 */
 .vw-settings [hidden] { display: none !important; }
 
-/* ---------- 10. 动效双路归零（任务书铁律：reduced-motion） ---------- */
+/* ---------- 10. 动效双路归零（任务书铁律：reduced-motion） ----------
+   + 液态玻璃预烘焙归零（T19b：.st-card 独立壳后随材质清单同口径，
+   2.1 body.liquid .glass 禁实时 backdrop-filter，style.css:67-75/80-88） */
+html.liquid .st-card {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
 @media (prefers-reduced-motion: reduce) {
-  .st-fold, .st-fold.is-collapsed { transition: none; }
   .st-guest-row { transition: none; }
   .st-input { transition: none; }
 }
-#sh-root[data-v22-rm="on"] .st-fold,
-#sh-root[data-v22-rm="on"] .st-fold.is-collapsed { transition: none; }
 #sh-root[data-v22-rm="on"] .st-guest-row { transition: none; }
 #sh-root[data-v22-rm="on"] .st-input { transition: none; }

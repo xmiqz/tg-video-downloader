@@ -287,9 +287,12 @@ html.liquid .ev-move-mask {
   .sh-nav-item { flex-direction: column; justify-content: center; gap: 2px; padding: var(--space-2) 0; }
   .sh-nav-item .sh-nav-label { font-size: var(--text-xs); }
   .sh-side-foot .sh-nav-item { flex-direction: column; gap: 2px; padding: var(--space-2) 0; }
-  /* me-box 收窄栏纵向两槽（头像+power），姓名/账号串不进 72px rail */
+  /* T19b Q4：rail 也显登录账号+退出钮（2.1 口径）——头像/姓名/退出纵向三槽，
+     仅账号串收纳（72px 宽放不下） */
   .sh-me { flex-direction: column; gap: 4px; padding: 2px 0; }
-  .sh-me-meta { display: none; }
+  .sh-me-meta { display: block; width: 100%; text-align: center; }
+  .sh-me-name { font-size: 11px; text-align: center; }
+  .sh-me-user { display: none; }
   .sh-me-logout { margin-left: 0; }
 }
 
@@ -329,7 +332,11 @@ html.liquid .ev-move-mask {
 
 /* ---------- 4. 手机形态（<640）：沉浸内容 + 悬浮液态玻璃底栏 + 抽屉 ---------- */
 @media (max-width: 639.98px) {
-  #sh-root { display: block; }
+  /* T19b Q2：block→flex 纵轴——fixed 根给 .sh-main 定高链（flex:1 +
+     min-height:0），.sh-scroll 的 flex:1/height:100% 才有解析基准，超屏
+     内容可滚出（旧 block 形态百分比高度失效 → 整页不滚被 body 裁切）。 */
+  #sh-root { display: flex; flex-direction: column; }
+  .sh-main { flex: 1 1 auto; }
   .sh-side { display: none; }
   /* .sh-scroll 底部避让见下方基础规则后的补块（简写级序坑） */
 }
@@ -564,6 +571,8 @@ html.liquid .ev-move-mask {
   padding-top: var(--space-4);
   border-top: var(--line-1) solid var(--glass-nav-border);
 }
+/* T19b Q4：抽屉脚 me-box（头像/姓名/退出）留呼吸距 */
+.sh-drawer-foot .sh-me { padding: 6px 8px; }
 
 /* ---------- 8. 占位视图空态（六视图共用；T11–T16 逐个替换） ---------- */
 .v22-placeholder-view {
