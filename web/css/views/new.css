@@ -472,3 +472,48 @@
 #sh-root[data-v22-rm="on"] .nw-row,
 #sh-root[data-v22-rm="on"] .nw-cbox { transition: none; }
 #sh-root[data-v22-rm="on"] .nw-row:hover { transform: none; }
+
+/* ---------- 10. 智能重命名（2.3：结果行内拟命名可编辑） ---------- */
+/* 行内拟命名行（旧壳 .video-rename 同义：拟命名标签 + 输入一行） */
+.nw-rename {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  min-width: 0;
+}
+/* 「拟命名」小标签（旧壳 11px ink-mute 语义） */
+.nw-rename-label {
+  flex: none;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+/* 拟命名输入（旧壳 .rn-input 同义；走 --input-* 令牌随主题，
+   高度收窄为行内密度，命中区由 <768 断点回补 44） */
+.nw-rn-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 30px;
+  box-sizing: border-box;
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--input-text);
+  background: var(--input-bg);
+  border: var(--line-1) solid var(--input-border);
+  border-radius: var(--input-radius);
+  transition: var(--input-transition);
+}
+/* 占位/焦点态（.nw-input 同款） */
+.nw-rn-input::placeholder { color: var(--input-placeholder); }
+.nw-rn-input:focus {
+  outline: none;
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 0 var(--space-1) var(--input-ring);
+}
+/* 移动断点：命中区回补 44（FR-24） */
+@media (max-width: 767.98px) {
+  .nw-rn-input { min-height: 44px; }
+}
+/* 深度扫描勾选框基础盒（T19h ③ 同口径 16px；FIX5K P1） */
+#nw-deepscan { width: 16px; height: 16px; cursor: pointer; }

@@ -245,6 +245,7 @@ let refs = null;
 let opts = { mode: "all", scope: "channel", sort: "date" }; // app.js:140
 let previewData = { items: [], channel: "", title: "", meta: {}, job_id: "" };
 let selected = new Set();
+let renameEdits = {};        // 2.3 智能重命名：行内编辑的拟用新名（key → 名；空=保持原名）
 let arrivedKeys = new Set();
 let searchJob = null;        // {job_id, streaming}（app.js:154）
 let cancelBusy = false;      // app.js:156 在途防重
@@ -381,6 +382,11 @@ function buildDom() {
   const dateTo = el("input", { id: "nw-dateto", type: "date", class: "nw-input" });
   const limit = el("input", { id: "nw-limit", type: "number", value: "30", min: "1", class: "nw-input" });
   const parallel = el("input", { id: "nw-parallel", type: "number", value: "2", min: "1", max: "8", class: "nw-input" });
+  // 2.3 FIX5K P1：深度扫描开关（突破 5000 条本地扫描上限；旧壳 w-deepscan 同义）
+  const deepScan = el("input", {
+    id: "nw-deepscan", type: "checkbox",
+    "aria-label": "深度扫描（可突破 5000 条）",
+  });
 
   // 三个 segmented（选项/默认值严格对齐 index.html:229-244/269-273）
   const modeSeg = createSegmented([
@@ -442,6 +448,10 @@ function buildDom() {
       el("div", { class: "nw-field nw-field--small" }, [
         el("span", { class: "nw-label", text: "排序方式" }),
         sortSeg.el,
+      ]),
+      el("div", { class: "nw-field nw-field--small" }, [
+        el("span", { class: "nw-label", text: "深度扫描（可突破 5000 条）" }),
+        deepScan,
       ]),
     ]),
   ]);
@@ -550,6 +560,7 @@ function buildDom() {
     root: root, step1: step1, step2: step2, wiz1: wiz1, wiz2: wiz2,
     channel: channel, keywords: keywords, limit: limit, parallel: parallel,
     minMb: minMb, maxMb: maxMb, dateFrom: dateFrom, dateTo: dateTo,
+    deepScan: deepScan,
     advBtn: advBtn, advPanel: advPanel,
     searchBtn: searchBtn, errBox: errBox, noteBox: noteBox,
     modeSeg: modeSeg, scopeSeg: scopeSeg, sortSeg: sortSeg,
@@ -641,6 +652,9 @@ async function doPreview() {
     dateFrom: refs.dateFrom.value, dateTo: refs.dateTo.value,
   });
   if (!r0.ok) { refs.errBox.textContent = r0.error; return; } // app.js:747
+  // 2.3 FIX5K P1：deep_scan 扩展键——S1 契约 params 恰 10 键冻结面不动
+  // （run_seams S1-8），收集后按 T52 扩展键模式并入下发参数
+  r0.params.deep_scan = refs.deepScan && refs.deepScan.checked ? 1 : 0;
   await cancelSearchJobQuietly();            // app.js:749 T48 旧作业先取消
   refs.noteBox.textContent =
     "正在扫描频道历史消息，频道消息较多时可能需要等待几十秒…"; // app.js:750-751
@@ -675,7 +689,7 @@ async function doPreview() {
   // ACK {ok,job_id}：立即进步骤 2，初始化流式等待态（app.js:759-770）
   previewData = {
     items: [], channel: r0.params.channel, title: r0.params.channel,
-    meta: {}, job_id: c.jobId,
+    meta: {}, job_id: c.jobId, params: r0.params,
   };
   selected = new Set();
   arrivedKeys = new Set();
@@ -705,6 +719,21 @@ function buildRow(it) {
     }));
   }
   nameWrap.append(document.createTextNode(String(it.name || "")));
+  // 2.3 智能重命名：行内「拟命名」可编辑位（默认智能算句结果 it.rename，
+  // 行内编辑优先；空=保持原名；任务创建后下载完成即按此命名）
+  const rnVal = (k in renameEdits) ? renameEdits[k] : (it.rename || "");
+  const rnInput = el("input", {
+    class: "nw-rn-input", type: "text", value: rnVal,
+    placeholder: "留空=保持原名",
+    title: "拟用新名（可编辑；任务创建后下载完成即按此命名）",
+    onclick: function (ev) { ev.stopPropagation(); },
+    onkeydown: function (ev) { ev.stopPropagation(); }, // 防空格/回车触发行勾选
+    oninput: function () { onRenameInput(k, rnInput.value); },
+  });
+  const rnWrap = el("div", { class: "nw-rename" }, [
+    el("span", { class: "nw-rename-label", text: "拟命名" }),
+    rnInput,
+  ]);
   const sub = el("div", { class: "nw-sub" });
   if (it.ref_text) sub.title = String(it.ref_text);       // title 全文悬浮 app.js:903
   sub.append(document.createTextNode(
@@ -728,7 +757,7 @@ function buildRow(it) {
     },
   }, [
     el("div", { class: "nw-cbox", "aria-hidden": "true", text: on ? "✓" : "" }),
-    el("div", { class: "nw-info" }, [nameWrap, sub]),
+    el("div", { class: "nw-info" }, [nameWrap, rnWrap, sub]),
     el("div", { class: "nw-side" }, [
       el("span", { class: "nw-size", text: human(it.size) }),
       el("span", { class: "nw-srctag", text: String(it.src || "") }),
@@ -743,6 +772,11 @@ function appendRow(it) {
   const row = buildRow(it);
   refs.list.append(row);
   rowByKey.set(keyOf(it.src, it.mid), row);
+}
+
+// 2.3 智能重命名：行内拟命名编辑登记（仅记录，随 doStart 统一下发）
+function onRenameInput(k, v) {
+  renameEdits[k] = v;
 }
 
 function setSelCount(n) {
@@ -862,6 +896,7 @@ function finalizeSearch(data) {
 }
 
 function resetSearchProgress() {           // app.js:877-889
+  renameEdits = {};                        // 2.3：新一轮搜索清空行内拟命名编辑
   refs.progWrap.hidden = false;
   refs.progWrap.dataset.state = "running";
   refs.prog.setDeterminate(false);
@@ -878,6 +913,20 @@ function hideSearchCancelBtn() {           // app.js:891-895
   refs.cancelBtn.hidden = true;
 }
 
+// 2.3 FIX5K P3：场景化提示判据（文案分流由调用侧参数计算，内核 meta
+// 键集合冻结不变）：use_server 口径 = terms 非空且 mode 属服务端可搜
+// （与内核同式）；deepScan 口径同内核布尔解析词表
+function searchFlags() {
+  const p = previewData.params || {};
+  const hasTerms = String(p.query || "").split(",")
+    .some(function (w) { const s = w.trim(); return s && !s.startsWith("-"); });
+  return {
+    useServer: hasTerms && ["phrase", "all", "any"].includes(String(p.mode || "all")),
+    deepScan: ["1", "true", "yes", "y", "on"].includes(
+      String(p.deep_scan || "").trim().toLowerCase()),
+  };
+}
+
 function finishSearchProgress(meta) {      // app.js:971-995
   refs.prog.setDeterminate(true);
   refs.prog.set(100);
@@ -890,11 +939,25 @@ function finishSearchProgress(meta) {      // app.js:971-995
   refs.phaseBox.textContent = "搜索完成 · 共 " + previewData.items.length + " 条";
   refs.countsBox.textContent = bits.join("，");
   refs.pnoteBox.classList.remove("error");
+  // truncated/capped 黄行（文案同 TUI 口径，按 use_server/命中类型分流）
   if (meta.truncated) {
-    refs.pnoteBox.textContent = "外部文本补抓已达批次预算上限，更早消息的引用/相册文本可能未覆盖";
+    refs.pnoteBox.textContent = "外部文本补抓已达批次预算上限，更早消息的引用/相册文本可能未覆盖：可填起始日期缩小扫描窗口后重试";
     refs.pnoteBox.classList.add("warn");
   } else if (meta.capped) {
-    refs.pnoteBox.textContent = "本地扫描已达上限，更早的结果未覆盖：加关键词可走服务端搜索";
+    const flags = searchFlags();
+    const head = flags.deepScan
+      ? "深度扫描已触 " + meta.scan_cap + " 条安全上限，更早的结果未覆盖："
+      : "本地扫描已达上限，更早的结果未覆盖：";
+    if (flags.useServer) {
+      refs.pnoteBox.textContent = head + "已走服务端搜索，加词已不能扩大覆盖：可填起始日期扩大扫描范围";
+    } else if (meta.ref_matched && meta.ref_matched >= previewData.items.length
+      && previewData.items.length > 0) {
+      // 纯外部文本命中：关键词在引用/相册/转发原文里，服务端搜索只索引
+      // 消息自身文本，加词走服务端对这类命中无效
+      refs.pnoteBox.textContent = head + "命中均为外部文本（引用/相册/转发），加词走服务端搜索对这类命中无效：可填起始日期扩大扫描范围";
+    } else {
+      refs.pnoteBox.textContent = head + "加关键词可走服务端搜索";
+    }
     refs.pnoteBox.classList.add("warn");
   } else {
     refs.pnoteBox.textContent = "";
@@ -1053,6 +1116,18 @@ async function doStart() {
     return { src: k.slice(0, i), mid: k.slice(i + 1) };
   });
   const parallel = refs.parallel.value || 2; // app.js:860
+  // 2.3 智能重命名：拟用新名（行内编辑优先，默认 it.rename 算句结果；
+  // 空/与原名相同不下发）
+  const renames = [];
+  selected.forEach(function (k) {
+    const i = k.indexOf("|");
+    const it = previewData.items.find(function (x) { return keyOf(x.src, x.mid) === k; });
+    const name = ((k in renameEdits) ? renameEdits[k]
+      : (it && it.rename) || "").trim();
+    if (it && name && name !== it.name) {
+      renames.push({ src: k.slice(0, i), mid: Number(k.slice(i + 1)), name: name });
+    }
+  });
   const btn = refs.startBtn;
   btn.disabled = true;
   btn.textContent = "准备下载…";
@@ -1082,6 +1157,12 @@ async function doStart() {
   if (r && r.task_id) {
     Promise.resolve(window.pywebview.api.edit_task(r.task_id, { acct_pref: newTaskAcct }))
       .catch(function (e) { console.debug("[T19a] 新任务 acct_pref 下发失败：", e); });
+    // 2.3：拟用新名随任务下发（item.rename 落盘记录，后续编辑/续传可见；
+    // 未下载条目下载完成即按此命名。失败不阻断建任务）
+    if (renames.length) {
+      Promise.resolve(window.pywebview.api.edit_task(r.task_id, { renames: renames }))
+        .catch(function (e) { console.debug("[rename] 新任务拟用新名下发失败：", e); });
+    }
   }
   navigate("/active");                      // app.js:871 switchView("active")
 }

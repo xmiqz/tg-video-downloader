@@ -541,3 +541,84 @@
 #sh-root[data-v22-rm="on"] .tk-mact:hover { transition: none; transform: none; }
 #sh-root[data-v22-rm="on"] .tk-ditem { transition: none; }
 #sh-root[data-v22-rm="on"] .tk-dtext { transition: none; }
+
+/* ---------- 12. 智能重命名（2.3：任务库前后预览 + 还原多选） ---------- */
+/* 面板容器（勾选行 + 展开区） */
+.tk-rename { margin-top: var(--space-2); }
+/* 「已下载文件也处理」勾选行（FR-24 命中区 44） */
+.tk-rename-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+/* 勾选框基础盒（T19h ③ 同口径 16px） */
+.tk-rename-check input { width: 16px; height: 16px; flex: none; cursor: pointer; }
+/* 展开的前后预览区 */
+.tk-rename-panel {
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  border: var(--line-1) solid var(--input-border);
+  border-radius: var(--input-radius);
+}
+/* 预览行列表 */
+.tk-rn-rows { display: flex; flex-direction: column; gap: var(--space-2); }
+/* 单行：还原勾选 + 原名 → 新名 */
+.tk-rn-row { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+/* 还原多选勾选（支持多选「还原命名」） */
+.tk-rn-pick { width: 16px; height: 16px; flex: none; cursor: pointer; }
+/* 原名单行省略（title 全文） */
+.tk-rn-before {
+  flex: 0 0 38%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+/* 箭头 */
+.tk-rn-arrow { flex: none; color: var(--color-text-faint); }
+/* 新名输入（旧壳 .rn-input 同义；走 --input-* 令牌随主题） */
+.tk-rn-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 32px;
+  box-sizing: border-box;
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--input-text);
+  background: var(--input-bg);
+  border: var(--line-1) solid var(--input-border);
+  border-radius: var(--input-radius);
+  transition: var(--input-transition);
+}
+/* 占位/焦点态（.tk-input 同款） */
+.tk-rn-input::placeholder { color: var(--input-placeholder); }
+.tk-rn-input:focus {
+  outline: none;
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 0 var(--space-1) var(--input-ring);
+}
+/* 操作排（应用命名 / 还原命名） */
+.tk-rn-acts {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+/* 操作按钮不拉伸 */
+.tk-rn-acts .u-btn { flex: 0 0 auto; }
+/* 空态行 */
+.tk-rn-empty { font-size: var(--text-xs); color: var(--color-text-muted); padding: var(--space-1) 0; }
+/* 窄屏：原名独占一行防溢出（320/360 兜底同口径） */
+@media (max-width: 640px) {
+  .tk-rn-row { flex-wrap: wrap; }
+  .tk-rn-before { flex: 1 1 100%; }
+}
+/* 移动断点：输入命中区回补 44（FR-24） */
+@media (max-width: 767.98px) {
+  .tk-rn-input { min-height: 44px; }
+}
