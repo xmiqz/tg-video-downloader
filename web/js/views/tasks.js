@@ -901,33 +901,6 @@ function resetSheetBody() {
       el("span", { class: "tk-search-ico", "aria-hidden": "true", text: "⌕" }),
       searchInput,
     ]),
-    // 2.3 智能重命名（任务库）：勾选展开命名前后预览（可编辑）确认改名；
-    // 行内勾选支持多选「还原命名」
-    el("div", { class: "tk-rename" }, [
-      el("label", { class: "tk-rename-check" }, [
-        el("input", {
-          type: "checkbox",
-          onchange: function () { toggleRenamePanel(this.checked); },
-        }),
-        el("span", {
-          text: "已下载文件也处理（命名前后预览，可编辑；未下载条目下载完成即按此命名）",
-        }),
-      ]),
-      el("div", { class: "tk-rename-panel", hidden: true }, [
-        el("div", { class: "tk-rn-rows", role: "list", "aria-label": "命名前后预览" }),
-        el("div", { class: "tk-rn-acts" }, [
-          el("button", {
-            class: "u-btn u-btn--primary", type: "button", text: "应用命名",
-            onclick: function () { renameConfirm(this); },
-          }),
-          el("button", {
-            class: "u-btn u-btn--ghost", type: "button", text: "还原命名",
-            title: "还原勾选条目为原始命名（支持多选）",
-            onclick: function () { restoreNames(this); },
-          }),
-        ]),
-      ]),
-    ]),
     el("div", { class: "tk-dlist", role: "list", "aria-label": "任务条目" }),
     el("div", { class: "tk-sfoot" }, [
       // 编辑入口（T19h）：open_editor 独立编辑窗（2.1 双窗恢复），
@@ -1288,136 +1261,6 @@ function dRemove(src, mid, btn) {
   });
 }
 
-// ============================================================
-// 2.3 智能重命名（任务库：命名前后预览可编辑 + 还原命名多选）
-// ============================================================
-
-function toggleRenamePanel(on) {
-  const panel = sheetOv && sheetOv.body.querySelector(".tk-rename-panel");
-  if (!panel) return;
-  panel.hidden = !on;
-  if (on) renderRenameRows();
-}
-
-function renderRenameRows() {
-  const box = sheetOv && sheetOv.body.querySelector(".tk-rn-rows");
-  if (!box) return;
-  const items = (sheet.task && Array.isArray(sheet.task.items)) ? sheet.task.items : [];
-  while (box.firstChild) box.removeChild(box.firstChild);
-  if (!items.length) {
-    box.append(el("div", { class: "tk-rn-empty", text: "没有可处理的条目" }));
-    return;
-  }
-  for (let i = 0; i < items.length; i++) {
-    const ti = items[i];
-    const k = keyOf(ti.src || "频道", ti.msg);
-    box.append(el("div", { class: "tk-rn-row", role: "listitem" }, [
-      el("input", {
-        class: "tk-rn-pick", type: "checkbox", dataset: { k: k },
-        title: "勾选参与「还原命名」（支持多选）",
-        "aria-label": "选择还原 " + String(ti.name || ""),
-      }),
-      el("span", {
-        class: "tk-rn-before", title: String(ti.name || ""),
-        text: String(ti.name || ""),
-      }),
-      el("span", { class: "tk-rn-arrow", text: "→", "aria-hidden": "true" }),
-      el("input", {
-        class: "tk-rn-input", type: "text", dataset: { k: k },
-        value: ti.rename || "",
-        placeholder: "留空不改",
-        title: "拟用/已用新名（可编辑）",
-        "aria-label": "拟用新名 " + String(ti.name || ""),
-      }),
-    ]));
-  }
-}
-
-let renameConfirmBusy = false;
-async function renameConfirm(btn) {
-  const renames = [];
-  const rows = sheetOv ? sheetOv.body.querySelectorAll(".tk-rn-input") : [];
-  for (let i = 0; i < rows.length; i++) {
-    const name = rows[i].value.trim();
-    if (!name) continue;
-    const k = rows[i].dataset.k || "";
-    const j = k.indexOf("|");
-    renames.push({ src: k.slice(0, j), mid: Number(k.slice(j + 1)), name: name });
-  }
-  if (!renames.length) {
-    toast("warn", "没有可应用的命名（请在「→」后填写新名）");
-    return;
-  }
-  if (renameConfirmBusy) return;
-  renameConfirmBusy = true;
-  const restore = busyOn(btn, "改名中…");
-  let r = null;
-  try {
-    const ready = await ensureApi();
-    if (!ready) throw new Error("bridge not ready");
-    r = await window.pywebview.api.edit_task(sheet.taskId, { renames: renames });
-  } catch (e) {
-    restore(); renameConfirmBusy = false;
-    toast("error", "改名失败", (e && e.message) || String(e));
-    return;
-  }
-  restore(); renameConfirmBusy = false;
-  if (!r || !r.ok) {
-    toast("error", "改名失败", (r && r.error) || "操作未生效");
-    return;
-  }
-  toast("ok", "已改名 " + r.renamed + " 条，已登记 " + r.recorded + " 条",
-    (r.warnings && r.warnings.length) ? r.warnings.join("\n") : null);
-  await reloadSheet();
-}
-
-// 还原命名（支持多选）：勾选条目回到原始命名（orig_name）
-let restoreNamesBusy = false;
-function restoreNames(btn) {
-  const picks = sheetOv ? sheetOv.body.querySelectorAll(".tk-rn-pick") : [];
-  const keys = [];
-  for (let i = 0; i < picks.length; i++) {
-    if (!picks[i].checked) continue;
-    const k = picks[i].dataset.k || "";
-    const j = k.indexOf("|");
-    keys.push({ src: k.slice(0, j), mid: Number(k.slice(j + 1)) });
-  }
-  if (!keys.length) {
-    toast("warn", "请先勾选要还原命名的条目");
-    return;
-  }
-  confirmAsk({
-    title: "还原命名",
-    text: "还原选中 " + keys.length + " 条为原始命名？",
-    confirmLabel: "还原",
-    onConfirm: async function () {
-      if (restoreNamesBusy) return;
-      restoreNamesBusy = true;
-      const restore = busyOn(btn, "还原中…");
-      let r = null;
-      try {
-        const ready = await ensureApi();
-        if (!ready) throw new Error("bridge not ready");
-        r = await window.pywebview.api.edit_task(sheet.taskId, { restore: keys });
-      } catch (e) {
-        restore(); restoreNamesBusy = false;
-        toast("error", "还原命名失败", (e && e.message) || String(e));
-        return;
-      }
-      restore(); restoreNamesBusy = false;
-      if (!r || !r.ok) {
-        toast("error", "还原命名失败", (r && r.error) || "操作未生效");
-        return;
-      }
-      toast("ok",
-        "已还原 " + r.restored + " 条" +
-        (r.skipped ? "，跳过 " + r.skipped + " 条（未改名）" : ""),
-        (r.errors && r.errors.length) ? r.errors.join("\n") : null);
-      await reloadSheet();
-    },
-  });
-}
-
 // app.js:2096-2125 reloadSheet（get_task + files fallback + 双渲染；
 // 失败可见但渲染继续，不白屏）
 async function reloadSheet() {
@@ -1444,9 +1287,6 @@ async function reloadSheet() {
   else await loadItemFiles(sheet.taskId, true);
   renderSheet();
   renderDetailItems();
-  // 2.3：重命名面板展开时随刷新同步前后预览行
-  const rnPanel = sheetOv && sheetOv.body.querySelector(".tk-rename-panel");
-  if (rnPanel && !rnPanel.hidden) renderRenameRows();
 }
 
 // 条目文件状态 fallback（app.js:1850-1859：items_file_info，失败可见渲染继续）

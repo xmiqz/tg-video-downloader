@@ -246,6 +246,8 @@ let opts = { mode: "all", scope: "channel", sort: "date" }; // app.js:140
 let previewData = { items: [], channel: "", title: "", meta: {}, job_id: "" };
 let selected = new Set();
 let renameEdits = {};        // 2.3 智能重命名：行内编辑的拟用新名（key → 名；空=保持原名）
+let renameOff = new Set();   // 2.3：显式取消勾选的 key（使用并展示原文件名）
+let expandedKeys = new Set(); // 2.3：高级详情展开的 key
 let arrivedKeys = new Set();
 let searchJob = null;        // {job_id, streaming}（app.js:154）
 let cancelBusy = false;      // app.js:156 在途防重
@@ -525,6 +527,17 @@ function buildDom() {
     class: "u-btn u-btn--ghost", type: "button", text: "清空",
     onclick: function () { selectAll(false); },
   });
+  // 2.3：命名一键全选/取消全选（作用于当前筛选可见集）
+  const rnAllBtn = el("button", {
+    class: "u-btn u-btn--ghost", type: "button", text: "命名全选",
+    title: "所有行启用重命名（使用拟用新名）",
+    onclick: function () { renameAll(true); },
+  });
+  const rnNoneBtn = el("button", {
+    class: "u-btn u-btn--ghost", type: "button", text: "命名全不选",
+    title: "所有行取消重命名（使用并展示原文件名）",
+    onclick: function () { renameAll(false); },
+  });
   const list = el("div", { class: "nw-list", "aria-label": "搜索结果" });
 
   const backBtn = el("button", {
@@ -544,7 +557,7 @@ function buildDom() {
         el("span", { class: "nw-search-ico", "aria-hidden": "true", text: "⌕" }),
         vsearch,
       ]),
-      el("div", { class: "nw-selact" }, [selAllBtn, clearBtn]),
+      el("div", { class: "nw-selact" }, [selAllBtn, clearBtn, rnAllBtn, rnNoneBtn]),
       el("label", { class: "nw-sr-only", for: "nw-search", text: "在结果中筛选" }),
     ]),
     list,
@@ -708,9 +721,16 @@ function clearList() {
   while (refs.list.firstChild) refs.list.removeChild(refs.list.firstChild);
 }
 
+// 2.3 智能重命名：行内候选名（编辑优先，空=保持原名）
+function rnEffective(k, it) {
+  return (((k in renameEdits) ? renameEdits[k] : (it && it.rename) || "")).trim();
+}
+
 function buildRow(it) {
   const k = keyOf(it.src, it.mid);
   const on = selected.has(k);
+  const eff = rnEffective(k, it);
+  const useRn = !renameOff.has(k) && eff !== "";
   const nameWrap = el("div", { class: "nw-name" });
   if (it.match_in && it.match_in !== "self") {
     nameWrap.append(el("span", {
@@ -718,21 +738,63 @@ function buildRow(it) {
       text: REF_SOURCE_LABEL[it.match_in] || it.match_in, // app.js:900-901
     }));
   }
-  nameWrap.append(document.createTextNode(String(it.name || "")));
-  // 2.3 智能重命名：行内「拟命名」可编辑位（默认智能算句结果 it.rename，
-  // 行内编辑优先；空=保持原名；任务创建后下载完成即按此命名）
-  const rnVal = (k in renameEdits) ? renameEdits[k] : (it.rename || "");
+  // 名称区展示「将要使用的名字」：勾选=拟用新名（随编辑实时联动），
+  // 取消勾选=原文件名（2.3 口径）
+  const nameText = document.createTextNode(useRn ? eff : String(it.name || ""));
+  nameWrap.append(nameText);
+  // 是否重命名勾选（2.3）：取消勾选=使用并展示原文件名
+  const rnCheck = el("input", {
+    class: "nw-rn-check", type: "checkbox", checked: useRn,
+    title: "是否用新名命名（取消勾选=使用并展示原文件名）",
+    "aria-label": "是否重命名 " + String(it.name || ""),
+    onclick: function (ev) { ev.stopPropagation(); },
+    onchange: function () {
+      if (rnCheck.checked) renameOff.delete(k); else renameOff.add(k);
+      rnInput.disabled = !rnCheck.checked;
+      nameText.nodeValue = rnCheck.checked
+        ? (rnInput.value.trim() || String(it.name || ""))
+        : String(it.name || "");
+    },
+  });
   const rnInput = el("input", {
-    class: "nw-rn-input", type: "text", value: rnVal,
-    placeholder: "留空=保持原名",
+    class: "nw-rn-input", type: "text", value: eff,
+    placeholder: "留空=保持原名", disabled: !useRn,
     title: "拟用新名（可编辑；任务创建后下载完成即按此命名）",
     onclick: function (ev) { ev.stopPropagation(); },
     onkeydown: function (ev) { ev.stopPropagation(); }, // 防空格/回车触发行勾选
-    oninput: function () { onRenameInput(k, rnInput.value); },
+    oninput: function () {
+      onRenameInput(k, rnInput.value);
+      if (rnInput.value.trim() && !rnCheck.checked) {
+        rnCheck.checked = true;
+        renameOff.delete(k);
+        rnInput.disabled = false;
+      }
+      nameText.nodeValue = rnCheck.checked
+        ? (rnInput.value.trim() || String(it.name || ""))
+        : String(it.name || "");
+    },
+  });
+  // 高级详情展开钮（2.3：完整文件名/正文/引用）
+  const exp = expandedKeys.has(k);
+  const detBtn = el("button", {
+    class: "nw-det-btn", type: "button",
+    "aria-expanded": exp ? "true" : "false",
+    title: "展开高级详情（完整文件名/正文/引用）",
+    text: exp ? "收起" : "详情",
+    onclick: function (ev) {
+      ev.stopPropagation();
+      if (expandedKeys.has(k)) expandedKeys.delete(k); else expandedKeys.add(k);
+      const row0 = rowByKey.get(k);
+      const fresh = buildRow(it);
+      if (row0 && row0.parentNode) row0.parentNode.replaceChild(fresh, row0);
+      rowByKey.set(k, fresh);
+    },
   });
   const rnWrap = el("div", { class: "nw-rename" }, [
+    rnCheck,
     el("span", { class: "nw-rename-label", text: "拟命名" }),
     rnInput,
+    detBtn,
   ]);
   const sub = el("div", { class: "nw-sub" });
   if (it.ref_text) sub.title = String(it.ref_text);       // title 全文悬浮 app.js:903
@@ -744,6 +806,24 @@ function buildRow(it) {
       text: " " + String(it.ref_text).slice(0, 60),
     }));
   }
+  // 高级详情块（2.3）：展开展示完整信息
+  const detWrap = exp ? el("div", { class: "nw-det" }, [
+    el("div", {
+      class: "nw-det-line",
+      text: "原文件名：" + String(it.name || ""),
+    }),
+    el("div", {
+      class: "nw-det-line nw-det-meta",
+      text: [it.date || "", human(it.size), String(it.src || ""),
+        "id " + it.mid].filter(Boolean).join(" · "),
+    }),
+    it.text ? el("div", {
+      class: "nw-det-line nw-det-text", text: "消息正文：" + String(it.text),
+    }) : null,
+    it.ref_text ? el("div", {
+      class: "nw-det-line nw-det-text", text: "引用文本：" + String(it.ref_text),
+    }) : null,
+  ]) : null;
   const row = el("div", {
     class: "nw-row" + (on ? " is-sel" : ""),
     dataset: { key: k },
@@ -757,7 +837,7 @@ function buildRow(it) {
     },
   }, [
     el("div", { class: "nw-cbox", "aria-hidden": "true", text: on ? "✓" : "" }),
-    el("div", { class: "nw-info" }, [nameWrap, rnWrap, sub]),
+    el("div", { class: "nw-info" }, [nameWrap, rnWrap, sub, detWrap]),
     el("div", { class: "nw-side" }, [
       el("span", { class: "nw-size", text: human(it.size) }),
       el("span", { class: "nw-srctag", text: String(it.src || "") }),
@@ -864,6 +944,16 @@ function selectAll(v) {
   renderPreview();
 }
 
+// 2.3：命名一键全选/取消全选（可见集语义；取消=使用并展示原文件名）
+function renameAll(v) {
+  const rows = filterRows(previewData.items, refs.vsearch.value.trim().toLowerCase());
+  for (let i = 0; i < rows.length; i++) {
+    const k = keyOf(rows[i].src, rows[i].mid);
+    if (v) renameOff.delete(k); else renameOff.add(k);
+  }
+  renderPreview();
+}
+
 // ============================================================
 // 流式：search_items / job_update（app.js:933-1052）
 // ============================================================
@@ -897,6 +987,8 @@ function finalizeSearch(data) {
 
 function resetSearchProgress() {           // app.js:877-889
   renameEdits = {};                        // 2.3：新一轮搜索清空行内拟命名编辑
+  renameOff = new Set();
+  expandedKeys = new Set();
   refs.progWrap.hidden = false;
   refs.progWrap.dataset.state = "running";
   refs.prog.setDeterminate(false);
@@ -1117,13 +1209,13 @@ async function doStart() {
   });
   const parallel = refs.parallel.value || 2; // app.js:860
   // 2.3 智能重命名：拟用新名（行内编辑优先，默认 it.rename 算句结果；
-  // 空/与原名相同不下发）
+  // 显式取消勾选的行不下发=保持原名；空/与原名相同不下发）
   const renames = [];
   selected.forEach(function (k) {
+    if (renameOff.has(k)) return;
     const i = k.indexOf("|");
     const it = previewData.items.find(function (x) { return keyOf(x.src, x.mid) === k; });
-    const name = ((k in renameEdits) ? renameEdits[k]
-      : (it && it.rename) || "").trim();
+    const name = ((k in renameEdits) ? renameEdits[k] : (it && it.rename) || "").trim();
     if (it && name && name !== it.name) {
       renames.push({ src: k.slice(0, i), mid: Number(k.slice(i + 1)), name: name });
     }

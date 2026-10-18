@@ -517,3 +517,38 @@
 }
 /* 深度扫描勾选框基础盒（T19h ③ 同口径 16px；FIX5K P1） */
 #nw-deepscan { width: 16px; height: 16px; cursor: pointer; }
+/* 是否重命名勾选（2.3：取消勾选=使用并展示原文件名） */
+.nw-rn-check { width: 16px; height: 16px; flex: none; cursor: pointer; }
+/* 高级详情钮（行内右侧小钮） */
+.nw-det-btn {
+  flex: none;
+  min-height: 30px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  background: transparent;
+  border: var(--line-1) solid var(--input-border);
+  border-radius: var(--input-radius);
+  cursor: pointer;
+}
+.nw-det-btn:hover { color: var(--input-text); border-color: var(--input-border-focus); }
+/* 高级详情块（完整文件名/元数据/正文/引用） */
+.nw-det {
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  border-left: 2px solid var(--input-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.nw-det-line {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.nw-det-text { color: var(--input-text); }
+/* 移动断点：详情钮命中区回补 44（FR-24） */
+@media (max-width: 767.98px) {
+  .nw-det-btn { min-height: 44px; }
+}

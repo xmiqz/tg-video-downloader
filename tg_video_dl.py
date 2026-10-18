@@ -807,6 +807,9 @@ REF_TEXT_MAX_CHARS = 120    # record["ref_text"] 最大字符数（空白压缩�
 
 # ---- T48 流式搜索（search_videos_stream）----
 STREAM_FLUSH_ITEMS = 40     # 脊线扫描中每攒满 40 条可下发命中即出一批 items 增量帧
+STREAM_FLUSH_SECS = 0.8     # 2.3：出帧时间维——命中零散时也持续出帧（实测
+                            # 44 条命中攒到第 40 条才首出帧，前端列表整程空转；
+                            # 帧协议/每帧 ≤40 条/T48 上界断言均不变）
 # progress.phase → 中文展示映射（TUI 与前端同源同文，逐字钉死）
 SEARCH_PHASE_TEXT = {
     "server_search": "服务端搜索",
@@ -1296,6 +1299,7 @@ async def search_videos_stream(client, entity, p, cancel=None):
     pending = []           # [(msg, src)]：已过体积/日期、terms 非空且自身未命中（判定序）
     emitted_keys = set()   # 已下发 (src, mid)（防"下发后被挤出 limit"）
     outbox = []            # items 待冲刷缓冲（帧内 ≤ STREAM_FLUSH_ITEMS）
+    flush_ts = [time.time()]  # 上次出帧时刻（2.3 时间维出帧）
     ref_confirmed = {}     # (src, mid) -> record：零请求/增量预确认（R 权威兜底）
     conf_keys = []         # 已确认命中排序键（有序；窗口计数 bisect 用）
     uk_keys = []           # unknown pending 排序键（有序）
@@ -1317,16 +1321,21 @@ async def search_videos_stream(client, entity, p, cancel=None):
         }
 
     def _flush(force=False):
-        """取走待发帧：默认攒满 STREAM_FLUSH_ITEMS 出一批；force 时出清
-        剩余并按 STREAM_FLUSH_ITEMS 切帧（尾帧可不满）。"""
+        """取走待发帧：默认攒满 STREAM_FLUSH_ITEMS 出一批，或距上批
+        ≥STREAM_FLUSH_SECS 且有余量即出（2.3 时间维：命中零散时也持续
+        出帧，修整程空转）；force 时出清剩余并按 STREAM_FLUSH_ITEMS
+        切帧（尾帧可不满）。每帧 ≤STREAM_FLUSH_ITEMS 不变。"""
         frames = []
         if force:
             while outbox:
                 frames.append(outbox[:STREAM_FLUSH_ITEMS])
                 del outbox[:STREAM_FLUSH_ITEMS]
-        elif len(outbox) >= STREAM_FLUSH_ITEMS:
+        elif outbox and (len(outbox) >= STREAM_FLUSH_ITEMS
+                         or time.time() - flush_ts[0] >= STREAM_FLUSH_SECS):
             frames.append(outbox[:STREAM_FLUSH_ITEMS])
             del outbox[:STREAM_FLUSH_ITEMS]
+        if frames:
+            flush_ts[0] = time.time()
         return frames
 
     def _confirm_hit(rec):
@@ -3794,7 +3803,8 @@ def set_parallel(task, n):
 
 # ---------------- 智能重命名（2.3） ----------------
 NAME_MIN_LEN = 6       # 拟用新名主体最短字符数（不足视为无有效句）
-NAME_MAX_LEN = 120     # 拟用新名主体最长字符数（留余量给 (N) 后缀与扩展名）
+NAME_CTX_MIN = 30      # 命中句扩句目标：前后文上下文至少 30 字（2.3 加大）
+NAME_MAX_LEN = 200     # 拟用新名主体最长字符数（2.3 加大；留余量给 (N) 与扩展名）
 NAME_MAX_TOTAL = 240   # 落盘文件名总长上限（Windows 组件上限 255 内）
 _NAME_SPLIT = re.compile(r"[。！？!?；;，,、\n\r\t ]+")
 _NAME_EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,8}")
@@ -3808,17 +3818,28 @@ def _split_name_stem(name):
     return name or "", ""
 
 
-def smart_name_for(text, query, orig_name="", ref_text=None):
-    """关键词命中句 → 拟用新名（原扩展名保留）；无有效句返回 ""。
+def _name_segments(src_text):
+    """句段偏移表（边界符之间，去空段）。"""
+    parts, prev = [], 0
+    for m in _NAME_SPLIT.finditer(src_text):
+        parts.append((prev, m.start()))
+        prev = m.end()
+    parts.append((prev, len(src_text)))
+    return [(s, e) for s, e in parts if e > s]
 
-    规则：取首个命中词所在句（空格/句读断句）；过短向前后文扩句、
-    过长以命中词为中心向句界收缩；非法字符走 safe_name 清洗；主体
-    长度限 [NAME_MIN_LEN, NAME_MAX_LEN]。重名 (N) 后缀在落盘改名时
-    解析（预览/登记阶段不预占）。单一 Python 实现，TUI/GUI/web 同源。
+
+def smart_name_for(text, query, orig_name="", ref_text=None):
+    """关键词命中句 → 拟用新名（原扩展名保留）；无命中回退正文头部
+    上下文；均无有效句返回 ""。
+
+    规则：取首个命中词所在句（空格/句读断句）；向前后文扩句至
+    NAME_CTX_MIN 上下文（2.3 加大）、过长以命中词为中心向句界收缩；
+    无关键词命中（含无关键词）回退正文头部句块命名；非法字符走
+    safe_name 清洗；主体长度限 [NAME_MIN_LEN, NAME_MAX_LEN]。重名 (N)
+    后缀在落盘改名时解析（预览/登记阶段不预占）。单一 Python 实现，
+    TUI/GUI/web 同源。
     """
     includes, _ = parse_keywords(query)
-    if not includes:
-        return ""
     _stem, ext = _split_name_stem(orig_name)
     for src_text in (text or "", ref_text or ""):
         if not src_text:
@@ -3832,13 +3853,7 @@ def smart_name_for(text, query, orig_name="", ref_text=None):
         if hit is None:
             continue
         hs, he = hit
-        # 句段偏移表（边界符之间，去空段）
-        parts, prev = [], 0
-        for m in _NAME_SPLIT.finditer(src_text):
-            parts.append((prev, m.start()))
-            prev = m.end()
-        parts.append((prev, len(src_text)))
-        segs = [(s, e) for s, e in parts if e > s]
+        segs = _name_segments(src_text)
         if not segs:
             continue
         lo = hi = 0
@@ -3849,9 +3864,9 @@ def smart_name_for(text, query, orig_name="", ref_text=None):
         else:
             lo = hi = min(range(len(segs)),
                           key=lambda i: abs(segs[i][0] - hs))
-        # 扩句：主体过短左右交替逐句延伸（保前后文）
+        # 扩句：上下文不足 NAME_CTX_MIN 时左右交替逐句延伸（保前后文）
         grow_right = True
-        while (segs[hi][1] - segs[lo][0]) < NAME_MIN_LEN:
+        while (segs[hi][1] - segs[lo][0]) < NAME_CTX_MIN:
             if grow_right and hi + 1 < len(segs):
                 hi += 1
             elif lo > 0:
@@ -3883,6 +3898,23 @@ def smart_name_for(text, query, orig_name="", ref_text=None):
         if len(name) < NAME_MIN_LEN:
             continue
         return name[:NAME_MAX_LEN] + ext
+    # 回退（2.3）：无关键词命中（含无关键词）→ 正文头部上下文命名。
+    # 语义：拟用名只是候选（前端「是否重命名」勾选显式控制），静默空串
+    # 会让整版「留空不改」不可用；正文头部句块是最稳的语义名。
+    for src_text in (text or "", ref_text or ""):
+        if not src_text:
+            continue
+        segs = _name_segments(src_text)
+        if not segs:
+            continue
+        lo = hi = 0
+        while hi + 1 < len(segs) and (segs[hi][1] - segs[lo][0]) < NAME_CTX_MIN:
+            hi += 1
+        raw = src_text[segs[lo][0]:segs[hi][1]][:NAME_MAX_LEN].strip()
+        raw = raw.strip(" ,，、:：;；-_—.。!！?？\"'“”‘’()（）[]【】")
+        name = safe_name(raw, "").strip("_ ")
+        if len(name) >= NAME_MIN_LEN:
+            return name[:NAME_MAX_LEN] + ext
     return ""
 
 

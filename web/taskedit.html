@@ -70,6 +70,23 @@
       <span id="ed2-counts" class="ed-counts"></span>
     </div>
 
+    <!-- 2.3 智能重命名（高级）：命名前后预览可编辑；勾选=按新名命名，
+         取消勾选=使用并展示原文件名；还原命名支持多选 -->
+    <div class="glass ed-rename">
+      <label class="check-line"><input id="ed2-rn-toggle" type="checkbox"
+        onchange="edRenameTogglePanel()"> 智能重命名（高级）：命名前后预览，可编辑；未下载条目下载完成即按此命名</label>
+      <div id="ed2-rn-panel" class="ed-rn-panel hidden">
+        <div class="ed-rn-acts">
+          <button class="btn glass-btn sm" onclick="edRenameAll(true)">命名全选</button>
+          <button class="btn glass-btn sm" onclick="edRenameAll(false)">命名全不选</button>
+          <button class="btn primary sm" onclick="edRenameApply(this)">应用命名</button>
+          <button class="btn glass-btn sm" onclick="edRenameRestore(this)">还原命名</button>
+          <span class="ed-rn-note">勾选=参与操作；取消勾选=使用原文件名；还原作用于勾选条目（支持多选）</span>
+        </div>
+        <div id="ed2-rn-rows"></div>
+      </div>
+    </div>
+
     <!-- 条目表格 -->
     <div class="glass editor-main">
       <table class="ed-table">

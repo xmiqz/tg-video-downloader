@@ -86,6 +86,7 @@ async function edLoad() {
   document.getElementById("ed2-parallel").value = r.task.parallel || 1;
 
   edRender();
+  edRenameSync();
 
   if (_edNeedEnrich()) _edRefetchStart();
 }
@@ -118,6 +119,7 @@ function _edRefetchStart() {
         if (r && r.ok) {
           state.items = r.items || state.items;
           edRender();
+          edRenameSync();
           if (!_edNeedEnrich()) return;    // 条目补齐即停
         }
         tick();                            // 仍缺失：下一拍
@@ -319,6 +321,158 @@ function edBulkRemove() {
 // 连点只发 1 次 choose_folder；成功回填 / 用户取消（path=""）不动 /
 // 失败（含 reject）alert 可见，三者后按钮复位。
 let _edChoosing = false;
+
+// ============================================================
+// 2.3 智能重命名（高级）：命名前后预览可编辑 + 是否重命名勾选 +
+// 一键全选/取消全选 + 应用命名 + 还原命名（勾选多选）
+// ============================================================
+const rnState = { edits: {}, off: new Set() };
+
+function edRenameTogglePanel() {
+  const on = document.getElementById("ed2-rn-toggle").checked;
+  document.getElementById("ed2-rn-panel").classList.toggle("hidden", !on);
+  if (on) edRenameRender();
+}
+
+function edRenameSync() {
+  const p = document.getElementById("ed2-rn-panel");
+  if (p && !p.classList.contains("hidden")) edRenameRender();
+}
+
+function rnEff(k, ti) {
+  return (((k in rnState.edits) ? rnState.edits[k] : (ti && ti.rename) || "")).trim();
+}
+
+function edRenameRender() {
+  const box = document.getElementById("ed2-rn-rows");
+  if (!box) return;
+  const rows = state.items || [];
+  box.innerHTML = rows.length ? rows.map((ti) => {
+    const k = keyOf(ti);
+    const eff = rnEff(k, ti);
+    const on = !rnState.off.has(k) && eff !== "";
+    return `<div class="rn-row">
+      <input type="checkbox" class="rn-check" data-k="${esc(k)}"${on ? " checked" : ""}
+        title="是否重命名（取消勾选=使用并展示原文件名）"
+        onchange="edRenameRowToggle('${esc(k)}', this)">
+      <span class="rn-before" title="${esc(ti.name)}">${esc(ti.name)}</span>
+      <span class="rn-arrow">→</span>
+      <input class="rn-input" data-k="${esc(k)}"
+        value="${esc(on ? eff : ti.name)}" placeholder="留空不改"${on ? "" : " disabled"}
+        oninput="edRenameInput('${esc(k)}', this)">
+    </div>`;
+  }).join("") : `<div class="rn-empty">没有可处理的条目</div>`;
+}
+
+function edRenameRowToggle(k, el) {
+  const ti = (state.items || []).find((it) => keyOf(it) === k);
+  const row = el.closest(".rn-row");
+  const inp = row && row.querySelector(".rn-input");
+  if (el.checked) {
+    rnState.off.delete(k);
+    if (inp) {
+      inp.disabled = false;
+      inp.value = rnEff(k, ti);
+    }
+  } else {
+    rnState.off.add(k);
+    if (inp) {
+      inp.disabled = true;
+      inp.value = ti ? ti.name : "";   // 取消勾选=使用并展示原文件名
+    }
+  }
+}
+
+function edRenameInput(k, el) {
+  rnState.edits[k] = el.value;
+  // 手工输入即视为启用重命名
+  const row = el.closest(".rn-row");
+  const cb = row && row.querySelector(".rn-check");
+  if (el.value.trim() && cb && !cb.checked) {
+    cb.checked = true;
+    rnState.off.delete(k);
+  }
+}
+
+function edRenameAll(on) {
+  for (const ti of state.items || []) {
+    const k = keyOf(ti);
+    if (on) rnState.off.delete(k); else rnState.off.add(k);
+  }
+  edRenameRender();
+}
+
+async function _edRnReload() {
+  try {
+    const r = await api().editor_data(TASK_ID, false);
+    if (r && r.ok) {
+      state.items = r.items || state.items;
+      edRender();
+    }
+  } catch (e) { /* 静默：保留本地 state */ }
+  rnState.edits = {};
+  rnState.off = new Set();
+  edRenameRender();
+}
+
+let rnApplyBusy = false;
+async function edRenameApply(btn) {
+  const renames = [];
+  for (const ti of state.items || []) {
+    const k = keyOf(ti);
+    if (rnState.off.has(k)) continue;          // 取消勾选=保持原名
+    const name = rnEff(k, ti);
+    if (name && name !== ti.name) renames.push(Object.assign(keyObj(k), { name: name }));
+  }
+  if (!renames.length) return alert("没有可应用的命名（勾选行并在「→」后填写新名）");
+  if (rnApplyBusy) return;
+  rnApplyBusy = true;
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "改名中…";
+  let r;
+  try {
+    r = await api().edit_task(TASK_ID, { renames: renames });
+  } catch (e) {
+    btn.disabled = false; btn.textContent = old; rnApplyBusy = false;
+    return alert("改名失败：" + (e && e.message || e));
+  }
+  btn.disabled = false; btn.textContent = old; rnApplyBusy = false;
+  if (!r || !r.ok) return alert("改名失败：" + ((r && r.error) || "操作未生效"));
+  alert(`已改名 ${r.renamed} 条，已登记 ${r.recorded} 条` +
+    ((r.warnings && r.warnings.length) ? "\n" + r.warnings.join("\n") : ""));
+  await _edRnReload();
+}
+
+let rnRestoreBusy = false;
+async function edRenameRestore(btn) {
+  const keys = [];
+  for (const ti of state.items || []) {
+    const k = keyOf(ti);
+    const eff = rnEff(k, ti);
+    if (!rnState.off.has(k) && eff !== "") keys.push(keyObj(k));  // 勾选条目
+  }
+  if (!keys.length) return alert("请先勾选要还原命名的条目");
+  if (!confirm(`还原选中 ${keys.length} 条为原始命名？`)) return;
+  if (rnRestoreBusy) return;
+  rnRestoreBusy = true;
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "还原中…";
+  let r;
+  try {
+    r = await api().edit_task(TASK_ID, { restore: keys });
+  } catch (e) {
+    btn.disabled = false; btn.textContent = old; rnRestoreBusy = false;
+    return alert("还原命名失败：" + (e && e.message || e));
+  }
+  btn.disabled = false; btn.textContent = old; rnRestoreBusy = false;
+  if (!r || !r.ok) return alert("还原命名失败：" + ((r && r.error) || "操作未生效"));
+  alert(`已还原 ${r.restored} 条` +
+    (r.skipped ? `，跳过 ${r.skipped} 条（未改名）` : "") +
+    ((r.errors && r.errors.length) ? "\n" + r.errors.join("\n") : ""));
+  await _edRnReload();
+}
 
 function edChooseFolder() {
   const btn = document.querySelector(".path-row .glass-btn");

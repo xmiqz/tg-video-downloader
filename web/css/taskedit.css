@@ -1667,3 +1667,53 @@ body.liquid .sheet { position: fixed; }
   .bulk-bar { flex-wrap: wrap; }
   .bulk-bar .btn { flex: 1 1 40%; min-height: 44px; }
 }
+
+/* ---------- 2.3 智能重命名（高级）：命名前后预览 / 勾选控制 / 还原多选 ---------- */
+.ed-rename { margin: 12px 0 0; padding: 12px 16px; }
+.ed-rn-acts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+.ed-rn-note { font-size: 11.5px; color: var(--ink-mute); }
+#ed2-rn-rows {
+  margin: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.rn-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rn-check { width: 16px; height: 16px; flex: none; cursor: pointer; }
+.rn-before {
+  flex: 0 0 34%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--ink-mute);
+}
+.rn-arrow { color: var(--ink-mute); flex-shrink: 0; }
+.rn-input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, .07);
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 7px;
+  padding: 4px 8px;
+  color: var(--ink);
+  font-size: 11.5px;
+  outline: none;
+}
+.rn-input:focus { border-color: rgba(120, 140, 255, .7); }
+.rn-input:disabled { opacity: .55; }
+.rn-empty { font-size: 12px; color: var(--ink-mute); padding: 6px 0; }
+/* 窄屏：原名独占一行防溢出 + 输入命中区 44（FR-24） */
+@media (max-width: 767.98px) {
+  .rn-row { flex-wrap: wrap; }
+  .rn-before { flex: 1 1 100%; }
+  .rn-input { min-height: 44px; }
+}
