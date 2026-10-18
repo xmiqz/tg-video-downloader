@@ -138,7 +138,9 @@ export function statusClass(status) {
 export function detailItemText(ti) {
   const a = ti || {};
   if (a.error) return "错误：" + a.error;
-  return "该消息无文字内容";
+  // T19f-F：有消息文字展示原文（2.1 恒显占位「该消息无文字内容」，用户
+  // 下载后打开任务详情看不到消息文字）；无文字/旧任务缺字段保留占位逐字
+  return String(a.text || "").trim() || "该消息无文字内容";
 }
 
 // ============================================================
@@ -485,6 +487,12 @@ async function loadTasks() {
 function renderTasks() {
   if (!refs) return;
   const rows = filterTasks(tasksCache, refs.search.value, taskFilter);
+  // T52：t.acct 种子（app.js:1694-1696；会话内手动值优先不被覆盖）
+  for (let i = 0; i < tasksCache.length; i++) {
+    const t = tasksCache[i];
+    if (t.acct && !taskAcct.has(t.id)) taskAcct.set(t.id, t.acct);
+  }
+  ensureAcctAlts();
   clearGrid();
   if (!rows.length) {
     // 空态（index.html:198-200：🗂 没有符合条件的任务）
@@ -509,7 +517,73 @@ function appendCard(t) {
   refs.grid.append(buildCard(t));
 }
 
-// 任务卡（app.js:1699-1724 结构等价；T52 任务选号区本波不实现，见文件头）
+// 任务卡（app.js:1699-1724 结构等价）
+// T52 任务级选号（app.js:1713-1717 + TgAccounts app.js:3584-3637）：
+// acct_pref 会话映射（t.acct 种子，手动值优先）；换值下发 edit_task(tid,{acct_pref})，
+// 被拒/异常静默回退（2.1 console.debug 口径，不弹错误）
+const taskAcct = new Map();     // tid -> "main"|altId|"auto"
+let acctAlts = null;            // 小号清单（account_list 懒拉；null=未知，[]=无）
+let acctAltsLoading = false;
+
+function acctSegItems() {
+  const items = [{ value: "main", label: "主号" }];                 // app.js:3579
+  if (acctAlts && acctAlts.length) {
+    items.push({ value: String(acctAlts[0].id), label: "小号" });   // app.js:3580
+  }
+  items.push({ value: "auto", label: "自动" });                     // app.js:3581
+  return items;
+}
+function renderAcctSeg(host) {
+  if (!host) return;
+  const tid = host.getAttribute("data-acct-tid") || "";
+  const cur = taskAcct.get(tid) || "auto";                          // app.js:3587
+  const scroll = el("div", { class: "u-seg-scroll" });
+  acctSegItems().forEach(function (it) {
+    const on = it.value === cur;
+    scroll.append(el("button", {
+      class: "u-seg-item" + (on ? " is-active" : ""),
+      type: "button", role: "radio", "aria-selected": on ? "true" : "false",
+      text: it.label,
+      onclick: function (ev) { ev.stopPropagation(); pickAcctSeg(host, tid, it.value); },
+    }));
+  });
+  host.textContent = "";
+  host.append(scroll);
+}
+async function pickAcctSeg(host, tid, value) {
+  const prev = taskAcct.get(tid) || "auto";
+  if (prev === value) return;                                       // app.js:3598
+  taskAcct.set(tid, value);
+  renderAcctSeg(host);
+  try {
+    const ready = await ensureApi();
+    if (!ready) throw new Error("bridge not ready");
+    const r = await window.pywebview.api.edit_task(tid, { acct_pref: value });  // app.js:3613
+    if (r && r.ok === false) { taskAcct.set(tid, prev); renderAcctSeg(host); }  // app.js:3614-3617
+  } catch (e) {
+    taskAcct.set(tid, prev); renderAcctSeg(host);                  // app.js:3618-3623
+  }
+}
+function ensureAcctAlts() {
+  if (acctAlts !== null || acctAltsLoading) return;
+  acctAltsLoading = true;
+  ensureApi().then(function (ready) {
+    if (!ready) throw new Error("bridge not ready");
+    return window.pywebview.api.account_list();
+  }).then(function (r) {
+    acctAltsLoading = false;
+    const list = (r && r.ok && Array.isArray(r.accounts)) ? r.accounts : [];
+    acctAlts = list.filter(function (a) {   // settings.js:764-765 小号同口径
+      return a && a.id && a.id !== "main" && a.state !== "absent";
+    });
+    refreshAcctSegs();
+  }).catch(function () { acctAltsLoading = false; acctAlts = []; });
+}
+function refreshAcctSegs() {
+  const hosts = document.querySelectorAll(".tk-acct-seg");
+  for (let i = 0; i < hosts.length; i++) renderAcctSeg(hosts[i]);
+}
+
 function buildCard(t) {
   const pct = taskPct(t.finished, t.total);
   const tags = cardTags(t);
@@ -520,7 +594,7 @@ function buildCard(t) {
   const actions = [];
   if ((t.pending || 0) + (t.failed || 0) > 0) {
     actions.push(el("button", {
-      class: "u-btn u-btn--ghost tk-act", type: "button", text: "继续",
+      class: "u-btn u-btn--primary tk-act", type: "button", text: "继续",   // 2.1 .btn.primary.sm（app.js:1719）
       onclick: function (ev) { ev.stopPropagation(); quickResume(t.id, false, ev.currentTarget); },
     }));
   }
@@ -564,6 +638,19 @@ function buildCard(t) {
     el("div", { class: "tk-stat" }, [
       el("span", { text: (t.finished || 0) + "/" + (t.total || 0) + " 完成" }),
       el("span", { text: String(t.created || "") }),
+    ]),
+    // T52 任务选号行（app.js:1713-1717：label + 选号段 + note，事件不透传卡片）
+    el("div", { class: "tk-acct", onclick: function (ev) { ev.stopPropagation(); } }, [
+      el("span", { class: "tk-acct-label", text: "本任务后续下载使用" }),
+      (function () {
+        const host = el("div", {
+          class: "tk-acct-seg u-seg", dataset: { acctTid: t.id },
+          role: "radiogroup", "aria-label": "本任务后续下载账号",
+        });
+        renderAcctSeg(host);
+        return host;
+      })(),
+      el("span", { class: "tk-acct-note", text: "进行中的条目不受影响" }),
     ]),
     el("div", { class: "tk-actions" }, actions),
   ]);
@@ -822,11 +909,17 @@ function resetSheetBody() {
           openSheetEditor(sheet.taskId);
         },
       }),
+      // T19f 补齐 2.1 底栏选项（index.html:474-481 逐序：编辑/目录/继续/
+      // 恢复跳过/删除；「完成编辑」钮随 v2.2 路由编辑页形态取消）
+      el("button", { class: "u-btn u-btn--ghost", type: "button", text: "目录",
+        onclick: function () { sheetOpenFolder(this); } }),   // app.js:2284 sheetOpenFolder
       el("button", { class: "u-btn u-btn--primary", type: "button", id: "tk-sheet-resume", text: "继续下载",
         onclick: function () { sheetResume(this); } }),   // app.js:2299 sheetResume
       el("button", { class: "u-btn u-btn--ghost", type: "button", id: "tk-sheet-skip", text: "恢复跳过",
         hidden: true,
         onclick: function () { resumeSkipped(sheet.taskId, this); } }),
+      el("button", { class: "u-btn u-btn--danger", type: "button", text: "删除任务",
+        onclick: function () { sheetDelete(this); } }),   // app.js:2331 sheetDelete
     ])
   );
 }
@@ -866,6 +959,59 @@ async function sheetResume(btn) {
   } else {
     toast("error", cls.error);         // app.js:2320 alert 承接
   }
+}
+
+// T19f：底栏「目录」（app.js:2281-2298 sheetOpenFolder：等待返回+失败可见
+// +函数级锁防重；open_folder(task.folder) 白名单在位）
+let sheetFolderBusy = false;
+async function sheetOpenFolder(btn) {
+  if (sheetFolderBusy) return;
+  sheetFolderBusy = true;
+  const restore = busyOn(btn, "打开中…");
+  let r = null;
+  try {
+    const ready = await ensureApi();
+    if (!ready) throw new Error("bridge not ready");
+    r = await window.pywebview.api.open_folder(sheet.task && sheet.task.folder);
+  } catch (e) {
+    restore(); sheetFolderBusy = false;
+    return toast("error", "打开目录失败", (e && e.message) || String(e));
+  }
+  restore(); sheetFolderBusy = false;
+  if (!r || !r.ok) {
+    toast("error", "打开目录失败", (r && r.error) || "目录不存在或无法打开");
+  }
+}
+
+// T19f：底栏「删除任务」（app.js:2328-2349 sheetDelete：confirm 流程+失败
+// 可见+锁防重；成功才关滑层回任务库——close 触发 onSheetClosed 刷列表）
+let sheetDeleteBusy = false;
+function sheetDelete(btn) {
+  confirmAsk({
+    title: "删除任务",
+    text: "删除整个任务记录？已下载视频不会删除。",   // app.js:2332 逐字
+    confirmLabel: "删除",
+    danger: true,
+    onConfirm: async function () {
+      if (sheetDeleteBusy) return;
+      sheetDeleteBusy = true;
+      const restore = busyOn(btn, "删除中…");
+      let r = null;
+      try {
+        const ready = await ensureApi();
+        if (!ready) throw new Error("bridge not ready");
+        r = await window.pywebview.api.delete_task(sheet.taskId);
+      } catch (e) {
+        restore(); sheetDeleteBusy = false;
+        return toast("error", "删除任务失败", (e && e.message) || String(e));
+      }
+      restore(); sheetDeleteBusy = false;
+      if (!r || !r.ok) {
+        return toast("error", "删除任务失败", (r && r.error) || "删除未生效");
+      }
+      if (sheetOv) sheetOv.close();    // onClose → onSheetClosed → loadTasks
+    },
+  });
 }
 
 // app.js:1873-1896 2s 轮询：下载中的条目状态即时一致；输入中不重绘

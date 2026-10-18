@@ -1,6 +1,6 @@
 /* web/css/gestures.css — T17 手势共享样式（gs- 消费域）。
    所有权：T17 新建；由 gestures.js 首用时注入 <link>（同 router boot 注入 ui.css 范式）。
-   颜色全令牌；动效仅 --dur-*/--ease-*；§12 双路归零（prefers-reduced-motion +
+   颜色全令牌；动效仅 --dur-*、--ease-*；§12 双路归零（prefers-reduced-motion +
    #sh-root[data-v22-rm=on]）。托盘按钮命中区 ≥44px（FR-24）。 */
 
 /* 1. 滑动宿主与托盘（宿主 = 行的父容器；托盘随行定位由 JS 同步 top/height） */

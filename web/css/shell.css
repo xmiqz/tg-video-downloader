@@ -634,3 +634,205 @@ html.liquid .ev-move-mask {
     background: var(--raw-solid); /* tokens 5.2 修复后为不透明实色（深浅两套） */
   }
 }
+
+/* ============================================================
+   10. T19f-B 全局下载悬浮卡（右下角通用作业进度浮层）
+   2.1 蓝本逐值：T45/T57 浮层 style.css:907-1005 + 1475-1523；
+   逻辑在 js/jobdock.js，宿主 #sh-jobdock 由 buildShellDom 末位挂出。
+   裸色带 2.1 出处（§0b/§2a 同型先例）；液态玻璃禁新 backdrop-filter
+   面（2.1 job-card 本就零滤镜，唯 mini 胶囊 blur 归入 html.liquid 归零）。
+   z 序（壳内）：底栏 --z-nav(20) 之上、抽屉遮罩 --z-overlay(200) 之下；
+   body 级弹窗 --z-modal(6000) / toast(6200) 恒压其上。
+   ============================================================ */
+.sh-jobdock {
+  position: fixed;
+  right: 18px; bottom: 18px;             /* 2.1 .job-progress-host style.css:922 */
+  z-index: 30;
+  display: flex; flex-direction: column; gap: 10px;
+  width: min(340px, 86vw);               /* style.css:925 */
+  max-height: 62vh; overflow-y: auto;    /* style.css:926 */
+  pointer-events: none;                  /* 仅卡片可点，不挡下方内容 */
+}
+.sh-jobdock .hidden { display: none !important; }
+
+.sh-jobdock .job-card {
+  pointer-events: auto;
+  background: linear-gradient(155deg,
+    rgba(255,255,255,.14) 0%, rgba(255,255,255,.05) 100%);  /* style.css:931-932 */
+  border: 1px solid rgba(255,255,255,.22);                  /* style.css:933 */
+  border-radius: 20px;                  /* 2.1 --r-lg style.css:20 */
+  box-shadow: 0 10px 30px rgba(4,6,18,.35),                /* 2.1 --soft-shadow style.css:29-30 */
+              inset 0 1px 0 rgba(255,255,255,.18);
+  padding: 13px 16px 14px;
+  font-size: 12.5px;
+  animation: sh-jd-rise .3s var(--ease-standard);
+  transition: opacity .45s var(--ease-standard), transform .45s var(--ease-standard);
+}
+.sh-jobdock .job-card.out { opacity: 0; transform: translateY(8px); }  /* style.css:941 */
+@keyframes sh-jd-rise { from { opacity: 0; transform: translateY(10px); } }  /* style.css:352 rise */
+.sh-jobdock .job-head { display: flex; align-items: center; gap: 9px; }
+.sh-jobdock .job-kind {
+  font-weight: 650; font-size: 12.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sh-jobdock .job-state {
+  flex-shrink: 0; font-size: 11px; font-weight: 600;
+  padding: 2px 10px; border-radius: 999px;
+  background: rgba(255,184,77,.16); color: #ffb84d;   /* style.css:950（--warn） */
+}
+.sh-jobdock .job-state.s-running { background: rgba(91,134,255,.2); color: #a8bcff; }
+.sh-jobdock .job-state.s-done { background: rgba(52,217,160,.16); color: #34d9a0; }
+.sh-jobdock .job-state.s-error { background: rgba(255,97,114,.16); color: #ff6172; }
+.sh-jobdock .job-state.s-cancelled { background: rgba(150,160,190,.16); color: #aeb8d8; }
+.sh-jobdock .job-state.s-cancelling {
+  background: rgba(255,184,77,.16); color: #ffb84d;   /* style.css:1513-1515 */
+}
+.sh-jobdock .job-collapse-btn {
+  margin-left: auto; flex-shrink: 0;      /* style.css:1498-1499（收起靠右起组） */
+  border: 1px solid rgba(255,255,255,.2); /* 2.1 --glass-edge style.css:9 */
+  border-radius: 999px;
+  background: rgba(255,255,255,.08); color: rgba(238,242,252,.68); /* --ink-dim */
+  font-size: 11px; padding: 3px 11px;
+  transition: .2s var(--ease-spring);
+}
+.sh-jobdock .job-cancel-btn {
+  margin-left: 0;                         /* style.css:1508（职责移交收起钮） */
+  flex-shrink: 0;
+  border: 1px solid rgba(255,97,114,.42); border-radius: 999px;
+  background: rgba(255,97,114,.12); color: #ff8a97;
+  font-size: 11px; padding: 3px 11px;
+  transition: .2s var(--ease-spring);
+}
+.sh-jobdock .job-cancel-btn[disabled] { opacity: .55; pointer-events: none; }
+.sh-jobdock .job-cancel-btn.is-busy { pointer-events: none; opacity: .8; }
+.sh-jobdock .job-phase {
+  margin-top: 7px; color: rgba(238,242,252,.68); font-size: 12px;  /* --ink-dim */
+  display: flex; gap: 7px; align-items: baseline; overflow: hidden;
+}
+.sh-jobdock .job-phase .pd {
+  color: rgba(231,236,249,.45); overflow: hidden;      /* --ink-mute */
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.sh-jobdock .job-bar {
+  position: relative; height: 6px; margin-top: 9px;
+  background: rgba(7,9,20,.55); border-radius: 6px; overflow: hidden;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,.5);
+}
+.sh-jobdock .job-fill {
+  height: 100%; width: 0; border-radius: 6px;
+  background: linear-gradient(135deg, #5b86ff 0%, #9a6bff 100%);  /* 2.1 --brand-grad */
+  transition: width .4s var(--ease-standard);
+}
+.sh-jobdock .job-fill.f-done { background: linear-gradient(90deg, #2bc48e, #34d9a0); }
+.sh-jobdock .job-fill.f-error { background: linear-gradient(90deg, #e6485d, #ff6172); }
+.sh-jobdock .job-fill.f-cancelled { background: rgba(150,160,190,.6); }
+.sh-jobdock .job-fill.indet {
+  position: absolute; width: 38%;
+  animation: sh-jd-indet 1.15s var(--ease-standard) infinite alternate;
+}
+@keyframes sh-jd-indet { from { left: -38%; } to { left: 100%; } }  /* style.css:987 */
+.sh-jobdock .job-count {
+  margin-top: 7px; display: flex; justify-content: space-between; gap: 10px;
+  color: rgba(231,236,249,.45); font-size: 11.5px;     /* --ink-mute */
+  font-variant-numeric: tabular-nums;
+}
+.sh-jobdock .job-err {
+  margin-top: 7px; color: #ff6172; font-size: 12px; word-break: break-word;
+}
+
+/* spinner（2.1 style.css:670-677 同径，sh- 作用域防与视图 .ac-spin 混名） */
+.sh-jobdock .spinner {
+  display: inline-block; flex: none;
+  width: 12px; height: 12px;
+  border: 2px solid currentColor; border-top-color: transparent;
+  border-radius: 50%; vertical-align: -2px; margin-right: 6px;
+  animation: sh-jd-spin .7s linear infinite;
+}
+@keyframes sh-jd-spin { to { transform: rotate(360deg); } }
+.sh-jobdock .job-state.s-cancelling .spinner,
+.sh-jobdock .job-cancel-btn .spinner {
+  width: 10px; height: 10px; margin-right: 4px; vertical-align: -1px;  /* style.css:1516-1523 */
+}
+
+/* 折叠态——卡片整体隐藏，仅留「N 个作业」小胶囊（style.css:1481-1494） */
+.sh-jobdock.collapsed .job-card { display: none; }
+.sh-jobdock .job-dock-mini {
+  pointer-events: auto;
+  flex: none; border: 1px solid rgba(255,255,255,.2);
+  border-radius: 999px; padding: 6px 16px;
+  background: rgba(255,255,255,.06); color: rgba(238,242,252,.68);
+  font-size: 12px; white-space: nowrap;
+  box-shadow: 0 10px 30px rgba(4,6,18,.35), inset 0 1px 0 rgba(255,255,255,.18);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  transition: .25s var(--ease-spring);
+}
+/* 液态玻璃禁新 backdrop-filter 面（2.1 style.css:65-71 归零口径） */
+html.liquid .sh-jobdock .job-dock-mini {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+.sh-jobdock button:active { transform: translateY(0) scale(.97); }  /* style.css:1509-1510 */
+
+/* hover 面统包 hover 断点（T17 N5 口径；2.1 hover 值逐字） */
+@media (hover: hover) and (pointer: fine) {
+  .sh-jobdock .job-cancel-btn:hover { background: rgba(255,97,114,.24); }
+  .sh-jobdock .job-collapse-btn:hover {
+    background: rgba(255,255,255,.16); color: #f5f7fe;
+  }
+  .sh-jobdock .job-dock-mini:hover { color: #f5f7fe; transform: translateY(-1px); }
+}
+
+/* 浅色主题覆写（2.1 style.css:996-1005 + --ink 族浅墨 style.css:847-849） */
+:root[data-theme="light"] .sh-jobdock .job-card {
+  background: linear-gradient(155deg,
+    rgba(255,255,255,.78), rgba(255,255,255,.55));
+  border-color: rgba(20,30,60,.12);
+}
+:root[data-theme="light"] .sh-jobdock .job-bar {
+  background: rgba(20,30,60,.12);
+  box-shadow: inset 0 1px 2px rgba(20,30,60,.12);
+}
+:root[data-theme="light"] .sh-jobdock .job-state.s-running {
+  background: rgba(80,110,240,.14); color: #3c56c8;
+}
+:root[data-theme="light"] .sh-jobdock .job-phase { color: rgba(20,26,46,.7); }
+:root[data-theme="light"] .sh-jobdock .job-phase .pd,
+:root[data-theme="light"] .sh-jobdock .job-count { color: rgba(20,26,46,.46); }
+:root[data-theme="light"] .sh-jobdock .job-collapse-btn,
+:root[data-theme="light"] .sh-jobdock .job-dock-mini { color: rgba(20,26,46,.7); }
+:root[data-theme="light"] .sh-jobdock .job-fill.indet { background: rgba(20,30,60,.35); }
+
+/* T19e 亮捕获底（liquid bright）：2.1 无此态；复用浅色玻璃面 + 深墨
+   保证亮底文字可见度（用户 T19e 诉求口径，tokens.css §7 同型换色） */
+:root.liquid[data-lum="bright"] .sh-jobdock .job-card {
+  background: linear-gradient(155deg,
+    rgba(255,255,255,.78), rgba(255,255,255,.55));
+  border-color: rgba(20,30,60,.12);
+}
+:root.liquid[data-lum="bright"] .sh-jobdock .job-bar {
+  background: rgba(20,30,60,.12);
+  box-shadow: inset 0 1px 2px rgba(20,30,60,.12);
+}
+:root.liquid[data-lum="bright"] .sh-jobdock .job-state.s-running {
+  background: rgba(80,110,240,.14); color: #3c56c8;
+}
+:root.liquid[data-lum="bright"] .sh-jobdock .job-phase { color: rgba(20,26,46,.7); }
+:root.liquid[data-lum="bright"] .sh-jobdock .job-phase .pd,
+:root.liquid[data-lum="bright"] .sh-jobdock .job-count { color: rgba(20,26,46,.46); }
+:root.liquid[data-lum="bright"] .sh-jobdock .job-collapse-btn,
+:root.liquid[data-lum="bright"] .sh-jobdock .job-dock-mini { color: rgba(20,26,46,.7); }
+:root.liquid[data-lum="bright"] .sh-jobdock .job-fill.indet { background: rgba(20,30,60,.35); }
+
+/* 列表滚动避让：--job-dock-h 由 jobdock.js ResizeObserver 写入（2.1
+   style.css:1478 #active-list 同款） */
+.vw-active { padding-bottom: calc(var(--job-dock-h, 0px) + 24px); }
+
+/* 移动端（<640）：让开悬浮底栏（底栏 bottom 12 + 高 60 + 间隙 12 = 84；
+   底栏定位见 §4 .sh-bottombar style.css:429-434 本文件） */
+@media (max-width: 639.98px) {
+  .sh-jobdock {
+    right: 12px;
+    bottom: calc(env(safe-area-inset-bottom) + 84px);
+  }
+}

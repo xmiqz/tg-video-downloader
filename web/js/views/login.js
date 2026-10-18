@@ -18,7 +18,7 @@
 // 在 mount/onEnter 内起、onLeave 全清理）；动效仅 --dur-*/--ease-* 令牌。
 // ============================================================
 
-import { el, createCard } from "../ui/index.js";
+import { el, createCard, createOverlay, createToaster } from "../ui/index.js";
 
 // ------------------------------------------------------------
 // ① 契约导出（t8_contract.md §1 恰五员）
@@ -418,6 +418,155 @@ function doRetryMe() {
   });
 }
 
+// —— T19f-D：账号卡「＋ 添加小号」跳转（设置页账号卡 st-add-btn 所在）——
+function goSettings() {
+  const r = window.__t8router;
+  if (r && typeof r.navigate === "function") r.navigate("/settings");
+  else window.location.hash = "#/settings";
+}
+
+// —— toast（settings.js/tasks.js 同款惰性单例；退出三态反馈承接 alert 逐字）——
+let toaster = null;
+function toast(type, text, detail) {
+  if (!toaster) toaster = createToaster({ max: 5 });
+  toaster.show({ type: type, text: text, detail: detail });
+}
+
+// —— 确认弹层（settings.js:305-343 同款 Promise 化；createOverlay 叠在登录
+//    卡之上——.u-overlay 与登录层同 z，DOM 序后者在上，点窗外只关它）——
+let confirmOv = null;
+function confirmAskP(opts) {
+  return new Promise(function (resolve) {
+    let settled = false;
+    const done = function (v) {
+      if (settled) return;
+      settled = true;
+      resolve(v);
+    };
+    destroyConfirm();
+    confirmOv = createOverlay({
+      title: (opts && opts.title) || "确认操作",
+      content: (opts && opts.content) || "",
+      form: "modal",
+      actions: [
+        {
+          key: "ok",
+          label: (opts && opts.confirmLabel) || "确定",
+          primary: !(opts && opts.danger),
+          danger: !!(opts && opts.danger),
+        },
+        { key: "cancel", label: "取消" },
+      ],
+      onAction: function (k) {
+        if (k === "ok") done(true);   // 非 false → 组件自动 close
+      },
+      onClose: function () { done(false); },
+      ariaLabel: (opts && opts.title) || "确认操作",
+    });
+    document.body.appendChild(confirmOv.el);
+    confirmOv.open();
+  });
+}
+
+function destroyConfirm() {
+  if (confirmOv) {
+    // 先 close 收敛 Promise（destroy 不触发 onClose，直接 destroy 会悬死 await）
+    if (confirmOv.isOpen()) confirmOv.close("destroy");
+    confirmOv.destroy();
+    confirmOv = null;
+  }
+}
+
+// —— T19f-D：退出登录（settings.js:1207-1285 / app.js:632-693 三态逐字承接；
+//    本弹层内收口：promoted 刷账号卡、logged_out 切登录表单手机步）——
+let logoutBusy = false;
+async function doLogoutAcct(btn) {
+  if (logoutBusy) return;
+  logoutBusy = true;
+  if (btn) btn.disabled = true;
+  try {
+    // is_active 守卫（app.js:637-640 alert 逐字 → toast 承接）
+    try {
+      const ready = await bridgeReady(BRIDGE_TIMEOUT_MS);
+      if (ready && await api().is_active()) {
+        toast("error", "有下载任务正在进行，请先到「下载中」中止下载后再退出。");
+        return;
+      }
+    } catch (e) { /* 探测失败不拦截（app.js:640 空 catch 原状） */ }
+
+    // 有小号 → 提升语义（app.js:642-650）
+    let hasAlt = false;
+    try {
+      const al = await api().account_list();
+      if (al && al.ok && Array.isArray(al.accounts)) {
+        hasAlt = al.accounts.some(function (x) {
+          return x.id && x.id !== "main";
+        });
+      }
+    } catch (e) { /* 拿不到按无小号走原确认 */ }
+
+    if (hasAlt) {
+      const ok = await confirmAskP({
+        title: "退出当前主号？",                        // app.js:593 逐字
+        content: "登录中的小号将自动成为主号；本地任务与已下载文件不受影响。",
+        confirmLabel: "退出并提升小号",                  // app.js:597 逐字
+        danger: true,
+      });
+      if (!ok) return;
+    } else {
+      const ok = await confirmAskP({
+        title: "退出当前账号？",                        // app.js:650 逐字首行
+        content: el("div", {}, [
+          // app.js:650 confirm 串逐行逐字（换行改节点承载）
+          el("p", { text: "· 本地登录信息将被删除，重新登录需输入手机号与验证码" }),
+          el("p", { text: "· 任务清单与已下载视频不受影响" }),
+        ]),
+        confirmLabel: "确定",
+        danger: true,
+      });
+      if (!ok) return;
+    }
+
+    let r = null;
+    try { r = await api().logout(); }
+    catch (e) {
+      toast("error", "退出登录失败", (e && e.message) || String(e));
+      return;
+    }
+    if (!r || !r.ok) {
+      toast("error", (r && r.error) || "退出登录失败");   // app.js:652 逐字兜底
+      return;
+    }
+
+    const mm = window.__t8me;
+    if (r.stage === "promoted") {
+      // 小号提升为主号：不切登录表单，账号卡刷新资料（app.js:609-630）
+      toast("ok", "小号已提升为主号",                    // app.js:628 逐字
+        r.warning ? "重新连接中，重启后可自动恢复" : null);
+      if (mm && typeof mm.sync === "function") {
+        try { mm.sync(); } catch (e) { /* 镜像刷新失败不阻塞 */ }
+      }
+      renderMePending();
+      fetchMe(epoch);
+      return;
+    }
+
+    // stage=logged_out：清光回登录表单（app.js:655-686 收口，弹层内手机步起）
+    stopPoll();
+    showLoginForm("anonymous");
+    setStep("phone");
+    const g = window.__t8guest;
+    if (g && typeof g.hide === "function") g.hide();       // app.js:677 hideGuestBar
+    if (mm && typeof mm.reset === "function") mm.reset();  // 侧底 me 三串回未登录
+    errShow("");
+    errShowAcct("");
+    noticeShow("");
+  } finally {
+    logoutBusy = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
 // —— 游客态轮询（app.js 379-415：约 2s 一拍、document.hidden 跳过、
 //    busy 门；发现 logged_in&&!guest → 转账号卡；发现登出 → 停轮询显手机步）——
 function startPoll() {
@@ -549,9 +698,21 @@ function buildDom() {
     text: "去任务库",
     onClick: function () { goTasks(); },
   });
+  // T19f-D：添加小号跳转 + 退出登录（文案逐字对齐设置页 st-add-btn/退出钮）
+  $.btnAddAcct = el("button", {
+    class: "u-btn u-btn--ghost lg-block", type: "button",
+    text: "＋ 添加小号",
+    onClick: function () { goSettings(); },
+  });
+  $.btnLogout = el("button", {
+    class: "u-btn u-btn--danger lg-block", type: "button",
+    text: "退出登录",
+    onClick: function () { doLogoutAcct(this); },
+  });
   $.acctCard = createCard({ title: "账号", sub: "已登录", ariaLabel: "账号信息" });
   $.acctCard.el.classList.add("lg-card"); // 进场动效挂点（login.css §8）
-  $.acctCard.body.append(meRow, $.acctErr, $.btnRetryMe, $.btnGoTasks);
+  $.acctCard.body.append(meRow, $.acctErr, $.btnRetryMe, $.btnGoTasks,
+    $.btnAddAcct, $.btnLogout);
   $.acctCard.el.hidden = true;
 
   submitLabels.set($.btnPhone, "发送验证码");
@@ -670,6 +831,7 @@ export function onLeave() {
   stopPoll();
   pollBusy = false;
   if (busy) setBusyUi(false);
+  destroyConfirm(); // T19f-D：离场收确认弹层（close 先行收敛 await）
   // T17 手势增量对称回收（attach* 均返回 detach）
   for (let i = 0; i < gsDetach.length; i++) gsDetach[i]();
   gsDetach = [];

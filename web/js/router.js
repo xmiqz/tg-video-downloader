@@ -28,6 +28,7 @@ import * as activeView from "./views/active.js";
 import * as tasksView from "./views/tasks.js";
 import * as settingsView from "./views/settings.js";
 import * as editorView from "./views/editor.js";
+import { mountJobDock } from "./jobdock.js";
 
 const views = {
   login: loginView,
@@ -176,6 +177,21 @@ export function createRouter(deps) {
   //    版面上、底层视图保持挂载可见；/login 不参与视图切换，进入只叠卡、
   //    离开只收卡，不触发底层视图 onLeave/重入）——
   let loginOpen = false;
+  // T19f-G：叠卡前底层视图路径（点弹窗外收卡后回原版面；深链直进兜默认）
+  let loginReturnPath = DEFAULT_ROUTE;
+
+  // T19f-G：点弹窗外层级关闭最上层弹窗（.u-overlay/抽屉的遮罩点击关闭为
+  // 组件内建；登录弹层是 router 自挂层，补同语义——点卡外遮罩收卡回底层
+  // 视图。.u-overlay 与本层同 z（--z-modal 6000）、DOM 序后者在上，后开的
+  // 确认弹窗压住登录卡时点击由它的遮罩先接，只关最上层）。
+  function onLoginMaskClick(e) {
+    if (e.target !== e.currentTarget || !loginOpen) return;
+    dismissLoginOverlay();
+  }
+  function dismissLoginOverlay() {
+    if (!loginOpen) return;
+    navigate(loginReturnPath || DEFAULT_ROUTE, { force: true });
+  }
 
   async function renderLogin(params, path) {
     const lv = viewSet.login;
@@ -204,6 +220,9 @@ export function createRouter(deps) {
     }
     // 弹层节点直挂 body（fixed 遮罩；视图宿主之外不占版面流）
     if (node && node.parentNode !== doc.body) doc.body.appendChild(node);
+    // T19f-G：记底层路径（仅非重入时覆盖）+遮罩点击收卡（重复 add 幂等）
+    if (state.current && state.current !== path) loginReturnPath = state.current;
+    if (node) node.addEventListener("click", onLoginMaskClick);
     loginOpen = true;
     if (typeof lv.onEnter === "function") lv.onEnter(params || {});
     if (typeof lv.title === "string" && lv.title) doc.title = lv.title;
@@ -218,7 +237,10 @@ export function createRouter(deps) {
     const lv = viewSet.login;
     if (lv && typeof lv.onLeave === "function") lv.onLeave();
     const ln = nodes.get("login");
-    if (ln && ln.parentNode) ln.parentNode.removeChild(ln);
+    if (ln) {
+      ln.removeEventListener("click", onLoginMaskClick); // T19f-G 对称回收
+      if (ln.parentNode) ln.parentNode.removeChild(ln);
+    }
     // T19b：弹层关闭兜底补拉 me（登录成功/退出后侧栏 me-box 不失真）
     if (win.__t8me && typeof win.__t8me.sync === "function") {
       try { win.__t8me.sync(); } catch (e) { /* 同步刷新失败不阻塞路由 */ }
@@ -451,7 +473,10 @@ function buildShellDom() {
     '<div class="sh-lens" aria-hidden="true"><div class="sh-lens-content" id="sh-lens-content"></div></div>' +
     '<div class="sh-bar-mat" aria-hidden="true"></div>' +
     barItems +
-    "</nav>";
+    "</nav>" +
+    // T19f-B 全局下载悬浮卡宿主（2.1 #job-progress-host 新壳等价物；逻辑在
+    // jobdock.js，样式在 shell.css §T19f-B；sh- 前缀避开旧壳隐藏名单）
+    '<div class="sh-jobdock" id="sh-jobdock"></div>';
   return root;
 }
 
@@ -555,6 +580,8 @@ export async function boot() {
 
   const root = buildShellDom();
   doc.body.appendChild(root);
+  // T19f-B 全局下载悬浮卡（右下角通用作业进度浮层）随壳挂载
+  mountJobDock();
 
   // —— 能力降级三档（FR-22/NFR-8；v22degrade=1 为测试钩子模拟不支持环境）——
   // noLens：无 SVG 滤镜能力/模拟降级 → 关折射，保材质；

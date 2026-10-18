@@ -12,7 +12,7 @@
    - 视觉口径逐段对照旧壳"任务库/详情滑层"（style.css:473-510 任务网格、
      606-687 详情滑层族、595-599 空态）；响应式：桌面网格 ↔ 手机单列
      卡片（768 断点，任务书 §行为需求 1）。
-   - 动效只走 --dur-*/--ease-*（自有 keyframe 无：离散态切换全过渡化）；
+   - 动效只走 --dur-*、--ease-*（自有 keyframe 无：离散态切换全过渡化）；
      双路归零防御性成对保留（见文末 §11）。
    ============================================================ */
 
@@ -20,8 +20,11 @@
 .vw-tasks {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: 0;                  /* T19f-A：2.1 逐段 margin 承接（page-head/toolbar 各自下边距） */
   min-width: 0; /* 360px 防横向溢出（FR-23 小屏） */
+}
+.tk-head {
+  margin-bottom: 22px;     /* 2.1 .page-head（style.css:354） */
 }
 .tk-head h2 {
   margin: 0;
@@ -31,8 +34,8 @@
   line-height: 1.4;
 }
 .tk-sub {
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-sm);
+  margin: 6px 0 0;         /* 2.1 .page-sub（style.css:356） */
+  font-size: 13px;         /* 2.1 style.css:356（弃 clamp --text-sm） */
   color: var(--color-text-muted);
 }
 
@@ -40,8 +43,9 @@
 .tk-toolbar {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: 16px;               /* 2.1 .toolbar（style.css:474-475） */
   flex-wrap: wrap;
+  margin-bottom: 18px;     /* 2.1 style.css:475 */
 }
 .tk-search {
   position: relative;
@@ -57,14 +61,14 @@
   color: var(--color-text-faint);
   pointer-events: none;       /* 旧壳 opacity .55（style.css:478）语义由 --text-faint 承载 */
 }
-.tk-toolbar .tk-search .tk-input { padding-left: var(--space-8); }
+.tk-toolbar .tk-search .tk-input { padding-left: 36px; }  /* 2.1 style.css:479 */
 .tk-input {
   width: 100%;
   min-height: 44px;           /* FR-24 命中区（表单输入同款） */
   box-sizing: border-box;
-  padding: var(--space-2) var(--space-3);
+  padding: 10px 14px;      /* 2.1 input 口径（style.css:479） */
   font: inherit;
-  font-size: var(--text-md);
+  font-size: 14px;         /* 2.1 body 14px（style.css:37；弃 clamp --text-md） */
   color: var(--input-text);
   background: var(--input-bg);
   border: var(--line-1) solid var(--input-border);
@@ -88,7 +92,7 @@
   border: 0;
 }
 /* 筛选分段：手机横滑由 .u-seg-scroll overflow-x:auto 承载（FR-25 ④） */
-.tk-toolbar .u-seg { flex: 1 1 auto; min-width: 0; }
+.tk-toolbar .u-seg { flex: none; margin-left: auto; min-width: 0; }  /* 2.1 .segmented 贴右（style.css:474 space-between） */
 
 /* ---------- 2. 列表区（对照 style.css:484 task-grid） ---------- */
 .tk-grid {
@@ -107,8 +111,8 @@
 .tk-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-4);            /* 旧壳 padding:19px（style.css:488）≈4px 栅格 16px */
+  gap: 0;                          /* T19f-A：2.1 逐件 margin 承接（style.css:495-505） */
+  padding: 19px;                   /* 2.1 style.css:488 */
   border-radius: var(--radius-lg);    /* 旧壳 var(--r-lg)（style.css:488） */
   background: var(--glass-card-bg);
   border: var(--line-1) solid var(--glass-card-border);
@@ -130,8 +134,8 @@
   box-shadow: 0 0 0 var(--space-1) var(--input-ring);
 }
 .tk-title {
-  margin: 0;
-  font-size: var(--text-lg);          /* 旧壳 15.5px（style.css:495）≈text-lg */
+  margin: 0 0 4px;                    /* 2.1 h3 margin-bottom 4px（style.css:495） */
+  font-size: 15.5px;                  /* 2.1 h3（style.css:495） */
   font-weight: 600;
   color: var(--color-text-strong);
   overflow: hidden;
@@ -139,7 +143,8 @@
   white-space: nowrap;
 }
 .tk-channel {
-  font-size: var(--text-sm);
+  font-size: 12px;                    /* 2.1 .task-channel（style.css:497） */
+  margin-bottom: 13px;                /* 2.1 style.css:497 */
   color: var(--color-primary);        /* 旧壳 #a8bcff 品牌淡紫（style.css:497）→ 语义色派生 */
 }
 
@@ -165,12 +170,12 @@
 /* 标签行（对照 style.css:506-509 tag-row/mini-tag） */
 .tk-tags {
   display: flex;
-  gap: var(--space-2);
+  gap: 6px;                           /* 2.1 .tag-row（style.css:506） */
   flex-wrap: wrap;
-  margin-bottom: var(--space-1);
+  margin-bottom: 11px;                /* 2.1 style.css:506 */
 }
 .tk-tag {
-  font-size: var(--text-xs);
+  font-size: 11px;                    /* 2.1 .mini-tag（style.css:507） */
   padding: 2px 9px;                   /* 旧壳 2px 9px（style.css:508） */
   border-radius: var(--radius-xs);
   background: var(--color-surface-raise);
@@ -184,6 +189,7 @@
 /* 进度条（对照 style.css:498-502 task-bar/task-fill） */
 .tk-bar {
   height: 7px;                        /* 旧壳 7px（style.css:498）非4px倍率视觉常量 */
+  margin-bottom: 11px;                /* 2.1 .task-bar（style.css:499） */
   border-radius: var(--radius-xs);
   overflow: hidden;
   background: var(--color-surface-sunk);
@@ -205,7 +211,7 @@
   display: flex;
   justify-content: space-between;
   gap: var(--space-2);
-  font-size: var(--text-sm);
+  font-size: 12px;                    /* 2.1 .task-stat（style.css:503） */
   color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -217,18 +223,40 @@
 }
 .tk-stat span:last-child { flex: none; }
 
+/* T52 任务选号行（2.1 .task-acct 族，style.css:1397-1407 逐值） */
+.tk-acct {
+  display: flex;
+  align-items: center;
+  gap: 8px;                        /* 2.1 style.css:1398 */
+  flex-wrap: wrap;
+  margin: 10px 0 2px;              /* 2.1 style.css:1399 */
+}
+.tk-acct-label,
+.tk-acct-note {
+  font-size: 11.5px;               /* 2.1 style.css:1401 */
+  color: var(--color-text-faint);
+}
+.tk-acct-note {
+  flex-basis: 100%;                /* 2.1 style.css:1402 */
+  opacity: .85;
+}
+.tk-acct-seg .u-seg-item {
+  padding: 4px 11px;               /* 2.1 .acct-seg-host .seg（style.css:1405） */
+  font-size: 11.5px;
+}
+
 /* 快捷操作行（对照 style.css:504-505 task-actions） */
 .tk-actions {
   display: flex;
-  gap: var(--space-2);                 /* 旧壳 7px（style.css:504）近似 8px 栅格 */
+  gap: 7px;                            /* 2.1 .task-actions（style.css:504） */
   flex-wrap: wrap;
-  margin-top: var(--space-2);
+  margin-top: 15px;                    /* 2.1 style.css:504 */
 }
 .tk-actions .u-btn {
   flex: 1 1 auto;
   min-height: 44px;                    /* FR-24 命中区（卡操作手机拇指区） */
-  padding: var(--space-2) var(--space-2);
-  font-size: var(--text-sm);           /* 旧壳 .btn.sm 12px（style.css:505）密度 */
+  padding: 8px 4px;                    /* 2.1 .task-actions .btn（style.css:505） */
+  font-size: 12px;                     /* 2.1 style.css:505 */
 }
 .u-btn.is-busy { opacity: .9; pointer-events: none; }   /* 旧壳 .btn.is-busy（style.css:678） */
 

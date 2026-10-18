@@ -7,7 +7,7 @@
 .vw-editor {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);          /* style.css:733 */
+  gap: 12px;                   /* 2.1 editor-app（style.css:733） */
   min-width: 0;
 }
 .vw-editor--fallback {
@@ -19,7 +19,9 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-3) var(--space-5);   /* style.css:738 */
+  gap: 22px;                   /* 2.1 .editor-head（style.css:738） */
+  padding: 16px 20px;          /* 2.1 style.css:739 */
+  border-radius: 20px;         /* 2.1 var(--r-lg)（style.css:739） */
 }
 .ev-head-main {
   display: flex;
@@ -42,7 +44,7 @@
   border: none;
   outline: none;
   font: inherit;
-  font-size: var(--text-xl);    /* style.css:744 */
+  font-size: 20px;              /* 2.1 style.css:744 */
   font-weight: 700;
   color: var(--color-text-strong);
   padding: var(--space-1) 0;
@@ -53,9 +55,9 @@
 .ev-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-1) var(--space-4);   /* style.css:746 */
-  margin-top: var(--space-1);   /* style.css:746 */
-  font-size: var(--text-xs);    /* style.css:747 */
+  gap: 16px;                    /* 2.1 style.css:746 */
+  margin-top: 6px;              /* 2.1 style.css:746 */
+  font-size: 11.5px;            /* 2.1 style.css:747 */
   color: var(--color-text-faint);
 }
 .ev-meta-item {
@@ -68,22 +70,23 @@
 /* 2. 任务设置区 */
 .ev-settings {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-3);          /* style.css:748 */
-  flex: 1 1 320px;
+  align-items: flex-end;        /* 2.1 .ed-settings（style.css:748）横排底对齐 */
+  gap: 12px;                    /* 2.1 style.css:748 */
+  flex-wrap: wrap;
+  flex: none;                   /* 2.1 style.css:748 */
   min-width: 0;
 }
 .ev-field {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);          /* style.css:749 */
+  gap: 5px;                     /* 2.1 .ed-field（style.css:749） */
   min-width: 0;
 }
 .ev-field--narrow {
-  max-width: 140px;             /* style.css:750 */
+  width: 90px;                  /* 2.1 .ed-field.narrow（style.css:750） */
 }
 .ev-label {
-  font-size: var(--text-sm);
+  font-size: 12px;              /* 2.1 label（style.css:219） */
   color: var(--color-text-muted);
 }
 .ev-folder-input,
@@ -114,13 +117,13 @@
 }
 .ev-path-row .ev-folder-input {
   flex: 1 1 200px;              /* style.css:755 */
-  min-width: 0;
+  min-width: 230px;             /* 2.1 .ed-settings .path-row input（style.css:755） */
 }
 .ev-check-line {
   display: flex;
   align-items: center;
-  gap: var(--space-1);          /* style.css:756 */
-  font-size: var(--text-xs);    /* style.css:756 */
+  gap: 5px;                     /* 2.1 style.css:757 */
+  font-size: 11.5px;            /* 2.1 style.css:756 */
   color: var(--color-text-muted);
   cursor: pointer;
   min-height: 44px;             /* FR-24 */
@@ -140,19 +143,22 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2) var(--space-3);   /* style.css:761 */
+  gap: 10px;                    /* 2.1 .editor-toolbar（style.css:761） */
+  padding: 12px 16px;           /* 2.1 style.css:762 */
+  border-radius: 20px;          /* 2.1 var(--r-lg)（style.css:762） */
 }
 .ev-search {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   flex: 1 1 220px;
+  max-width: 360px;             /* 2.1 .search-box（style.css:476） */
   min-width: 0;
   padding: 0 var(--space-3);
   min-height: 44px;             /* FR-24 */
   background: var(--input-bg);
   border: var(--line-1) solid var(--input-border);
-  border-radius: var(--input-radius);
+  border-radius: var(--radius-pill);   /* 2.1 search-box 圆胶囊（style.css:479） */
 }
 .ev-search:focus-within {
   border-color: var(--input-border-focus);
@@ -170,12 +176,12 @@
   border: none;
   outline: none;
   font: inherit;
-  font-size: var(--text-md);
+  font-size: 14px;              /* 2.1 body 14px（style.css:37） */
   color: var(--input-text);
 }
 .ev-q-input::placeholder { color: var(--input-placeholder); }
 .ev-toolbar .u-seg {
-  flex: 1 1 260px;
+  flex: none;                   /* 2.1 .segmented 胶囊贴内容（style.css:359-368） */
   min-width: 0;
 }
 .ev-sel-btns {
@@ -183,7 +189,7 @@
   gap: var(--space-2);
 }
 .ev-counts {
-  font-size: var(--text-xs);    /* style.css:765 */
+  font-size: 11.5px;            /* 2.1 .ed-counts（style.css:765） */
   color: var(--color-text-faint);
   white-space: nowrap;
 }
@@ -193,6 +199,7 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  padding: 4px 6px;             /* 2.1 .editor-main（style.css:770） */
 }
 .ev-loading {
   margin: var(--space-6) 0;
@@ -417,8 +424,8 @@
     border-bottom: var(--line-1) solid var(--color-border);
   }
   .ev-hcell {
-    padding: var(--space-2) var(--space-2);   /* style.css:779 */
-    font-size: var(--text-xs);  /* style.css:778 */
+    padding: 10px 10px;         /* 2.1 style.css:779 */
+    font-size: 11.5px;          /* 2.1 style.css:778 */
     font-weight: 600;
     color: var(--color-text-muted);
     text-align: left;
@@ -428,12 +435,12 @@
   }
   .ev-row {
     gap: var(--space-2);
-    padding: var(--space-2) var(--space-2);   /* style.css:791 */
+    padding: 9px 10px;          /* 2.1 .ed-row td（style.css:791） */
     border: none;
     border-bottom: var(--line-1) solid var(--color-border);
     border-radius: 0;
     background: transparent;
-    font-size: var(--text-sm);  /* style.css:793 */
+    font-size: 12.5px;          /* 2.1 style.css:793 */
     transition: background var(--dur-sm) var(--ease-standard);
   }
   @media (hover: hover) and (pointer: fine) {   /* T17 去 hover 依赖 */

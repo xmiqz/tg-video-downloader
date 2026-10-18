@@ -151,13 +151,18 @@
 .u-overlay {
   position: fixed;
   inset: 0;
-  z-index: var(--z-sheet);
+  /* T19f：与登录弹层同层（--z-modal 6000）；同层按 DOM 序后者在上，
+     后开的弹窗（确认/详情）压住先开的，点窗外只关最上层 */
+  z-index: var(--z-modal);
   display: flex;
   align-items: flex-end;   /* sheet 缺省贴底（data-form 切换承载重心） */
   justify-content: center;
 }
 .u-overlay[data-form="modal"] { align-items: center; }
 .u-overlay[hidden] { display: none; }
+/* T19g：退场过渡期（is-open 已摘、hidden 未置）不拦截触摸/点击——
+   否则关掉弹层后 400ms 内点击/滑动打在隐形层上「没反应」 */
+.u-overlay:not(.is-open) { pointer-events: none; }
 
 .u-overlay-mask {
   position: absolute;

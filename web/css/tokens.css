@@ -81,9 +81,16 @@
 
   /* --- 1.8 z-index 层级 --- */
   --z-backdrop: 0; --z-base: 1; --z-sticky: 10; --z-nav: 20;
-  --z-overlay: 200; --z-sheet: 300; --z-toast: 400;
-  /* T19a 修：500→6000。弹层挂 body 时被 #sh-root（fixed z-index:5000，
-     shell.css:25-38）整层压住导致登录卡点击全被版面吃掉，须高于 5000 */
+  /* T19f 修：sheet/toast 300/400→5400/6200。凡挂 body 的弹层（ui
+     .u-overlay 任务详情/确认、.u-actionbar 手机批量条、toast）原先低于
+     #sh-root（fixed z-index:5000，shell.css:25-38）整层被壳压住：详情被
+     列表行盖、点不上、遮罩收不到点击（点窗外不关闭）。壳内层级（--z-overlay
+     200 抽屉遮罩等）不动。弹窗层 .u-overlay 改用 --z-modal（ui.css:154）：
+     与登录弹层同为 6000，同层按 DOM 序后者在上——后开的弹窗天然压住先开
+     的（确认压登录卡、确认压详情），点窗外只关最上层；toast 6200 恒最上
+     （弹层开着时失败提示仍可见）。 */
+  --z-overlay: 200; --z-sheet: 5400; --z-toast: 6200;
+  /* T19a 修：500→6000。登录弹层须高于 #sh-root 5000（点击不被版面吃掉） */
   --z-modal: 6000;
 }
 

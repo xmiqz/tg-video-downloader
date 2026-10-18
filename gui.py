@@ -1190,6 +1190,13 @@ class Api:
                 self.jobs.update(job_id, phase=ev["phase"],
                                  phase_detail=detail,
                                  done=len(items_seq), total=0)
+                # T19f-E：内核 items 帧稀疏（仅 _flush 非空才 yield），
+                # progress 帧每消息一条；若早到少量匹配后只剩 progress，
+                # 「≥2.0s 且 ≥1 条」首帧规则在 items 节拍上永不触发，
+                # 匹配项滞留到 done 终帧才下发（前端流式行空转）。progress
+                # 节拍同评估 _maybe_push 使首帧/追加帧即时下发（幂等：
+                # 无新增条目时 n<=pushed_n 直接返回）。
+                _maybe_push()
             elif kind == "items":
                 _absorb(ev["items"])
                 _maybe_push()
@@ -2019,6 +2026,9 @@ class Api:
                 self.jobs.update(job_id, phase=ev["phase"],
                                  phase_detail=detail,
                                  done=added_total, total=0)
+                # T19f-E：与 _search_coro 同款——progress 节拍同评估
+                # _maybe_push，防 items 帧稀疏时已追加条目滞留到终帧
+                _maybe_push()
             elif kind == "items":
                 # 每批重读任务对象（获取最新已落盘条目）
                 t = core.load_task(task_id)
@@ -2192,6 +2202,32 @@ class Api:
             p = filedialog.askdirectory()
             root.destroy()
             return {"ok": True, "path": p}
+        except ImportError:
+            # tkinter 缺失（ARM64 打包排除）→ Windows 原生目录选择兜底
+            # （PowerShell STA FolderBrowserDialog：与 tkinter 同为系统经典
+            #  目录选择器，打包零依赖；取消返回空串同 tkinter 口径）
+            try:
+                import base64
+                import subprocess
+                import sys as _sys
+
+                ps = (
+                    "Add-Type -AssemblyName System.Windows.Forms; "
+                    "$d = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                    "$d.ShowNewFolderButton = $true; "
+                    "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK)"
+                    " { [Console]::Out.Write($d.SelectedPath) }"
+                )
+                enc = base64.b64encode(ps.encode("utf-16le")).decode("ascii")
+                argv = ["powershell.exe", "-NoProfile", "-STA", "-EncodedCommand", enc]
+                kw = {"capture_output": True, "timeout": 600}
+                if _sys.platform == "win32":
+                    kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                out = subprocess.run(argv, **kw)
+                p = (out.stdout or b"").decode("utf-8", "ignore").strip()
+                return {"ok": True, "path": p}
+            except Exception as e2:
+                return {"ok": False, "error": str(e2)}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
