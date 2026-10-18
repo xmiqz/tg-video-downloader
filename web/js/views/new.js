@@ -14,7 +14,8 @@
 //
 // 组件消费：T10 桶唯唯一入口 ../ui/index.js（createCard/createSegmented/
 //   createProgress/createToaster/el/append），签名见 t10_contract.md。
-// RPC 白名单消费恰三个：preview / preview_cancel / start_download（45 集合内）。
+// RPC 白名单消费恰五个：preview / preview_cancel / start_download /
+//   account_list / edit_task（45 集合内；后两者 T19a 任务选号承接）。
 // 导航：window.__t8router.navigate（降级 location.hash）。
 //
 // 5A seam 出口（任务书 §3 授权，与 T11 同款）：collectParams/
@@ -22,8 +23,8 @@
 //   selectAllPatch/classifySearchJob/filterRows 九个纯函数额外命名导出，
 //   仅供测试消费；本模块顶层零 DOM/window 访问（node import 即证）。
 //
-// TgAccounts.applyNewTaskAcct（任务选号策略）属旧壳全局职责，
-//   新壳账号区在后续波次——本波不实现、不预埋（任务书 §2.8 指定）。
+// T19a 承接 TgAccounts.applyNewTaskAcct（任务选号策略，app.js:3625-3631）：
+//   新建页选号随 edit_task({acct_pref}) fire-and-forget 下发（见 doStart 尾）。
 // ============================================================
 
 import {
@@ -252,6 +253,11 @@ let listBound = false;       // window tg:* 监听挂载标志
 let pyReadyHandler = null;   // pywebviewready 待清理引用
 let apiReadyP = null;
 const rowByKey = new Map();  // 全量重绘重建；行内更新专用索引（免 CSS.escape）
+// T52 任务选号（app.js:3120/3574-3631 轻承接）：本页选择仅记录，
+// 创建成功后随 edit_task({acct_pref}) fire-and-forget 下发
+let newTaskAcct = "auto";   // app.js:3120 默认自动
+let acctAlts = [];          // 小号清单（app.js:3575 altAccounts；空=只显 主号|自动）
+let acctSeg = null;
 
 // ============================================================
 // mount / onEnter / onLeave（T8 契约 §1）
@@ -279,6 +285,7 @@ export function onEnter() {
   if (cached && refs) {
     bindList();
     attachGestures();   // T17 手势增量（幂等）
+    loadAcctAlts();     // T52 小号清单补拉（幂等；失败静默=只显 主号|自动）
   }
 }
 
@@ -405,34 +412,37 @@ function buildDom() {
     el("span", { text: "高级筛选" }),
     el("span", { class: "nw-hint", text: "匹配模式 · 评论区 · 日期体积区间 · 排序" }),
   ]);
+  // 行序逐行对照 2.1（index.html:226-274）：adv-row[匹配模式|搜索范围] →
+  // 关键词全宽 → adv-row[体积|日期|排序]（.adv-row/.adv-field 槽宽
+  // style.css:551-553）；parallel 移出并入 form-grid（index.html:277-286）
   const advPanel = el("div", { id: "nw-adv", class: "nw-adv", hidden: true }, [
-    el("div", { class: "nw-field" }, [
-      el("span", { class: "nw-label", text: "匹配模式" }),
-      modeSeg.el,
-    ]),
-    el("div", { class: "nw-field" }, [
-      el("span", { class: "nw-label", text: "搜索范围" }),
-      scopeSeg.el,
+    el("div", { class: "nw-advrow" }, [
+      el("div", { class: "nw-field" }, [
+        el("span", { class: "nw-label", text: "匹配模式" }),
+        modeSeg.el,
+      ]),
+      el("div", { class: "nw-field" }, [
+        el("span", { class: "nw-label", text: "搜索范围" }),
+        scopeSeg.el,
+      ]),
     ]),
     el("div", { class: "nw-field" }, [
       el("label", { for: "nw-keywords", text: "关键词（逗号分隔，词首 - 排除；模糊/正则模式下直接写完整表达式）" }),
       keywords,
     ]),
-    el("div", { class: "nw-field" }, [
-      el("span", { class: "nw-label", text: "体积区间 (MB，可只填一个)" }),
-      el("div", { class: "nw-dual" }, [minMb, el("span", { "aria-hidden": "true", text: "—" }), maxMb]),
-    ]),
-    el("div", { class: "nw-field" }, [
-      el("span", { class: "nw-label", text: "发布日期区间" }),
-      el("div", { class: "nw-dual" }, [dateFrom, el("span", { "aria-hidden": "true", text: "—" }), dateTo]),
-    ]),
-    el("div", { class: "nw-field" }, [
-      el("span", { class: "nw-label", text: "排序方式" }),
-      sortSeg.el,
-    ]),
-    el("div", { class: "nw-field nw-field--num" }, [
-      el("label", { for: "nw-parallel", text: "同时下载几路（1-8）" }),
-      parallel,
+    el("div", { class: "nw-advrow" }, [
+      el("div", { class: "nw-field" }, [
+        el("span", { class: "nw-label", text: "体积区间 (MB，可只填一个)" }),
+        el("div", { class: "nw-dual" }, [minMb, el("span", { "aria-hidden": "true", text: "—" }), maxMb]),
+      ]),
+      el("div", { class: "nw-field" }, [
+        el("span", { class: "nw-label", text: "发布日期区间" }),
+        el("div", { class: "nw-dual" }, [dateFrom, el("span", { "aria-hidden": "true", text: "—" }), dateTo]),
+      ]),
+      el("div", { class: "nw-field nw-field--small" }, [
+        el("span", { class: "nw-label", text: "排序方式" }),
+        sortSeg.el,
+      ]),
     ]),
   ]);
 
@@ -444,6 +454,13 @@ function buildDom() {
   });
 
   const card = createCard({ ariaLabel: "新建下载条件" });
+  // T52 任务选号行（index.html:288-294 / style.css:1397-1405 task-acct 系）
+  const acctSegHost = el("div", { class: "nw-acctseg" });
+  const taskAcctRow = el("div", { class: "nw-taskacct" }, [
+    el("span", { class: "nw-taskacct-label", text: "本任务后续下载使用" }),
+    acctSegHost,
+    el("span", { class: "nw-taskacct-note", text: "进行中的条目不受影响" }),
+  ]);
   card.body.append(
     el("div", { class: "nw-field" }, [
       el("label", { for: "nw-channel", text: "频道用户名或链接" }),
@@ -451,12 +468,18 @@ function buildDom() {
     ]),
     advBtn,
     advPanel,
+    // form-grid 二列（index.html:277-286 / style.css:525-526）：limit | parallel
     el("div", { class: "nw-grid2" }, [
-      el("div", { class: "nw-field nw-field--num" }, [
+      el("div", { class: "nw-field" }, [
         el("label", { for: "nw-limit", text: "结果数量上限" }),
         limit,
       ]),
+      el("div", { class: "nw-field" }, [
+        el("label", { for: "nw-parallel", text: "同时下载几路（1-8）" }),
+        parallel,
+      ]),
     ]),
+    taskAcctRow,
     el("div", { class: "nw-actions" }, [searchBtn]),
     errBox,
     noteBox
@@ -534,7 +557,9 @@ function buildDom() {
     phaseBox: phaseBox, countsBox: countsBox, pnoteBox: pnoteBox,
     vsearch: vsearch, selAllBtn: selAllBtn, clearBtn: clearBtn,
     list: list, backBtn: backBtn, startBtn: startBtn, selCount: selCount,
+    acctSegHost: acctSegHost,
   };
+  renderAcctSeg();   // T52 选号 seg 首渲（小号清单随后台异步补拉重建）
   return root;
 }
 
@@ -973,6 +998,47 @@ async function backToStep1() {             // app.js:1078-1082
 }
 
 // ============================================================
+// T52 任务选号（app.js:3574-3631 轻承接；行样式 style.css:1397-1405）
+// ============================================================
+function renderAcctSeg() {
+  if (!refs || !refs.acctSegHost) return;
+  const items = [{ value: "main", label: "主号" }];           // app.js:3579
+  if (acctAlts.length) items.push({ value: acctAlts[0].id, label: "小号" }); // app.js:3580
+  items.push({ value: "auto", label: "自动" });               // app.js:3581
+  if (acctSeg) acctSeg.destroy();
+  acctSeg = createSegmented(items, {
+    value: newTaskAcct,
+    ariaLabel: "本任务后续下载使用",
+    // 仅记录选择（app.js:3602-3605 新建页不即发 RPC，创建成功后统一下发）
+    onChange: function (v) { newTaskAcct = v; },
+  });
+  refs.acctSegHost.textContent = "";
+  refs.acctSegHost.append(acctSeg.el);
+}
+
+// 小号清单异步补拉（2.1 renderSegs 于账号刷新后重建同义）；
+// 失败静默降级=只显 主号|自动（app.js:3170-3174 同款）
+async function loadAcctAlts() {
+  try {
+    const ready = await ensureApi();          // 布尔就绪，非桥对象（见 ensureApi 不变量）
+    if (!ready) return;
+    const r = await window.pywebview.api.account_list();   // 同步直调（app.js:3162）
+    const list = (r && r.ok && Array.isArray(r.accounts)) ? r.accounts : [];
+    const alts = list.filter(function (a) {
+      return a && a.id && a.id !== "main" && a.state !== "absent";  // active.js:1535 同款
+    });
+    const changed = alts.length !== acctAlts.length ||
+      (alts.length > 0 && acctAlts.length > 0 && alts[0].id !== acctAlts[0].id);
+    if (changed) {
+      acctAlts = alts;
+      renderAcctSeg();
+    }
+  } catch (e) {
+    /* 静默降级：账号清单不可得时不阻断新建流程 */
+  }
+}
+
+// ============================================================
 // 开始下载（app.js:852-872；两处 alert → toast，T10 契约 §4 承接）
 // ============================================================
 async function doStart() {
@@ -1011,7 +1077,11 @@ async function doStart() {
     return;
   }
   restoreBtn(); // 成功路径同样恢复（TR12-1 G4 揪出：keep-alive 返回视图后按钮需可再点）
-  // TgAccounts.applyNewTaskAcct(r.task_id) 属旧壳全局职责（app.js:870），
-  // 新壳账号区后续波次承接——本波不实现（任务书 §2.8 指定，报告登记）。
+  // T52 任务选号承接（app.js:870 applyNewTaskAcct → 3625-3631）：本页选定的
+  // acct_pref 随 edit_task fire-and-forget 下发，失败静默（下载已开始不受影响）
+  if (r && r.task_id) {
+    Promise.resolve(window.pywebview.api.edit_task(r.task_id, { acct_pref: newTaskAcct }))
+      .catch(function (e) { console.debug("[T19a] 新任务 acct_pref 下发失败：", e); });
+  }
   navigate("/active");                      // app.js:871 switchView("active")
 }

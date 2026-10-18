@@ -83,7 +83,12 @@
   box-shadow: var(--btn-primary-shadow); /* 2.1 style.css:199-200 主按钮光晕（tokens 3.1） */
 }
 .u-btn--danger { background: var(--color-danger-soft); color: var(--color-danger-text); }
-.u-btn--ghost { background: var(--btn-ghost-bg); color: var(--btn-ghost-text); border-color: var(--btn-ghost-border); }
+.u-btn--ghost {
+  background: var(--btn-ghost-bg);
+  color: var(--btn-ghost-text);
+  border-color: var(--btn-ghost-border);
+  box-shadow: var(--btn-ghost-hi); /* 2.1 .btn.glass-btn 顶部 1px hi（style.css:154/:101） */
+}
 .u-btn--md { min-height: 36px; } /* 2.1 同 .btn 几何；命中区走下方断点 */
 @media (max-width: 767.98px) {
   .u-btn, .u-btn--md { min-height: 44px; } /* FR-24 移动命中区常量 */
@@ -429,7 +434,7 @@
   background: transparent;
   color: var(--color-text-muted);
   font: inherit;
-  font-size: var(--text-sm);
+  font-size: 12.5px; /* 2.1 .seg 12.5px（style.css:370）；无 token 字面量 */
   white-space: nowrap;
   cursor: pointer;
   transition: color var(--dur-sm) var(--ease-standard),

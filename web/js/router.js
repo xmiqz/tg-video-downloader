@@ -405,7 +405,18 @@ function buildShellDom() {
     '<div class="sh-brand"><span class="sh-logo" aria-hidden="true">TG</span>' +
     '<span class="sh-brand-name">视频下载器</span></div>' +
     '<nav class="sh-side-nav">' + sideNav + "</nav>" +
-    '<div class="sh-side-foot">' + navLinkHtml("login", "登录", "👤") + "</div>" +
+    // 侧底 me-box（T19a 布局对标：2.1 index.html:91-111）：me 主体 data-nav
+    // =login（委托开登录弹层），power 钮独立登出（boot 内监听，stopPropagation）
+    '<div class="sh-side-foot">' +
+    '<div class="sh-me" data-nav="login" role="button" tabindex="0" aria-label="账号与登录">' +
+    '<div class="sh-me-avatar" id="sh-me-avatar" aria-hidden="true">·</div>' +
+    '<div class="sh-me-meta"><div class="sh-me-name" id="sh-me-name">未登录</div>' +
+    '<div class="sh-me-user" id="sh-me-user"></div></div>' +
+    '<button class="sh-me-logout" id="sh-me-logout" type="button" ' +
+    'title="退出登录" aria-label="退出登录">' +
+    '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" focusable="false">' +
+    '<path fill="currentColor" d="M13 3h-2v10h2V3zm4.83 2.17-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z"/>' +
+    "</svg></button></div></div>" +
     "</aside>" +
     // 抽屉（<640 汉堡展开）
     '<div class="sh-drawer-mask" id="sh-drawer-mask" hidden></div>' +
@@ -755,6 +766,99 @@ export async function boot() {
     });
   }
 
+  // —— 侧底 me-box（T19a 布局对标：2.1 index.html:91-111 / app.js:535-540、
+  //    632-693）——__t8me 镜像钩子（login.js renderMeCard/showMeError 调
+  //    set 三串、doGuest 调 reset）+ power 钮 compact 登出：is_active 守卫
+  //    → 小号探底（有小号=logout 提升语义，gui.py:475-481，必经确认）→
+  //    confirm → logout() → 清光（me 三串重置+收 guest 条+开登录弹层手机步）。
+  const meNameEl = doc.getElementById("sh-me-name");
+  const meUserEl = doc.getElementById("sh-me-user");
+  const meAvatarEl = doc.getElementById("sh-me-avatar");
+  function meSet(name, user, avatar) {
+    if (meNameEl) meNameEl.textContent = name || "已登录";
+    if (meUserEl) meUserEl.textContent = user || "";
+    if (meAvatarEl) meAvatarEl.textContent = avatar || "·";
+  }
+  function meReset() { meSet("未登录", "", "·"); }
+  // 启动已登录路径补拉资料镜像（bootAuth 就绪两支调用；失败静默保默认形态）
+  function meSync() {
+    const api = win.pywebview && win.pywebview.api;
+    if (!api) return;
+    Promise.resolve(api.me()).then(function (m) {
+      if (m && m.ok) {
+        meSet(m.name || "已登录",
+              m.username ? "@" + m.username : (m.phone || ""),
+              (m.name || "?").slice(0, 1));
+      }
+    }).catch(function () { /* 静默：保持「未登录」默认形态 */ });
+  }
+  win.__t8me = { set: meSet, reset: meReset, sync: meSync };
+
+  const meBoxEl = doc.querySelector(".sh-me");
+  if (meBoxEl) {
+    // role=button 键盘可达（Enter/Space 等价点击开登录弹层）
+    meBoxEl.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        router.navigate("/login");
+      }
+    });
+  }
+  const meLogoutBtn = doc.getElementById("sh-me-logout");
+  if (meLogoutBtn) {
+    meLogoutBtn.addEventListener("click", async function (e) {
+      e.preventDefault();
+      e.stopPropagation(); // 不冒泡到 .sh-me 的 data-nav 登录委托
+      if (meLogoutBtn.disabled) return;
+      meLogoutBtn.disabled = true; // T56 在途防重复（app.js:634-635）
+      try {
+        const api = win.pywebview && win.pywebview.api;
+        if (!api) return;
+        try {
+          if (await api.is_active()) {
+            win.alert("有下载任务正在进行，请先到「下载中」中止下载后再退出。");
+            return;
+          }
+        } catch (err) { /* is_active 异常不拦退出（app.js:640） */ }
+        // 小号探底（app.js:641-650）：有小号时 logout=提升主号语义
+        //（gui.py:475-481），必须先经确认（askLogoutPromote 文案
+        // app.js:593-594，compact 以 confirm 承接同语义）
+        let hasAlt = false;
+        try {
+          const al = await api.account_list();
+          if (al && al.ok && Array.isArray(al.accounts))
+            hasAlt = al.accounts.some(function (x) { return x.id && x.id !== "main"; });
+        } catch (err) { /* 探底失败按无小号走 confirm */ }
+        const ask = hasAlt
+          ? "退出当前主号？\n\n登录中的小号将自动成为主号；本地任务与已下载文件不受影响"
+          : "退出当前账号？\n\n· 本地登录信息将被删除，重新登录需输入手机号与验证码\n· 任务清单与已下载视频不受影响";
+        if (!win.confirm(ask)) return;
+        const r = await api.logout();
+        if (!r || !r.ok) {
+          win.alert((r && r.error) || "退出登录失败");
+          return;
+        }
+        if (r.stage === "promoted") {
+          // 小号提升为主号（app.js:653-654 afterPromote）：不重置 me、
+          // 不开登录弹层，仅补拉资料镜像三串
+          meSync();
+          return;
+        }
+        // 清光（app.js:671-686）：me 三串重置 + 收 guest 条 + 登录弹层
+        //（onEnter 按 login_state 复位手机步，app.js:681-686 口径）
+        meReset();
+        if (win.__t8guest && typeof win.__t8guest.hide === "function") win.__t8guest.hide();
+        if (win.__t8router && typeof win.__t8router.navigate === "function") {
+          win.__t8router.navigate("/login", { force: true });
+        }
+      } catch (e2) {
+        win.alert("退出登录失败：" + (e2 && e2.message ? e2.message : String(e2)));
+      } finally {
+        meLogoutBtn.disabled = false;
+      }
+    });
+  }
+
   // bridge 就绪等待（同 login.js bridgeReady 口径；桩宿主立即就绪）。
   // 只 resolve 布尔、不 resolve api 代理本身——Promise 吸收 thenable 会
   // 取 .then 值，被同形桥桩记成假 RPC（tr15 K1「then」误报教训）。
@@ -790,6 +894,7 @@ export async function boot() {
     if (r && r.ok && (r.stage === "ready" || !r.stage)) {
       guestBarHide();
       bootErrShow("");
+      meSync(); // T19a：启动已登录补拉 me 三串镜像侧底 me-box
       return;
     }
     // need_code（含软成功 warning）→ 登录弹层停码步；否则复核 login_state
@@ -801,6 +906,7 @@ export async function boot() {
       if (st && st.logged_in) {
         guestBarHide();
         bootErrShow("");
+        meSync(); // T19a：启动已登录补拉 me 三串镜像侧底 me-box
         return;
       }
       codeStep = !!(st && st.has_session && !(r && r.busy));

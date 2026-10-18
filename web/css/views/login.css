@@ -13,7 +13,7 @@
 .lg-view {
   position: fixed;
   inset: 0;
-  z-index: var(--z-modal, 500);
+  z-index: var(--z-modal, 6000);  /* fallback 同步 tokens.css（须高于 #sh-root 5000） */
   display: flex;
   align-items: center;
   justify-content: center;

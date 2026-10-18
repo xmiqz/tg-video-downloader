@@ -209,6 +209,68 @@ html.liquid .ev-move-mask {
 }
 .sh-side-foot .sh-nav-item { color: var(--nav-text); }
 
+/* ---------- 2a. 侧底 me-box（T19a：2.1 index.html:91-111 / style.css:289-340
+   逐值；裸色带出处为 §0b 同型先例）---------- */
+.sh-me { display: flex; align-items: center; gap: 11px; padding: 2px 8px; cursor: pointer; }
+.sh-me-meta { min-width: 0; flex: 1 1 auto; }
+.sh-me-avatar {
+  width: 38px; height: 38px; border-radius: 50%; flex: none;
+  background: linear-gradient(135deg, #5b86ff 0%, #9a6bff 100%); /* 2.1 --brand-grad（style.css:17） */
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; text-transform: uppercase;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.4); /* 2.1 style.css:296 */
+}
+.sh-me-name {
+  font-size: var(--text-sm); font-weight: 600; /* 2.1 13px/600（style.css:298） */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sh-me-user {
+  font-size: 11.5px;                    /* 2.1 style.css:299（无 token 值） */
+  color: var(--color-text-faint);       /* 2.1 --ink-mute */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sh-me-logout {
+  /* T56 退出标识（2.1 .me-logout-btn style.css:300-331 逐值） */
+  margin-left: auto;
+  width: 28px; height: 28px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: linear-gradient(160deg,
+    rgba(255,255,255,.10), rgba(255,255,255,.04));
+  color: var(--color-text-muted);       /* 2.1 --ink-dim */
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.12),
+              0 2px 8px rgba(0,0,0,.28);
+  cursor: pointer;
+  transition: all var(--dur-sm) var(--ease-spring);
+}
+.sh-me-logout:hover {
+  color: #ff8b98;                       /* 2.1 style.css:316 */
+  background: linear-gradient(160deg,
+    rgba(255,97,114,.22), rgba(255,97,114,.10)); /* style.css:317-318 */
+  border-color: rgba(255,97,114,.45);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.18),
+              0 4px 14px rgba(255,97,114,.24);
+  transform: translateY(-1px);
+}
+.sh-me-logout:active { transform: translateY(0); }
+.sh-me-logout:focus-visible {
+  outline: 2px solid rgba(255,139,152,.55); outline-offset: 2px; /* style.css:326 */
+}
+.sh-me-logout:disabled,
+.sh-me-logout[disabled] {
+  opacity: .45; cursor: not-allowed; transform: none;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06); /* style.css:328-331 */
+}
+/* 静态亮主题（style.css:334-340）：撞色描边/内高光翻转保证可读 */
+:root[data-theme="light"] .sh-me-logout {
+  border-color: rgba(20,30,60,.16);
+  background: linear-gradient(160deg,
+    rgba(20,30,60,.06), rgba(20,30,60,.02));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7),
+              0 2px 8px rgba(30,40,80,.10);
+}
+
 /* ---------- 2b. 桌面/平板隐藏手机专属导航（底栏与抽屉） ---------- */
 @media (min-width: 640px) {
   .sh-bottombar,
@@ -225,6 +287,16 @@ html.liquid .ev-move-mask {
   .sh-nav-item { flex-direction: column; justify-content: center; gap: 2px; padding: var(--space-2) 0; }
   .sh-nav-item .sh-nav-label { font-size: var(--text-xs); }
   .sh-side-foot .sh-nav-item { flex-direction: column; gap: 2px; padding: var(--space-2) 0; }
+  /* me-box 收窄栏纵向两槽（头像+power），姓名/账号串不进 72px rail */
+  .sh-me { flex-direction: column; gap: 4px; padding: 2px 0; }
+  .sh-me-meta { display: none; }
+  .sh-me-logout { margin-left: 0; }
+}
+
+/* FR-24 / T19a 口径：桌面逐值 2.1 紧凑形态（power 28px），<768 断点回补
+   ≥44px 命中区（与 new.css 任务选号 seg 同一口径） */
+@media (max-width: 767.98px) {
+  .sh-me-logout { width: 44px; height: 44px; }
 }
 
 /* ---------- 3b. 桌面（≥1024）：2.1 浮起面板口径 ----------
@@ -237,6 +309,8 @@ html.liquid .ev-move-mask {
     padding: 22px 16px;
     border: var(--line-1) solid var(--glass-nav-border);
     border-radius: var(--radius-xl);
+    /* T19a：2.1 浮起侧栏=.glass 全材质（style.css:138-149 box-shadow 随材质） */
+    box-shadow: var(--glass-nav-hi), var(--glass-nav-shadow);
   }
   /* 2.1 侧栏导航逐值（style.css:270-273/277/289）：gap 5px / 项 gap 13px /
      padding 12px 14px / r-md 14px / 14px 字 / ico 18px 15px；命中区自然高

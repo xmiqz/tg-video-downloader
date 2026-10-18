@@ -333,6 +333,8 @@ function doGuest() {
     // 2.1 doGuest 成功：showGuestBar()+startGuestPoll（app.js:437-438）→ 跳任务库
     const g = window.__t8guest;
     if (g && typeof g.show === "function") g.show("未登录 · 点此登录");
+    const mm = window.__t8me;
+    if (mm && typeof mm.reset === "function") mm.reset(); // T19a：侧底 me-box 复位
     goTasks();
   });
 }
@@ -344,6 +346,11 @@ function renderMeCard(m) {
   $.meAvatar.textContent = (m.name || "?").slice(0, 1); // 首字头像（app.js:539）
   errShowAcct("");
   $.btnRetryMe.hidden = true;
+  // T19a：镜像侧底 me-box 三串（router __t8me；2.1 renderMe 同步侧栏口径）
+  const mm = window.__t8me;
+  if (mm && typeof mm.set === "function") {
+    mm.set($.meName.textContent, $.meUser.textContent, $.meAvatar.textContent);
+  }
 }
 
 function renderMePending() {
@@ -362,6 +369,11 @@ function showMeError(text) {
   $.meAvatar.textContent = "·";
   errShowAcct("获取账号资料失败：" + (text || "未知错误"));
   $.btnRetryMe.hidden = false;
+  // T19a：镜像侧底 me-box（连兜底三串也精确镜像）
+  const mm = window.__t8me;
+  if (mm && typeof mm.set === "function") {
+    mm.set($.meName.textContent, $.meUser.textContent, $.meAvatar.textContent);
+  }
 }
 
 async function fetchMe(my) {

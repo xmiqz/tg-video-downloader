@@ -29,9 +29,11 @@
   color: var(--color-text-strong);
   line-height: 1.4;
 }
-.nw-sub {
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-sm);
+/* .nw-sub 双用拆分（T19a 字号对标）：页头副题 = 2.1 .page-sub
+   13px / margin-top 6px（style.css:356） */
+.nw-head .nw-sub {
+  margin: 6px 0 0;               /* 2.1 .page-sub margin-top:6px（style.css:356） */
+  font-size: var(--text-sm);     /* 2.1 .page-sub 13px（style.css:356） */
   color: var(--color-text-muted);
 }
 
@@ -47,7 +49,7 @@
   align-items: center;
   gap: var(--space-2);
   color: var(--color-text-faint);
-  font-size: var(--text-md);
+  font-size: var(--text-sm);     /* 2.1 .step 13px（style.css:513） */
 }
 .nw-step i {
   width: 32px;   /* 旧壳步骤圆径 32px（style.css:514） */
@@ -90,7 +92,7 @@
   min-width: 0;
 }
 .nw-label, .nw-field label {
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);     /* 2.1 label 12px（style.css:219） */
   color: var(--color-text-muted);
 }
 .nw-input {
@@ -128,9 +130,39 @@
 }
 .nw-dual .nw-input { flex: 1 1 0; min-width: 0; }
 .nw-dual > span[aria-hidden] { color: var(--color-text-faint); flex: none; }
-/* 数字小输入（limit/parallel）：窄钳防撑破 360px（旧壳 .narrow-input 130px 口径
-   style.css:602） */
-.nw-field--num { max-width: 180px; }
+/* 基础设置二列网格（2.1 .form-grid/.top-gap 逐值 style.css:525-526：
+   1fr 1fr / 行距 0 列距 16px / 上距 4px）——limit | parallel 同排 */
+.nw-grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 16px;                 /* 2.1 .form-grid gap:0 16px（style.css:525） */
+  margin-top: 4px;             /* 2.1 .top-gap margin-top:4px（style.css:526） */
+}
+
+/* T52 任务选号行（2.1 .task-acct 系 逐值 style.css:1397-1405） */
+.nw-taskacct {
+  display: flex;
+  align-items: center;
+  gap: 8px;                    /* 2.1 .task-acct gap:8px（style.css:1398） */
+  flex-wrap: wrap;
+  margin: 10px 0 2px;          /* 2.1 .task-acct margin:10px 0 2px（style.css:1399） */
+}
+.nw-taskacct-label, .nw-taskacct-note {
+  font-size: 11.5px;           /* 2.1 style.css:1401；无 token 字面量 */
+  color: var(--color-text-faint);
+}
+.nw-taskacct-note { flex-basis: 100%; opacity: .85; }   /* style.css:1402 */
+/* 选号 seg 紧凑（2.1 .acct-seg-host .seg style.css:1405：4px 11px / 11.5px） */
+.nw-acctseg .u-seg { gap: 2px; padding: 3px; }          /* 2.1 .segmented（style.css:361） */
+.nw-acctseg .u-seg-item {
+  min-height: 0;               /* 2.1 紧凑无命中区下限；<768 断点回补 FR-24 */
+  padding: 4px 11px;           /* style.css:1405 */
+  font-size: 11.5px;           /* style.css:1405 */
+}
+/* FR-24 命中区回补（触屏窄口）：仅 <768 还原 44px，桌面保持 2.1 紧凑形态 */
+@media (max-width: 767.98px) {
+  .nw-adv .u-seg-item, .nw-acctseg .u-seg-item { min-height: 44px; }
+}
 
 /* ---------- 3. 高级折叠（对照 style.css:533-551 adv 系） ---------- */
 .nw-adv-toggle {
@@ -147,8 +179,8 @@
 .nw-adv-toggle.open .nw-caret { transform: rotate(180deg); } /* style.css:543 */
 .nw-adv-toggle.open { color: var(--color-text); }
 .nw-hint {
-  flex-basis: 100%;
-  font-size: var(--text-sm);
+  /* 2.1 .adv-hint 行内并排（style.css:543）：不占整行，同行内联于「高级筛选」 */
+  font-size: 11.5px;             /* 2.1 .adv-hint 11.5px（style.css:544）；无 token 字面量 */
   color: var(--color-text-faint);
   white-space: nowrap;
   overflow: hidden;
@@ -165,7 +197,30 @@
   animation: nw-rise var(--dur-md) var(--ease-out);   /* 旧壳 rise .35s（style.css:550）近似 */
 }
 .nw-adv[hidden] { display: none; }
-.nw-adv .u-seg { align-self: flex-start; max-width: 100%; }
+/* 高级筛选行（2.1 .adv-row/.adv-field 逐值 style.css:551-553：flex-wrap、
+   槽 14px、槽宽 1 1 200px、排序小槽 1 1 180px） */
+.nw-advrow {
+  display: flex;
+  gap: 14px;                   /* 2.1 .adv-row gap:14px（style.css:551） */
+  margin-top: 2px;             /* 2.1 .adv-row margin-top:2px（style.css:551） */
+  flex-wrap: wrap;
+}
+.nw-advrow .nw-field { flex: 1 1 200px; min-width: 0; }   /* style.css:552 */
+.nw-advrow .nw-field--small { flex: 1 1 180px; }           /* 2.1 .adv-field.small（style.css:553） */
+/* seg 槽位 2.1 .segmented/.segmented.grow 逐值（style.css:360-367）：
+   容器 2px 槽/3px 内衬、满槽等分、.seg 紧凑 7px 10px */
+.nw-adv .u-seg {
+  align-self: stretch;
+  width: 100%;                 /* 2.1 .segmented.grow（style.css:366） */
+  gap: 2px;                    /* 2.1 .segmented gap:2px（style.css:361） */
+  padding: 3px;                /* 2.1 .segmented padding:3px（style.css:361） */
+}
+.nw-adv .u-seg-item {
+  flex: 1 1 0;                 /* 2.1 .segmented.grow .seg（style.css:367） */
+  min-width: 0;
+  min-height: 0;               /* 2.1 .seg 无命中区下限；<768 断点回补 FR-24 */
+  padding: 7px 10px;           /* 2.1 .segmented.grow .seg（style.css:367） */
+}
 
 /* ---------- 4. 操作区与提示 ---------- */
 .nw-actions {
@@ -178,14 +233,14 @@
 .nw-err {
   margin: 0;
   min-height: var(--text-md);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);     /* 2.1 .login-err 12px（style.css:250） */
   color: var(--color-danger-text);   /* 旧壳 .login-err 红（style.css 设置页同族） */
   word-break: break-word;
 }
 .nw-err:empty { display: none; }
 .nw-note {
   margin: 0;
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);     /* 2.1 .wiz-note 12px（style.css:529） */
   color: var(--color-text-muted);   /* style.css:529 .wiz-note 口径 */
   word-break: break-word;
 }
@@ -206,7 +261,7 @@
 .nw-prog-head .u-progress { flex: 1 1 auto; min-width: 0; }
 .nw-prog-head .nw-cancel-btn { flex: none; }
 .nw-phase {
-  font-size: var(--text-md);
+  font-size: 12.5px;             /* 2.1 .search-phase-text 12.5px（style.css:1096）；无 token 字面量 */
   color: var(--color-text);
   font-weight: 500;
   font-variant-numeric: tabular-nums;   /* style.css:1097 */
@@ -215,13 +270,13 @@
   text-overflow: ellipsis;
 }
 .nw-counts {
-  font-size: var(--text-sm);
+  font-size: 11.5px;             /* 2.1 .search-counts 11.5px（style.css:1101） */
   color: var(--color-text-faint);       /* style.css:1100-1103 */
   font-variant-numeric: tabular-nums;
   word-break: break-word;
 }
 .nw-pnote {
-  font-size: var(--text-sm);
+  font-size: 11.5px;             /* 2.1 .search-note 11.5px（style.css:1104） */
   color: var(--color-text-faint);       /* style.css:1104 */
   word-break: break-word;
 }
@@ -308,7 +363,7 @@
   border-radius: var(--radius-xs);
   border: 2px solid var(--color-border-strong); /* 旧壳 2px（style.css:582） */
   color: var(--color-on-primary);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);     /* 2.1 .cbox 12px（style.css:584） */
   transition: background var(--dur-sm) var(--ease-standard),
     border-color var(--dur-sm) var(--ease-standard);
 }
@@ -318,7 +373,7 @@
 }
 .nw-info { flex: 1 1 auto; min-width: 0; overflow: hidden; }
 .nw-name {
-  font-size: var(--text-md);
+  font-size: var(--text-sm);     /* 2.1 .video-name 13px（style.css:587） */
   font-weight: 500;
   color: var(--color-text);
   white-space: nowrap;
@@ -328,7 +383,7 @@
 .nw-reftag {                    /* 引用来源紫系标签（style.css:1112-1118） */
   display: inline-block;
   margin-right: var(--space-1);
-  font-size: var(--text-xs);
+  font-size: 10px;               /* 2.1 .ref-tag 10px（style.css:1114） */
   padding: 2px 7px;             /* 旧壳 2px 7px（style.css:1114） */
   border-radius: var(--radius-xs);
   color: var(--color-primary-strong);
@@ -336,9 +391,9 @@
   border: var(--line-1) solid var(--color-border);
   vertical-align: 1px;            /* 旧壳出处：style.css:1117（.ref-tag vertical-align:1px 同值） */
 }
-.nw-sub {
-  margin-top: var(--space-1);
-  font-size: var(--text-sm);
+.nw-info .nw-sub {               /* 列表副题：2.1 .video-sub（style.css:589） */
+  margin-top: 3px;               /* 2.1 .video-sub margin-top:3px（style.css:589） */
+  font-size: 11.5px;             /* 2.1 .video-sub 11.5px（style.css:589） */
   color: var(--color-text-faint);
   white-space: nowrap;
   overflow: hidden;
@@ -360,9 +415,9 @@
   align-items: flex-end;
   gap: var(--space-1);
 }
-.nw-size { font-size: var(--text-sm); color: var(--color-text-muted); }
+.nw-size { font-size: var(--text-xs); color: var(--color-text-muted); } /* 2.1 .video-size 12px（style.css:591） */
 .nw-srctag {                    /* 来源小标签（style.css:470） */
-  font-size: var(--text-xs);
+  font-size: 10px;               /* 2.1 .src-tag 10px（style.css:470） */
   padding: 2px 7px;             /* 旧壳 2px 7px（style.css:470） */
   border-radius: var(--radius-xs);
   background: var(--color-surface-raise);
@@ -372,13 +427,6 @@
 /* ---------- 8. 断点：≥768 平板/桌面（FR-23 ≥768 平板起桌面形态；
        与 ui.css OVERLAY_FORM_BREAKPOINT 同源）—— 条件区双列 + 结果行表格化密度 ---------- */
 @media (min-width: 768px) {
-  .nw-adv .nw-field { min-width: 0; }
-  .nw-adv {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--space-4) var(--space-6);
-  }
-  .nw-adv > .nw-field:last-child { grid-column: 1 / -1; } /* 并行度独占行（number 钳宽） */
   /* 结果行表格化：勾选 | 名称(含标签/截断) | 日期·摘要 | 体积/来源，
      密度对齐旧壳行网格（hover/选中语义不变） */
   .nw-row {
@@ -392,7 +440,7 @@
     column-gap: var(--space-4);
     align-items: center;
   }
-  .nw-sub { margin-top: 2px; }   /* 旧壳出处：同值 .acct-sub margin-top:2px
+  .nw-info .nw-sub { margin-top: 2px; }   /* 旧壳出处：同值 .acct-sub margin-top:2px
                                      （style.css:1358）；语义近亲 .video-sub
                                      margin-top:3px（style.css:589）——桌面
                                      表格化密度收紧一档 */
