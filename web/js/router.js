@@ -755,17 +755,19 @@ export async function boot() {
     });
   }
 
-  // bridge 就绪等待（同 login.js bridgeReady 口径；桩宿主立即就绪）
+  // bridge 就绪等待（同 login.js bridgeReady 口径；桩宿主立即就绪）。
+  // 只 resolve 布尔、不 resolve api 代理本身——Promise 吸收 thenable 会
+  // 取 .then 值，被同形桥桩记成假 RPC（tr15 K1「then」误报教训）。
   function apiReady(timeoutMs) {
     return new Promise(function (res) {
-      if (win.pywebview && win.pywebview.api) return res(win.pywebview.api);
+      if (win.pywebview && win.pywebview.api) return res(true);
       let done = false;
       function fin() {
         if (done) return;
         done = true;
         win.removeEventListener("pywebviewready", fin);
         clearTimeout(timer);
-        res(win.pywebview && win.pywebview.api ? win.pywebview.api : null);
+        res(!!(win.pywebview && win.pywebview.api));
       }
       const timer = setTimeout(fin, timeoutMs);
       win.addEventListener("pywebviewready", fin);
@@ -776,7 +778,8 @@ export async function boot() {
     if (!guestBar) return;
     guestBarBootOn();
     bootErrShow("");
-    const api = await apiReady(8000);
+    await apiReady(8000);
+    const api = win.pywebview && win.pywebview.api;
     let r = null;
     try {
       r = api ? await api.connect() : { ok: false, error: "应用服务未就绪，请稍后重试" };

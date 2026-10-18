@@ -577,3 +577,9 @@
 #sh-root[data-v22-rm="on"] .ev-parallel-input { transition: none; }
 #sh-root[data-v22-rm="on"] .ev-move-mask,
 #sh-root[data-v22-rm="on"] .ev-move-layer { animation: none; }
+
+/* 移动命中区（FR-24 / probe_tr17_3 G12）：幽灵输入本体补高至 44，
+   承载行（.ev-search 等已 44）视觉不变，仅扩大可点面。 */
+@media (max-width: 767.98px) {
+  .ev-title-input, .ev-q-input { min-height: 44px; }
+}
