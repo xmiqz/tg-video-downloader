@@ -496,8 +496,46 @@ export async function boot() {
 
   // bridge.js:85-92 _setBackdrop → window._setBackdrop 消费方（2.1
   // app.js:2546-2548 同口径：写背景图；空串清图）
+  // T19d 亮底可见度自适应：液态玻璃背景是窗口后方实时捕获帧（gui.py
+  // :2504 data:image/jpeg），亮捕获上 2.1 的浅墨文字几乎不可见。这里
+  // 采样背景帧亮度挂 html[data-lum]，tokens.css §7 亮底换浅色墨+亮玻璃面。
+  // 节流 1.5s（捕获 5fps 推帧，逐帧采样纯浪费）；滞后双阈值防抖
+  // （≥160 判亮 / ≤120 判暗，中间带维持现状）；非 liquid 或采样失败清标记。
+  const lumCv = doc.createElement("canvas");
+  lumCv.width = 12;
+  lumCv.height = 8;
+  const lumCtx = lumCv.getContext("2d", { willReadFrequently: true });
+  let lumLast = 0;
+  function lumSample(url) {
+    try {
+      const img = new Image();
+      img.onload = function () {
+        try {
+          lumCtx.drawImage(img, 0, 0, lumCv.width, lumCv.height);
+          const d = lumCtx.getImageData(0, 0, lumCv.width, lumCv.height).data;
+          let sum = 0;
+          for (let i = 0; i < d.length; i += 4) {
+            sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+          }
+          const lum = sum / (d.length / 4);
+          const de = doc.documentElement;
+          if (lum >= 160) de.setAttribute("data-lum", "bright");
+          else if (lum <= 120) de.setAttribute("data-lum", "dark");
+        } catch (e) { /* canvas 读取失败维持现状 */ }
+      };
+      img.src = url;
+    } catch (e) { /* 解码失败维持现状 */ }
+  }
   win._setBackdrop = function (url) {
     backdropEl.style.backgroundImage = url ? 'url("' + url + '")' : "";
+    if (!url || !doc.documentElement.classList.contains("liquid")) {
+      doc.documentElement.removeAttribute("data-lum");
+      return;
+    }
+    const now = Date.now();
+    if (now - lumLast < 1500) return;
+    lumLast = now;
+    lumSample(url);
   };
 
   // 主题镜像（对齐 2.1 app.js:2551-2562 applyAppearance）：localStorage.appearance

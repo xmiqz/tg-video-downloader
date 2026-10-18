@@ -293,3 +293,45 @@
   --gl-btn-a: rgba(255,255,255,.22);  --gl-btn-b: rgba(255,255,255,.08);
   --gl-btn-e: rgba(255,255,255,.36);  --gl-btn-hi: rgba(255,255,255,.55);
 }
+
+/* ============ 7. 液态玻璃亮底可见度自适应（T19d） ============
+   液态玻璃背景=窗口后方实时捕获帧，明暗动态变化；liquid 的浅墨文字
+   （--raw-ink 族深色表）在亮捕获上几乎不可见。router.js _setBackdrop
+   采样帧亮度（12x8 均值，节流 1.5s，滞后 ≥160/≤120 双阈值）给 <html>
+   挂 data-lum="bright"。本块仅亮底条件生效：整组原料换回浅色表
+   （§1.1/§1.2 原值）+ 玻璃面换 2.1 静态亮 .glass 材质（style.css:160-171），
+   深墨文字落在亮玻璃面上保对比；暗底（data-lum="dark" 或缺省）零变化，
+   §6 2.1 liquid 材质逐值保持不动。
+   选择器 :root.liquid[data-lum="bright"] 特异性 (0,3,0)，压过
+   §4.2 显式深色与 §6 liquid 块的 (0,2,0)，与主题级联无冲突。 */
+:root.liquid[data-lum="bright"] {
+  /* --- 浅色原料表（§1.1 原值，覆盖深色表） --- */
+  --raw-bg: #f2f5fc;          --raw-bg-2: #ffffff;
+  --raw-bg-sunk: #e8edf7;    --raw-ink: #1b2233;
+  --raw-ink-dim: rgba(27,34,51,.68);  --raw-ink-mute: rgba(27,34,51,.45);
+  --raw-brand-soft: rgba(79,124,255,.16);
+  --raw-danger: #e5455a;     --raw-danger-soft: rgba(229,69,90,.14);
+  --raw-danger-ink: #cf3b50; --raw-ok: #16a97c;
+  --raw-warn: #d98f1f;       --raw-warn-soft: rgba(217,143,31,.16);
+  --raw-border: rgba(20,30,60,.12);  --raw-border-strong: rgba(20,30,60,.24);
+  --raw-scrim: rgba(16,22,40,.35);   --raw-frost: rgba(238,242,250,.45);
+  --raw-shade: rgba(30,42,80,.35);   --raw-shade-strong: rgba(30,42,80,.14);
+  --raw-shade-deep: rgba(4,6,18,.32); --raw-ring: rgba(79,124,255,.22);
+  --raw-irid-1: rgba(64,201,224,.50);
+  --raw-irid-2: rgba(96,219,156,.48);
+  --raw-irid-3: rgba(230,146,224,.50);
+  --raw-solid: #ffffff;
+  /* --- 玻璃面换 2.1 静态亮 .glass/.btn.glass-btn 材质（style.css:160-171）---
+     亮白半透明面托住深墨文字；liquid 的 .20→.05 暗玻璃面在亮捕获上
+     会与浅墨文字一起融掉，故整组随亮底切亮面。 */
+  --gl-g-a: rgba(255,255,255,.72);  --gl-g-b: rgba(255,255,255,.64);
+  --gl-g-c: rgba(255,255,255,.52);
+  --gl-e-a: rgba(20,30,60,.12);     --gl-e-b: rgba(20,30,60,.12);
+  --gl-hi: rgba(255,255,255,.9);    --gl-hi-soft: rgba(255,255,255,.55);
+  --gl-sh-color: rgba(30,42,80,.14);
+  --gl-shadow: 0 12px 30px var(--gl-sh-color);
+  --gl-btn-a: rgba(255,255,255,.85);  --gl-btn-b: rgba(255,255,255,.62);
+  --gl-btn-e: rgba(20,30,60,.12);     --gl-btn-hi: rgba(255,255,255,.4);
+  /* 内高光回静态亮单顶 hi（§2.2 默认形，覆盖 §6 liquid 双高光） */
+  --glass-card-hi: inset 0 1px 0 var(--gl-hi);
+}
