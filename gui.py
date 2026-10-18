@@ -2190,14 +2190,15 @@ class Api:
         from urllib.parse import quote
         url = (self.base_url + "/taskedit.html?id=" + quote(str(task_id))
                + "#t=" + self.token)
-        s = _dpi_scale()
         mode = str(self.cfg.get("appearance") or "")
         bg = "#e9ecf5" if mode == "light" else "#07080f"
         self.host.create_aux_window(
             "任务编辑 · " + str(t.get("channel_title", "")),
             url, self,
-            int(1080 * s), int(740 * s),
-            (int(360 * s), int(640 * s)),   # T19h：最小 360x640 同主窗（可拉移动尺寸）
+            1080, 740,
+            # T19i：尺寸裸传同主窗口径（gui.py 主窗 create_window 同款，
+            # 不乘 _dpi_scale——否则最小 518x921 放不到主窗的 360x640）
+            (360, 640),
             bg,
         )
         return {"ok": True}

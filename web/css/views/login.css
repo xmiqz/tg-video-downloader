@@ -25,6 +25,12 @@
 /* ---------- 2. 登录卡（2.1 .login-card：style.css:241-246） ----------
    width 380px（:242）/ padding 40px 34px 34px / 圆角 --r-xl=28px /
    居中文案 / pop 进场；材质沿 .u-card 玻璃体系（tokens --glass-*）。 */
+/* T19j：液态叠加面羽化加强（用户裁决 2026-10-19）——登录卡同折叠胶囊
+   配方 blur(20px) saturate(160%)（shell.css:766），修液态下层穿透。 */
+html.liquid .lg-login-card {
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+}
 .lg-login-card {
   width: 380px;
   max-width: 100%;

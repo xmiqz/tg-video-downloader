@@ -223,6 +223,43 @@
 }
 .tk-stat span:last-child { flex: none; }
 
+/* T19i：任务详情滑层——2.1 右侧滑层（style.css:607-623）+ 底部按钮常驻
+   （2.1 :633-638/#sheet-view 内滚分工、:684-687 .sheet-foot flex:none）。
+   <768 保持底部弹层形态，同样内滚+按钮常驻（修默认窗口底部按钮排被裁）。 */
+.u-overlay.tk-sheet-ov .u-overlay-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;                /* 面板不整滚，内区分工（2.1 :633-638） */
+}
+.u-overlay.tk-sheet-ov .u-overlay-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;                /* 转由 .tk-dlist 内滚 */
+}
+.tk-sheet-ov .tk-dlist {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;                /* 2.1 .detail-list（style.css:639-641） */
+}
+.tk-sheet-ov .tk-sfoot { flex: none; }   /* 底部按钮常驻（2.1 :686） */
+@media (min-width: 768px) {
+  .u-overlay.tk-sheet-ov {
+    align-items: stretch;
+    justify-content: flex-end;
+    padding: 14px;                 /* 2.1 top/right/bottom 14px（style.css:615） */
+  }
+  .u-overlay.tk-sheet-ov .u-overlay-panel {
+    width: min(470px, 92vw);       /* 2.1 style.css:616 */
+    max-height: none;              /* 2.1 全高面板（:615 top:14 bottom:14） */
+    padding: 20px 20px 16px;       /* 2.1 style.css:619 */
+    border-radius: 28px;           /* 2.1 var(--r-xl)（style.css:617） */
+    transform: translateX(calc(100% + 30px));   /* 2.1 右滑入（style.css:620） */
+  }
+  .u-overlay.tk-sheet-ov.is-open .u-overlay-panel {
+    transform: none;               /* 2.1 .sheet.show（style.css:623） */
+  }
+}
+
 /* T52 任务选号行（2.1 .task-acct 族，style.css:1397-1407 逐值） */
 .tk-acct {
   display: flex;

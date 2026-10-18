@@ -871,6 +871,7 @@ function ensureSheet() {
     ariaLabel: "任务详情",
     onClose: function () { onSheetClosed(); },   // ✕/mask/ESC/action 全路径归一（app.js:1863-1869 closeSheet）
   });
+  sheetOv.el.classList.add("tk-sheet-ov");   // T19i：桌面右置滑层/底部常驻样式锚点
   document.body.appendChild(sheetOv.el);
 }
 

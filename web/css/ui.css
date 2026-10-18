@@ -164,6 +164,15 @@
    否则关掉弹层后 400ms 内点击/滑动打在隐形层上「没反应」 */
 .u-overlay:not(.is-open) { pointer-events: none; }
 
+/* T19j：液态叠加面羽化加强（用户裁决 2026-10-19）——弹层面板/吐司
+   同折叠胶囊配方 blur(20px) saturate(160%)（shell.css:766），修液态
+   下层内容穿透文字不可读（shell.css 同款块覆盖底栏/侧栏/下载卡）。 */
+html.liquid .u-overlay-panel,
+html.liquid .u-toast {
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+}
+
 .u-overlay-mask {
   position: absolute;
   inset: 0;

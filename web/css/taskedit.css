@@ -1559,32 +1559,66 @@ body.liquid .sheet { position: fixed; }
 :root[data-theme="light"] .mini-cbox { border-color: rgba(20,30,60,.28); }
 
 @media (max-width: 767.98px) {
-  .editor-app { padding: 10px; gap: 10px; height: auto; min-height: 100vh; }
+  .editor-app { padding: 8px; gap: 8px; }
   .editor-head {
     flex-direction: column;
     align-items: stretch;
-    gap: 12px;
-    padding: 14px;
+    gap: 6px;
+    padding: 10px 12px;
   }
   .ed-task-info { flex: none; }
+  .ed-title-input { font-size: 17px; padding: 0; }
+  .ed-meta { margin-top: 2px; gap: 10px; }
+  /* T19k：设置区 5 行并 2 行（目录/并发/筛选吃满视口挤掉列表的用户反馈）——
+     保存目录整行 + 并发/复选/保存设置同行，标签压 11px 免上下大边距 */
   .ed-settings {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 12px;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 8px;
     flex: none;
   }
+  .ed-settings .ed-field:first-child { flex: 1 1 100%; }
+  .ed-settings .ed-label { margin: 0; font-size: 11px; }
+  .ed-field { gap: 2px; }
   .ed-field, .ed-field.narrow { width: auto; }
-  .ed-settings .path-row { flex-wrap: wrap; }
-  .ed-settings .path-row input { min-width: 0; flex: 1 1 60%; }
-  .ed-settings .check-line { min-height: 44px; }
-  .editor-head .btn.primary { width: 100%; padding: 12px 18px; }
-  .editor-toolbar { flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
+  .ed-field.narrow { width: 92px; }
+  .ed-settings .path-row { flex-wrap: nowrap; gap: 6px; }
+  .ed-settings .path-row input {
+    min-width: 0;
+    flex: 1 1 auto;
+    min-height: 40px;
+    padding: 6px 10px;
+  }
+  .ed-settings .path-row .btn {
+    flex: none;
+    min-height: 40px;
+    padding: 7px 12px;
+  }
+  .ed-settings .check-line {
+    min-height: 40px;
+    margin: 0;
+    flex: 1 1 auto;
+  }
+  .editor-head .btn.primary {
+    width: auto;
+    flex: 0 0 auto;
+    min-height: 40px;
+    padding: 9px 16px;
+  }
+  .editor-toolbar { flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
   .search-box.grow { flex: 1 1 100%; max-width: none; }
-  .search-box input { min-height: 44px; }
-  .segmented { flex-wrap: wrap; width: 100%; }
-  .segmented .seg { flex: 1 1 auto; min-height: 44px; }
-  .editor-toolbar .btn.sm { min-height: 44px; }
-  .editor-main { padding: 0; overflow: visible; }
+  .search-box input { min-height: 40px; }
+  /* T19k：筛选段单行横滑（原 flex-wrap 折两行吃掉列表高度） */
+  .segmented {
+    width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .segmented .seg { flex: 0 0 auto; min-height: 38px; padding: 6px 13px; }
+  .editor-toolbar .btn.sm { min-height: 38px; padding: 6px 13px; }
+  .editor-main { padding: 0; }   /* T19i：保留 2.1 内滚链（app 高 100vh+main overflow:auto），修列表不可上下滑 */
   .ed-table, .ed-table tbody { display: block; }
   .ed-table thead { display: none; }
   .ed-row {
@@ -1607,7 +1641,7 @@ body.liquid .sheet { position: fixed; }
     font-weight: 600;
   }
   .ed-row td.c-msg { margin: 8px 0; }
-  .ed-row td.c-msg .msg-line { white-space: normal; }
+  /* T19i：折叠详情——原文单行省略收起，点击展开详情行（2.1 折叠语义） */
   .ed-row td.c-dur,
   .ed-row td.c-date,
   .ed-row td.c-size {

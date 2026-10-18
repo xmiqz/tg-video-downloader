@@ -659,6 +659,10 @@ html.liquid .ev-move-mask {
   pointer-events: auto;
   background: linear-gradient(155deg,
     rgba(255,255,255,.14) 0%, rgba(255,255,255,.05) 100%);  /* style.css:931-932 */
+  /* T19i：折叠胶囊同款羽化（:766 blur(20px) saturate(160%)）——
+     展开卡零滤镜透底致文字被下层内容淹没，用户裁决统一羽化 */
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
   border: 1px solid rgba(255,255,255,.22);                  /* style.css:933 */
   border-radius: 20px;                  /* 2.1 --r-lg style.css:20 */
   box-shadow: 0 10px 30px rgba(4,6,18,.35),                /* 2.1 --soft-shadow style.css:29-30 */
@@ -767,10 +771,19 @@ html.liquid .ev-move-mask {
   -webkit-backdrop-filter: blur(20px) saturate(160%);
   transition: .25s var(--ease-spring);
 }
-/* 液态玻璃禁新 backdrop-filter 面（2.1 style.css:65-71 归零口径） */
-html.liquid .sh-jobdock .job-dock-mini {
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
+/* T19j：液态叠加面羽化加强（用户裁决 2026-10-19）——2.1「禁新面」
+   归零口径废止于叠加小面：背景帧为节流静态采样（router _setBackdrop
+   1.5s 节流），小面 blur 成本低；登录面板/胶囊底栏/侧栏/下载卡等
+   叠加元素统一折叠胶囊同款羽化 blur(20px) saturate(160%)（:766 配方），
+   修液态下层内容穿透文字不可读。 */
+html.liquid .sh-jobdock .job-card,
+html.liquid .sh-jobdock .job-dock-mini,
+html.liquid .sh-bottombar,
+html.liquid .sh-side,
+html.liquid .sh-side-foot,
+html.liquid .sh-drawer {
+  backdrop-filter: blur(20px) saturate(160%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(160%) !important;
 }
 .sh-jobdock button:active { transform: translateY(0) scale(.97); }  /* style.css:1509-1510 */
 
