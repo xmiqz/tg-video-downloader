@@ -2552,6 +2552,13 @@ class _BackdropDriver:
 
     def set_mode(self, mode):
         """UI 线程调用：进入液态玻璃才创建放大镜并启动泵，其余模式停止。"""
+        # T19c：沉浸式标题栏随外观联动（light=浅色 caption，
+        # dark/liquid=深色 caption + Mica）；失败不阻塞外观切换
+        try:
+            import wv2_native
+            wv2_native.set_immersive_caption(self.hwnd, mode != "light")
+        except Exception as ex:
+            print("[GUI] 标题栏外观同步失败：", ex)
         if mode == "liquid":
             if self.cap is None:
                 cap = AmbientCapture()

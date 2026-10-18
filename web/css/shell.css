@@ -53,6 +53,12 @@ body:has(> #sh-root) #append-modal {
 }
 body:has(> #sh-root) { overflow: hidden; }
 
+/* ---------- 0a. 全局隐藏滚动条（T19c） ----------
+   保留滚轮/触控/手势滚动，仅去掉滚动条视觉（2.1 无滚动条诉求）；
+   双路口径同 ui.css:420-423 .u-seg-scroll（scrollbar-width + webkit）。 */
+*::-webkit-scrollbar { width: 0; height: 0; display: none; }
+* { scrollbar-width: none; }
+
 /* ---------- 0b. 视觉底层三件套（对齐 2.1 旧壳 style.css:49-126） ----------
    #sh-backdrop（液态玻璃背景图层）/ .sh-ambient（静态暗亮光斑）/
    #sh-frost（霜层面）。层 id/class 用 sh- 前缀避开上方旧壳隐藏规则。
