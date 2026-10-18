@@ -498,6 +498,15 @@ class ShellWindow(wn.NativeWindow):
         self.view = _WindowView(self)
         super().__init__(title, int(width), int(height))
         host_app.register_window(self)
+        # T19c：沉浸式标题栏随建窗底色定深浅（深底=深色 caption + Mica），
+        # 对齐 Windows 自带软件窗口标签观感；失败静默不阻塞建窗
+        try:
+            rgb = parse_color(background_color)
+            lum = (((rgb >> 16) & 0xFF) + ((rgb >> 8) & 0xFF) +
+                   (rgb & 0xFF)) / 3.0
+            wn.set_immersive_caption(self.hwnd, lum < 128.0)
+        except Exception as ex:
+            host_app.record_failure("沉浸式标题栏初始化异常：%r" % ex)
 
     # -- host.HostWindow -----------------------------------------------------
 

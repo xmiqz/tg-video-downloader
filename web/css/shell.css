@@ -1,0 +1,851 @@
+/* ============================================================
+   shell.css — T8 v2.2 新壳：外壳/侧栏/窄栏/悬浮底栏/抽屉/占位空态
+   消费 tokens.css（T7 令牌），零裸色值（结构性 px 与白名单项除外）。
+   T18 翻版后随 index.html head 静态引入（唯一壳；旧壳/开关已删）。
+
+   断点（FR-23）：
+     <640 手机 = 沉浸式内容 + 液态玻璃悬浮胶囊底栏 + 抽屉
+     640–1023.98 平板 = 窄栏（icon rail）
+     ≥1024 桌面 = 侧边栏；≥1600 宽屏不劣化（内容区 max-width 由容器约定）
+
+   降级三档（NFR-8）：
+     1) 正常：backdrop-filter 材质 + SVG feDisplacementMap 折射
+     2) prefers-reduced-motion：关折射动效、保材质（data-v22-rm）
+     3) 无 backdrop-filter / SVG 滤镜能力（@supports 与 JS 特性检测）：
+        回退不透明实色 nav 面（tokens --raw-solid，本任务 T7 应改②消化）
+
+   双壳样式边界（并存期铁律）：旧壳 style.css 的全局元素规则会命中本壳
+   DOM（* reset / button / label / nav{flex-direction:column} / nav{flex:1}）；
+   本文件对实际中招属性显式防御（ .sh-bottombar 主轴/ gap/flex、
+   .sh-side-nav 自持 flex:1——fix1 R3），其余全局项经盘点无冲突
+   （label 规则待 T11+ 视图注意规避）。
+   ============================================================ */
+
+/* ---------- 1. 外壳根：全屏接管并隐藏旧壳顶层节点 ---------- */
+#sh-root {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: grid;
+  grid-template-columns: var(--sh-side-w, 232px) 1fr;
+  background: transparent; /* 视觉底层三件套（§0b）由 body 承底，玻璃面透出 */
+  color: var(--color-text);
+  /* 2.1 body 字族 + 无全局行高（normal）逐值（style.css:36-39）：
+     字号/文字位置与 2.1 逐像素一致的关键；个别件行高由各自规则显式给。 */
+  font: var(--text-md)/normal "SF Pro Text", "Segoe UI Variable Display", "Segoe UI",
+    "Microsoft YaHei UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased; /* 2.1 style.css:41 */
+}
+
+/* 旧壳顶层节点隐藏（#sh-root 存在即视为新壳接管）。
+   :has() 于 Chromium 105+ 可用；不支持 :has 的老 webview 由
+   #sh-root 全屏不透明覆盖 + 指针拦截兜底（等效视觉）。 */
+body:has(> #sh-root) #backdrop,
+body:has(> #sh-root) .ambient,
+body:has(> #sh-root) #frost,
+body:has(> #sh-root) #login,
+body:has(> #sh-root) .app,
+body:has(> #sh-root) #job-progress-host,
+body:has(> #sh-root) #sheet-mask,
+body:has(> #sh-root) #sheet,
+body:has(> #sh-root) #append-modal {
+  display: none !important;
+}
+body:has(> #sh-root) { overflow: hidden; }
+
+/* ---------- 0a. 全局隐藏滚动条（T19c） ----------
+   保留滚轮/触控/手势滚动，仅去掉滚动条视觉（2.1 无滚动条诉求）；
+   双路口径同 ui.css:420-423 .u-seg-scroll（scrollbar-width + webkit）。 */
+*::-webkit-scrollbar { width: 0; height: 0; display: none; }
+* { scrollbar-width: none; }
+
+/* ---------- 0b. 视觉底层三件套（对齐 2.1 旧壳 style.css:49-126） ----------
+   #sh-backdrop（液态玻璃背景图层）/ .sh-ambient（静态暗亮光斑）/
+   #sh-frost（霜层面）。层 id/class 用 sh- 前缀避开上方旧壳隐藏规则。
+   [hidden] 全局防御：组件 CSS 的 display:grid/flex 会压过 UA 的
+   [hidden]{display:none}，与 editor/settings 兜底同口径。 */
+[hidden] { display: none !important; }
+body { background: var(--color-surface); }
+#sh-backdrop {
+  position: fixed; inset: 0;
+  z-index: var(--z-backdrop);
+  display: none;
+  background-color: #0a0c14;               /* style.css:52 */
+  background-size: cover; background-position: 0 0;
+  transform: scale(1.03);                  /* style.css:55 */
+  transition: background-color .4s;        /* style.css:56 */
+}
+html.liquid #sh-backdrop { display: block; }
+#sh-backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(155deg, rgba(8, 10, 18, .06), rgba(8, 10, 18, .22));  /* style.css:60-62 */
+}
+.sh-ambient {
+  position: fixed; inset: 0;
+  z-index: var(--z-backdrop);
+  overflow: hidden;
+}
+html.liquid .sh-ambient { display: none; }  /* style.css:113-115 */
+.sh-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(70px);                      /* style.css:108 */
+  opacity: .55;                            /* style.css:109 */
+}
+.sh-b1 {
+  width: 46vw; height: 46vw;
+  left: -12vw; top: -14vw;                 /* style.css:111 */
+  background: radial-gradient(circle, #3b6bff, transparent 65%);  /* style.css:110 */
+}
+.sh-b2 {
+  width: 40vw; height: 40vw;
+  right: -10vw; top: -8vw;                 /* style.css:116 */
+  background: radial-gradient(circle, #a35bff, transparent 65%);  /* style.css:115 */
+}
+:root[data-theme="light"] .sh-blob { opacity: .42; }  /* style.css:114 */
+#sh-frost {
+  position: fixed; inset: 0;
+  z-index: var(--z-backdrop);
+  pointer-events: none;
+  background: rgba(9, 11, 20, .3);         /* style.css:121 */
+}
+:root[data-theme="light"] #sh-frost { background: rgba(232, 237, 248, .38); }  /* style.css:123-125 */
+html.liquid #sh-frost { display: none; }   /* style.css:122 */
+
+/* liquid 卡片材质 = 预烘焙模糊帧（镜面渐变 + 内高光），禁实时
+   backdrop-filter（2.1 style.css:65-71 口径）。清单 = 全部 backdrop-filter
+   消费方（grep 核实），与 9.3 降级块同归零口径。 */
+html.liquid .sh-side, html.liquid .sh-bar-mat, html.liquid .sh-drawer,
+html.liquid .v22-ph-card, html.liquid .u-card, html.liquid .u-actionbar,
+html.liquid .u-overlay-mask, html.liquid .ac-ov-card, html.liquid .ac-bulk,
+html.liquid .ac-group, html.liquid .ac-card, html.liquid .tk-card,
+html.liquid .ev-move-mask {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+.sh-svgdefs { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+/* ---------- 2. 侧边栏（≥1024 默认形态） ---------- */
+.sh-side {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: var(--space-4) var(--space-3);
+  padding-top: max(var(--space-4), env(safe-area-inset-top)); /* 刘海内缩 */
+  box-sizing: border-box;
+  background: var(--glass-nav-bg);
+  -webkit-backdrop-filter: blur(var(--glass-nav-blur)) saturate(var(--gl-sat));
+  backdrop-filter: blur(var(--glass-nav-blur)) saturate(var(--gl-sat));
+  border-right: var(--line-1) solid var(--glass-nav-border);
+  z-index: var(--z-base);
+}
+.sh-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;                          /* 2.1 .brand style.css:268 */
+  padding: 2px 8px 22px;              /* 2.1 .brand style.css:269 */
+  font-size: 15.5px;
+  font-weight: 700;
+  color: var(--color-text-strong);
+  white-space: nowrap;
+}
+.sh-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;                        /* 2.1 .logo-badge.sm style.css:259 */
+  height: 38px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-strong));
+  color: var(--color-on-primary);
+  font-size: 14px;
+  font-weight: 700;
+  flex: none;
+  box-shadow: var(--badge-glow);           /* 2.1 style.css:256-257 logo 光晕 */
+}
+.sh-brand-name { overflow: hidden; text-overflow: ellipsis; }
+
+.sh-side-nav, .sh-drawer-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* fix1 R3（std 评审 judgement 1/2）：侧栏导航区自持纵向伸展——显式
+   flex:1 占满 brand 与 foot 之间，不再依赖旧壳全局 nav{flex:1}
+   （style.css:270）；T18 删除旧壳后形态零惊变。抽屉不加 grow，
+   foot 钉底由 .sh-drawer flex 容器 + margin-top:auto 保证。 */
+.sh-side-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.sh-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--nav-item-h);              /* ≥48px：命中区约束（FR-24 ≥44） */
+  padding: var(--space-2) var(--space-3);
+  box-sizing: border-box;
+  border-radius: var(--nav-item-radius);
+  color: var(--nav-text);
+  text-decoration: none;
+  font-size: var(--text-md);
+  transition: background var(--dur-sm) var(--ease-standard),
+              color var(--dur-sm) var(--ease-standard);
+}
+.sh-nav-item:hover { background: var(--nav-item-hover); color: var(--nav-text-active); }
+.sh-nav-item.is-active {
+  background: var(--nav-item-active);
+  color: var(--nav-text-active);
+  box-shadow: inset 0 0 0 var(--line-1) var(--glass-nav-border);
+}
+.sh-nav-ico { flex: none; width: var(--space-5); text-align: center; font-size: var(--text-lg); }
+.sh-nav-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.sh-side-foot {
+  margin-top: auto;
+  padding-top: var(--space-4);
+  padding-bottom: max(var(--space-2), env(safe-area-inset-bottom));
+  border-top: var(--line-1) solid var(--glass-nav-border);
+}
+.sh-side-foot .sh-nav-item { color: var(--nav-text); }
+
+/* ---------- 2a. 侧底 me-box（T19a：2.1 index.html:91-111 / style.css:289-340
+   逐值；裸色带出处为 §0b 同型先例）---------- */
+.sh-me { display: flex; align-items: center; gap: 11px; padding: 2px 8px; cursor: pointer; }
+.sh-me-meta { min-width: 0; flex: 1 1 auto; }
+.sh-me-avatar {
+  width: 38px; height: 38px; border-radius: 50%; flex: none;
+  background: linear-gradient(135deg, #5b86ff 0%, #9a6bff 100%); /* 2.1 --brand-grad（style.css:17） */
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; text-transform: uppercase;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.4); /* 2.1 style.css:296 */
+}
+.sh-me-name {
+  font-size: var(--text-sm); font-weight: 600; /* 2.1 13px/600（style.css:298） */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sh-me-user {
+  font-size: 11.5px;                    /* 2.1 style.css:299（无 token 值） */
+  color: var(--color-text-faint);       /* 2.1 --ink-mute */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sh-me-logout {
+  /* T56 退出标识（2.1 .me-logout-btn style.css:300-331 逐值） */
+  margin-left: auto;
+  width: 28px; height: 28px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: linear-gradient(160deg,
+    rgba(255,255,255,.10), rgba(255,255,255,.04));
+  color: var(--color-text-muted);       /* 2.1 --ink-dim */
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.12),
+              0 2px 8px rgba(0,0,0,.28);
+  cursor: pointer;
+  transition: all var(--dur-sm) var(--ease-spring);
+}
+.sh-me-logout:hover {
+  color: #ff8b98;                       /* 2.1 style.css:316 */
+  background: linear-gradient(160deg,
+    rgba(255,97,114,.22), rgba(255,97,114,.10)); /* style.css:317-318 */
+  border-color: rgba(255,97,114,.45);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.18),
+              0 4px 14px rgba(255,97,114,.24);
+  transform: translateY(-1px);
+}
+.sh-me-logout:active { transform: translateY(0); }
+.sh-me-logout:focus-visible {
+  outline: 2px solid rgba(255,139,152,.55); outline-offset: 2px; /* style.css:326 */
+}
+.sh-me-logout:disabled,
+.sh-me-logout[disabled] {
+  opacity: .45; cursor: not-allowed; transform: none;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06); /* style.css:328-331 */
+}
+/* 静态亮主题（style.css:334-340）：撞色描边/内高光翻转保证可读 */
+:root[data-theme="light"] .sh-me-logout {
+  border-color: rgba(20,30,60,.16);
+  background: linear-gradient(160deg,
+    rgba(20,30,60,.06), rgba(20,30,60,.02));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7),
+              0 2px 8px rgba(30,40,80,.10);
+}
+
+/* ---------- 2b. 桌面/平板隐藏手机专属导航（底栏与抽屉） ---------- */
+@media (min-width: 640px) {
+  .sh-bottombar,
+  .sh-drawer,
+  .sh-drawer-mask { display: none !important; }
+}
+
+/* ---------- 3. 平板窄栏（640–1023.98）：icon rail ---------- */
+@media (min-width: 640px) and (max-width: 1023.98px) {
+  #sh-root { grid-template-columns: 72px 1fr; --sh-side-w: 72px; }
+  .sh-side { padding: var(--space-3) var(--space-1); align-items: stretch; }
+  .sh-brand { justify-content: center; padding: var(--space-1) 0 var(--space-3); gap: 0; }
+  .sh-brand-name { display: none; }
+  .sh-nav-item { flex-direction: column; justify-content: center; gap: 2px; padding: var(--space-2) 0; }
+  .sh-nav-item .sh-nav-label { font-size: var(--text-xs); }
+  .sh-side-foot .sh-nav-item { flex-direction: column; gap: 2px; padding: var(--space-2) 0; }
+  /* T19b Q4：rail 也显登录账号+退出钮（2.1 口径）——头像/姓名/退出纵向三槽，
+     仅账号串收纳（72px 宽放不下） */
+  .sh-me { flex-direction: column; gap: 4px; padding: 2px 0; }
+  .sh-me-meta { display: block; width: 100%; text-align: center; }
+  .sh-me-name { font-size: 11px; text-align: center; }
+  .sh-me-user { display: none; }
+  .sh-me-logout { margin-left: 0; }
+}
+
+/* FR-24 / T19a 口径：桌面逐值 2.1 紧凑形态（power 28px），<768 断点回补
+   ≥44px 命中区（与 new.css 任务选号 seg 同一口径） */
+@media (max-width: 767.98px) {
+  .sh-me-logout { width: 44px; height: 44px; }
+}
+
+/* ---------- 3b. 桌面（≥1024）：2.1 浮起面板口径 ----------
+   .app padding:14px gap:14px（style.css:263）+ .sidebar 浮起玻璃面板
+   padding:22px 16px / 全描边 / r-xl=28px（style.css:265-266）。
+   仅 ≥1024 生效，避开 640–1023.98 rail 块的 padding 覆盖冲突。 */
+@media (min-width: 1024px) {
+  #sh-root { padding: 14px; gap: 14px; }
+  .sh-side {
+    padding: 22px 16px;
+    border: var(--line-1) solid var(--glass-nav-border);
+    border-radius: var(--radius-xl);
+    /* T19a：2.1 浮起侧栏=.glass 全材质（style.css:138-149 box-shadow 随材质） */
+    box-shadow: var(--glass-nav-hi), var(--glass-nav-shadow);
+  }
+  /* 2.1 侧栏导航逐值（style.css:270-273/277/289）：gap 5px / 项 gap 13px /
+     padding 12px 14px / r-md 14px / 14px 字 / ico 18px 15px；命中区自然高
+     ≈46px ≥44（FR-24），min-height 44 仅兜底不触高。 */
+  .sh-side-nav { gap: 5px; }
+  .sh-side .sh-nav-item {
+    gap: 13px;
+    min-height: 44px;
+    padding: 12px 14px;
+    border-radius: var(--radius-md);
+    font-size: 14px;
+  }
+  .sh-side .sh-nav-ico { width: 18px; font-size: 15px; opacity: .85; }
+  .sh-side-foot { padding-top: 15px; }
+}
+
+/* ---------- 4. 手机形态（<640）：沉浸内容 + 悬浮液态玻璃底栏 + 抽屉 ---------- */
+@media (max-width: 639.98px) {
+  /* T19b Q2：block→flex 纵轴——fixed 根给 .sh-main 定高链（flex:1 +
+     min-height:0），.sh-scroll 的 flex:1/height:100% 才有解析基准，超屏
+     内容可滚出（旧 block 形态百分比高度失效 → 整页不滚被 body 裁切）。 */
+  #sh-root { display: flex; flex-direction: column; }
+  .sh-main { flex: 1 1 auto; }
+  .sh-side { display: none; }
+  /* .sh-scroll 底部避让见下方基础规则后的补块（简写级序坑） */
+}
+
+/* 主内容与滚动容器（容器契约：#sh-scroll 滚动 / #sh-viewhost 视图挂载） */
+.sh-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.sh-scroll {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  box-sizing: border-box;
+  height: 100%;
+  padding: 14px 22px; /* 2.1 .main（style.css:350）逐值 */
+  padding-top: max(14px, env(safe-area-inset-top));
+}
+.sh-viewhost { width: 100%; } /* 2.1 .main 无版心上限（style.css:350）：同窗口尺寸逐像素对齐 */
+/* 手机（<640）悬浮底栏底部避让：必须置于 .sh-scroll 基础简写之后，
+   否则被 padding 简写重置（级序坑订正）。 */
+@media (max-width: 639.98px) {
+  .sh-scroll { padding-bottom: calc(120px + env(safe-area-inset-bottom)); }
+}
+
+/* ---------- 4b. 未登录提示条 + 启动连接小字（2.1 style.css:1021-1072 逐值） ----------
+   .sh-guestbar = 2.1 .guest-bar（含 ::before「·」点），点击开登录叠加层；
+   .sh-guestbar--booting = 2.1 .guest-bar.booting 中性态（不可点）；
+   .sh-booterr = 2.1 .boot-err 启动连接失败非阻断小字。
+   节点为 div（非 button/a/role）不进 T17 G12 命中区 SEL；:hover 全落
+   (hover:hover) 断点内（G13 静态审计口径）。 */
+.sh-guestbar {
+  display: flex; align-items: center; justify-content: center;
+  gap: 6px; margin: 0 0 12px; padding: 8px 12px;
+  border-radius: var(--radius-lg);       /* 2.1 --r-lg = 20px */
+  cursor: pointer;
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.14), rgba(255,138,151,.12));   /* style.css:1025-1026 */
+  border: 1px solid rgba(255,184,77,.35);            /* style.css:1027 */
+  color: #ffc78a; font-size: 12.5px; font-weight: 600;
+  letter-spacing: .3px; user-select: none;           /* style.css:1028-1029 */
+  transition: border-color .2s var(--ease-standard), background .2s var(--ease-standard);
+}
+.sh-guestbar::before {
+  content: "·"; font-size: 15px; line-height: 1;
+  color: #ffb84d; margin-right: 2px;                 /* style.css:1037-1040 */
+}
+:root[data-theme="light"] .sh-guestbar {
+  color: #8a5a12; border-color: rgba(180,120,30,.4);
+  background: linear-gradient(120deg,
+    rgba(255,184,77,.22), rgba(255,200,160,.18));   /* style.css:1042-1046 */
+}
+.sh-guestbar--booting {
+  cursor: default;
+  pointer-events: none;
+  opacity: .88;                                      /* style.css:1054-1058 */
+}
+@media (hover: hover) {
+  .sh-guestbar:hover {
+    border-color: rgba(255,184,77,.65);
+    background: linear-gradient(120deg,
+      rgba(255,184,77,.22), rgba(255,138,151,.18)); /* style.css:1032-1036 */
+  }
+  :root[data-theme="light"] .sh-guestbar:hover {
+    border-color: rgba(180,120,30,.6);               /* style.css:1047-1049 */
+  }
+  /* 中性态屏蔽 hover 提亮（回到静止态，style.css:1059-1064） */
+  .sh-guestbar--booting:hover {
+    border-color: rgba(255,184,77,.35);
+    background: linear-gradient(120deg,
+      rgba(255,184,77,.14), rgba(255,138,151,.12));
+  }
+}
+.sh-booterr {
+  margin: 0 0 12px;
+  font-size: 11.5px;
+  color: var(--color-text-faint);       /* 2.1 --ink-mute 同位令牌 */
+  letter-spacing: .2px; user-select: none;           /* style.css:1066-1072 */
+}
+
+/* ---------- 5. 液态玻璃悬浮底栏（<640，用户 2026-10-15 增补） ----------
+   形态：悬浮胶囊 —— 左右与底部留边距（底部 = safe-area + 间距令牌），
+   全圆角（--radius-pill），五槽：☰菜单 / 任务库 / 中央 FAB 新建 / 下载中 / 设置。
+   材质：T7 --glass-nav-*（blur 24px + 渐变 + 细描边 + 顶部内高光）。
+   折射：.sh-lens 内为滚动内容快照层（router.js 维护），叠加
+   filter:url(#t8-lens)（feDisplacementMap），仅胶囊包围盒内一个滤镜面。 */
+.sh-bottombar {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(env(safe-area-inset-bottom) + 12px); /* Home 指示条内缩 */
+  height: 60px;
+  border-radius: var(--radius-pill);
+  display: flex;
+  flex-direction: row;   /* 防御旧壳全局 nav {flex-direction:column} 污染（双壳并存期） */
+  flex: none;
+  gap: 0;
+  align-items: stretch;
+  justify-content: space-between;
+  padding: 0 var(--space-2);
+  box-sizing: border-box;
+  z-index: var(--z-nav);
+}
+.sh-bar-menu, .sh-bottombar .sh-nav-item, .sh-bar-fab {
+  -webkit-tap-highlight-color: transparent;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-decoration: none;
+  font: inherit;
+  color: var(--nav-text);
+  position: relative;  /* 叠放在 lens/mat 绝对定位层之上（无 z 的 static 会被 positioned 层盖住） */
+  z-index: 1;
+}
+.sh-bar-menu, .sh-bottombar .sh-nav-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 44px;              /* FR-24：命中区 ≥44×44（高度由底栏 60px 保证） */
+  min-height: 44px;
+  border-radius: var(--radius-lg);
+  font-size: var(--text-xs);
+  transition: color var(--dur-sm) var(--ease-standard), transform var(--dur-sm) var(--ease-spring);
+}
+.sh-bar-menu { font-size: var(--text-lg); }
+.sh-bottombar .sh-nav-item .sh-nav-ico, .sh-bar-menu span { font-size: var(--text-lg); line-height: 1.2; }
+.sh-bottombar .sh-nav-item.is-active { color: var(--nav-text-active); transform: translateY(-1px); }
+.sh-bottombar .sh-nav-item.is-active .sh-nav-ico {
+  filter: drop-shadow(0 0 8px var(--color-primary-soft));
+}
+/* 中央强调 FAB（新建下载）：对应旧壳侧栏「＋ 新建下载」页签（index.html
+   data-view="new"，旧壳默认高亮项 + "＋"图标语义），升格为中央主操作。 */
+.sh-bar-fab {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  margin: 0 var(--space-1);
+  border-radius: var(--radius-pill);
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-strong));
+  color: var(--color-on-primary);
+  font-size: var(--text-xl);
+  box-shadow: var(--btn-primary-shadow);   /* 2.1 style.css:199-200 主按钮光晕 */
+  transition: transform var(--dur-sm) var(--ease-spring), box-shadow var(--dur-sm) var(--ease-standard);
+}
+.sh-bar-fab:active { transform: scale(.94); }
+.sh-bar-fab.is-active { box-shadow: var(--btn-primary-shadow), 0 0 0 3px var(--color-primary-soft); }
+
+/* 材质层：半透明渐变 + backdrop 模糊 + 细描边 + 顶部高光（参考图语汇） */
+.sh-bar-mat {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--glass-nav-bg);
+  -webkit-backdrop-filter: blur(var(--glass-nav-blur)) saturate(var(--gl-sat));
+  backdrop-filter: blur(var(--glass-nav-blur)) saturate(var(--gl-sat));
+  border: var(--line-hair) solid var(--glass-nav-border);
+  box-shadow: var(--glass-nav-shadow), var(--glass-nav-hi);
+}
+/* 边缘虹彩（iridescent edge）：上缘窄带的青→绿→粉紫色散（参考图），
+   消费本任务 tokens.css 最小追加的 --nav-edge-* 语义令牌。 */
+.sh-bar-mat::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--nav-edge-iridescence);
+  opacity: var(--nav-edge-opacity);
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, transparent var(--nav-edge-fade, 40%));
+  mask-image: linear-gradient(180deg, #000 0%, transparent var(--nav-edge-fade, 40%));
+  pointer-events: none;
+}
+/* 虚拟键盘弹出（visualViewport 收缩，router.js 置 data-v22-kbd）：
+   布局级保证 —— 隐藏悬浮底栏，绝不遮挡输入框与系统候选条。 */
+#sh-root[data-v22-kbd="on"] .sh-bottombar { display: none; }
+
+/* ---------- 6. 折射层（.sh-lens 只在底栏包围盒内） ---------- */
+.sh-lens {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;         /* 纯视觉层 */
+}
+.sh-lens-content {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  filter: url(#t8-lens);        /* SVG feDisplacementMap 边缘折射（自写） */
+  opacity: .92;
+  will-change: transform;       /* 滚动跟随只走合成器 */
+}
+
+/* ---------- 7. 抽屉（<640，☰ 打开：brand/全导航/登录入口） ---------- */
+.sh-drawer-mask {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  background: var(--color-scrim);
+}
+.sh-drawer {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: min(78vw, 320px);
+  /* fix1 R3（std 评审 judgement 1）：显式 flex 纵轴容器——使
+     .sh-drawer-foot 的 margin-top:auto 真实钉底（块级容器中垂直
+     auto margin 恒计 0，foot 在内容不足时不贴底）。 */
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  z-index: calc(var(--z-overlay) + 1);
+  padding: var(--space-4);
+  padding-top: max(var(--space-6), env(safe-area-inset-top));  /* 刘海内缩 */
+  transform: translateX(-100%);
+  transition: transform var(--dur-md) var(--ease-out);
+  background: var(--glass-sheet-bg);
+  -webkit-backdrop-filter: blur(var(--glass-sheet-blur)) saturate(var(--gl-sat));
+  backdrop-filter: blur(var(--glass-sheet-blur)) saturate(var(--gl-sat));
+  border-right: var(--line-1) solid var(--glass-sheet-border);
+}
+.sh-drawer.open { transform: none; }
+.sh-drawer-head { display: flex; align-items: center; gap: var(--space-3); padding-bottom: var(--space-4); }
+.sh-drawer .sh-nav-item { min-height: var(--space-14); } /* 抽屉行更高命中区（≥56px） */
+.sh-drawer-foot {
+  margin-top: auto;
+  padding-top: var(--space-4);
+  border-top: var(--line-1) solid var(--glass-nav-border);
+}
+/* T19b Q4：抽屉脚 me-box（头像/姓名/退出）留呼吸距 */
+.sh-drawer-foot .sh-me { padding: 6px 8px; }
+
+/* ---------- 8. 占位视图空态（六视图共用；T11–T16 逐个替换） ---------- */
+.v22-placeholder-view {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-8) var(--space-2);
+}
+.v22-ph-card {
+  width: 100%;
+  max-width: 520px;
+  box-sizing: border-box;
+  text-align: center;
+  padding: var(--space-12) var(--space-6);
+  border-radius: var(--radius-xl);
+  background: var(--glass-card-bg);
+  -webkit-backdrop-filter: blur(var(--glass-card-blur)) saturate(var(--gl-sat));
+  backdrop-filter: blur(var(--glass-card-blur)) saturate(var(--gl-sat));
+  border: var(--line-hair) solid var(--glass-card-border);
+  box-shadow: var(--glass-card-hi), var(--glass-card-shadow);
+}
+.v22-ph-ico { font-size: 40px; line-height: 1; margin-bottom: var(--space-4); }
+.v22-ph-title { margin: 0 0 var(--space-2); font-size: var(--text-2xl); color: var(--color-text-strong); }
+.v22-ph-desc { margin: 0; color: var(--color-text-muted); font-size: var(--text-md); }
+.v22-ph-params { margin: var(--space-3) 0 0; color: var(--color-text-faint); font-size: var(--text-sm); min-height: 1em; }
+
+/* ---------- 9. 降级三档 ---------- */
+/* 9.1 关折射动效（reduced-motion）：折射层整体淡出（保材质与虹彩） */
+#sh-root[data-v22-rm] .sh-lens { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .sh-drawer { transition: none; }
+  .sh-bar-fab, .sh-nav-item { transition: none; }
+}
+/* 9.2 折射滤镜能力缺失/JS 特性检测失败（data-v22-nolens）：仅关折射，材质保留 */
+#sh-root[data-v22-nolens] .sh-lens { display: none; }
+/* 9.3 无 backdrop-filter：不透明实色 nav 面 ——
+   真实路径由 tokens.css @supports 块把 --glass-nav-* 全局转为 --raw-solid（本任务
+   消化 T7 收割应改②）；v22degrade=1 测试钩子路径由 data-v22-nofrost 显式指定。
+   两路汇合为"不透明/纯色 nav 面"，可见可测（TR-8.2 底栏专项截图③）。 */
+#sh-root[data-v22-nofrost] .sh-bar-mat,
+#sh-root[data-v22-nofrost] .sh-side,
+#sh-root[data-v22-nofrost] .sh-drawer,
+#sh-root[data-v22-nofrost] .v22-ph-card {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: var(--raw-solid);
+}
+#sh-root[data-v22-nofrost] .sh-lens { display: none; }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .sh-lens { display: none; }
+  .sh-bar-mat, .sh-side, .sh-drawer, .v22-ph-card {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: var(--raw-solid); /* tokens 5.2 修复后为不透明实色（深浅两套） */
+  }
+}
+
+/* ============================================================
+   10. T19f-B 全局下载悬浮卡（右下角通用作业进度浮层）
+   2.1 蓝本逐值：T45/T57 浮层 style.css:907-1005 + 1475-1523；
+   逻辑在 js/jobdock.js，宿主 #sh-jobdock 由 buildShellDom 末位挂出。
+   裸色带 2.1 出处（§0b/§2a 同型先例）；液态玻璃禁新 backdrop-filter
+   面（2.1 job-card 本就零滤镜，唯 mini 胶囊 blur 归入 html.liquid 归零）。
+   z 序（壳内）：底栏 --z-nav(20) 之上、抽屉遮罩 --z-overlay(200) 之下；
+   body 级弹窗 --z-modal(6000) / toast(6200) 恒压其上。
+   ============================================================ */
+.sh-jobdock {
+  position: fixed;
+  right: 18px; bottom: 18px;             /* 2.1 .job-progress-host style.css:922 */
+  z-index: 30;
+  display: flex; flex-direction: column; gap: 10px;
+  width: min(340px, 86vw);               /* style.css:925 */
+  max-height: 62vh; overflow-y: auto;    /* style.css:926 */
+  pointer-events: none;                  /* 仅卡片可点，不挡下方内容 */
+}
+.sh-jobdock .hidden { display: none !important; }
+
+.sh-jobdock .job-card {
+  pointer-events: auto;
+  background: linear-gradient(155deg,
+    rgba(255,255,255,.14) 0%, rgba(255,255,255,.05) 100%);  /* style.css:931-932 */
+  /* T19i：折叠胶囊同款羽化（:766 blur(20px) saturate(160%)）——
+     展开卡零滤镜透底致文字被下层内容淹没，用户裁决统一羽化 */
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid rgba(255,255,255,.22);                  /* style.css:933 */
+  border-radius: 20px;                  /* 2.1 --r-lg style.css:20 */
+  box-shadow: 0 10px 30px rgba(4,6,18,.35),                /* 2.1 --soft-shadow style.css:29-30 */
+              inset 0 1px 0 rgba(255,255,255,.18);
+  padding: 13px 16px 14px;
+  font-size: 12.5px;
+  animation: sh-jd-rise .3s var(--ease-standard);
+  transition: opacity .45s var(--ease-standard), transform .45s var(--ease-standard);
+}
+.sh-jobdock .job-card.out { opacity: 0; transform: translateY(8px); }  /* style.css:941 */
+@keyframes sh-jd-rise { from { opacity: 0; transform: translateY(10px); } }  /* style.css:352 rise */
+.sh-jobdock .job-head { display: flex; align-items: center; gap: 9px; }
+.sh-jobdock .job-kind {
+  font-weight: 650; font-size: 12.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sh-jobdock .job-state {
+  flex-shrink: 0; font-size: 11px; font-weight: 600;
+  padding: 2px 10px; border-radius: 999px;
+  background: rgba(255,184,77,.16); color: #ffb84d;   /* style.css:950（--warn） */
+}
+.sh-jobdock .job-state.s-running { background: rgba(91,134,255,.2); color: #a8bcff; }
+.sh-jobdock .job-state.s-done { background: rgba(52,217,160,.16); color: #34d9a0; }
+.sh-jobdock .job-state.s-error { background: rgba(255,97,114,.16); color: #ff6172; }
+.sh-jobdock .job-state.s-cancelled { background: rgba(150,160,190,.16); color: #aeb8d8; }
+.sh-jobdock .job-state.s-cancelling {
+  background: rgba(255,184,77,.16); color: #ffb84d;   /* style.css:1513-1515 */
+}
+.sh-jobdock .job-collapse-btn {
+  margin-left: auto; flex-shrink: 0;      /* style.css:1498-1499（收起靠右起组） */
+  border: 1px solid rgba(255,255,255,.2); /* 2.1 --glass-edge style.css:9 */
+  border-radius: 999px;
+  background: rgba(255,255,255,.08); color: rgba(238,242,252,.68); /* --ink-dim */
+  font-size: 11px; padding: 3px 11px;
+  transition: .2s var(--ease-spring);
+}
+.sh-jobdock .job-cancel-btn {
+  margin-left: 0;                         /* style.css:1508（职责移交收起钮） */
+  flex-shrink: 0;
+  border: 1px solid rgba(255,97,114,.42); border-radius: 999px;
+  background: rgba(255,97,114,.12); color: #ff8a97;
+  font-size: 11px; padding: 3px 11px;
+  transition: .2s var(--ease-spring);
+}
+.sh-jobdock .job-cancel-btn[disabled] { opacity: .55; pointer-events: none; }
+.sh-jobdock .job-cancel-btn.is-busy { pointer-events: none; opacity: .8; }
+.sh-jobdock .job-phase {
+  margin-top: 7px; color: rgba(238,242,252,.68); font-size: 12px;  /* --ink-dim */
+  display: flex; gap: 7px; align-items: baseline; overflow: hidden;
+}
+.sh-jobdock .job-phase .pd {
+  color: rgba(231,236,249,.45); overflow: hidden;      /* --ink-mute */
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.sh-jobdock .job-bar {
+  position: relative; height: 6px; margin-top: 9px;
+  background: rgba(7,9,20,.55); border-radius: 6px; overflow: hidden;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,.5);
+}
+.sh-jobdock .job-fill {
+  height: 100%; width: 0; border-radius: 6px;
+  background: linear-gradient(135deg, #5b86ff 0%, #9a6bff 100%);  /* 2.1 --brand-grad */
+  transition: width .4s var(--ease-standard);
+}
+.sh-jobdock .job-fill.f-done { background: linear-gradient(90deg, #2bc48e, #34d9a0); }
+.sh-jobdock .job-fill.f-error { background: linear-gradient(90deg, #e6485d, #ff6172); }
+.sh-jobdock .job-fill.f-cancelled { background: rgba(150,160,190,.6); }
+.sh-jobdock .job-fill.indet {
+  position: absolute; width: 38%;
+  animation: sh-jd-indet 1.15s var(--ease-standard) infinite alternate;
+}
+@keyframes sh-jd-indet { from { left: -38%; } to { left: 100%; } }  /* style.css:987 */
+.sh-jobdock .job-count {
+  margin-top: 7px; display: flex; justify-content: space-between; gap: 10px;
+  color: rgba(231,236,249,.45); font-size: 11.5px;     /* --ink-mute */
+  font-variant-numeric: tabular-nums;
+}
+.sh-jobdock .job-err {
+  margin-top: 7px; color: #ff6172; font-size: 12px; word-break: break-word;
+}
+
+/* spinner（2.1 style.css:670-677 同径，sh- 作用域防与视图 .ac-spin 混名） */
+.sh-jobdock .spinner {
+  display: inline-block; flex: none;
+  width: 12px; height: 12px;
+  border: 2px solid currentColor; border-top-color: transparent;
+  border-radius: 50%; vertical-align: -2px; margin-right: 6px;
+  animation: sh-jd-spin .7s linear infinite;
+}
+@keyframes sh-jd-spin { to { transform: rotate(360deg); } }
+.sh-jobdock .job-state.s-cancelling .spinner,
+.sh-jobdock .job-cancel-btn .spinner {
+  width: 10px; height: 10px; margin-right: 4px; vertical-align: -1px;  /* style.css:1516-1523 */
+}
+
+/* 折叠态——卡片整体隐藏，仅留「N 个作业」小胶囊（style.css:1481-1494） */
+.sh-jobdock.collapsed .job-card { display: none; }
+.sh-jobdock .job-dock-mini {
+  pointer-events: auto;
+  flex: none; border: 1px solid rgba(255,255,255,.2);
+  border-radius: 999px; padding: 6px 16px;
+  background: rgba(255,255,255,.06); color: rgba(238,242,252,.68);
+  font-size: 12px; white-space: nowrap;
+  box-shadow: 0 10px 30px rgba(4,6,18,.35), inset 0 1px 0 rgba(255,255,255,.18);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  transition: .25s var(--ease-spring);
+}
+/* T19j：液态叠加面羽化加强（用户裁决 2026-10-19）——2.1「禁新面」
+   归零口径废止于叠加小面：背景帧为节流静态采样（router _setBackdrop
+   1.5s 节流），小面 blur 成本低；登录面板/胶囊底栏/侧栏/下载卡等
+   叠加元素统一折叠胶囊同款羽化 blur(20px) saturate(160%)（:766 配方），
+   修液态下层内容穿透文字不可读。 */
+html.liquid .sh-jobdock .job-card,
+html.liquid .sh-jobdock .job-dock-mini,
+html.liquid .sh-bottombar,
+html.liquid .sh-side,
+html.liquid .sh-side-foot,
+html.liquid .sh-drawer {
+  backdrop-filter: blur(20px) saturate(160%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(160%) !important;
+}
+.sh-jobdock button:active { transform: translateY(0) scale(.97); }  /* style.css:1509-1510 */
+
+/* hover 面统包 hover 断点（T17 N5 口径；2.1 hover 值逐字） */
+@media (hover: hover) and (pointer: fine) {
+  .sh-jobdock .job-cancel-btn:hover { background: rgba(255,97,114,.24); }
+  .sh-jobdock .job-collapse-btn:hover {
+    background: rgba(255,255,255,.16); color: #f5f7fe;
+  }
+  .sh-jobdock .job-dock-mini:hover { color: #f5f7fe; transform: translateY(-1px); }
+}
+
+/* 浅色主题覆写（2.1 style.css:996-1005 + --ink 族浅墨 style.css:847-849） */
+:root[data-theme="light"] .sh-jobdock .job-card {
+  background: linear-gradient(155deg,
+    rgba(255,255,255,.78), rgba(255,255,255,.55));
+  border-color: rgba(20,30,60,.12);
+}
+:root[data-theme="light"] .sh-jobdock .job-bar {
+  background: rgba(20,30,60,.12);
+  box-shadow: inset 0 1px 2px rgba(20,30,60,.12);
+}
+:root[data-theme="light"] .sh-jobdock .job-state.s-running {
+  background: rgba(80,110,240,.14); color: #3c56c8;
+}
+:root[data-theme="light"] .sh-jobdock .job-phase { color: rgba(20,26,46,.7); }
+:root[data-theme="light"] .sh-jobdock .job-phase .pd,
+:root[data-theme="light"] .sh-jobdock .job-count { color: rgba(20,26,46,.46); }
+:root[data-theme="light"] .sh-jobdock .job-collapse-btn,
+:root[data-theme="light"] .sh-jobdock .job-dock-mini { color: rgba(20,26,46,.7); }
+:root[data-theme="light"] .sh-jobdock .job-fill.indet { background: rgba(20,30,60,.35); }
+
+/* T19e 亮捕获底（liquid bright）：2.1 无此态；复用浅色玻璃面 + 深墨
+   保证亮底文字可见度（用户 T19e 诉求口径，tokens.css §7 同型换色） */
+:root.liquid[data-lum="bright"] .sh-jobdock .job-card {
+  background: linear-gradient(155deg,
+    rgba(255,255,255,.78), rgba(255,255,255,.55));
+  border-color: rgba(20,30,60,.12);
+}
+:root.liquid[data-lum="bright"] .sh-jobdock .job-bar {
+  background: rgba(20,30,60,.12);
+  box-shadow: inset 0 1px 2px rgba(20,30,60,.12);
+}
+:root.liquid[data-lum="bright"] .sh-jobdock .job-state.s-running {
+  background: rgba(80,110,240,.14); color: #3c56c8;
+}
+:root.liquid[data-lum="bright"] .sh-jobdock .job-phase { color: rgba(20,26,46,.7); }
+:root.liquid[data-lum="bright"] .sh-jobdock .job-phase .pd,
+:root.liquid[data-lum="bright"] .sh-jobdock .job-count { color: rgba(20,26,46,.46); }
+:root.liquid[data-lum="bright"] .sh-jobdock .job-collapse-btn,
+:root.liquid[data-lum="bright"] .sh-jobdock .job-dock-mini { color: rgba(20,26,46,.7); }
+:root.liquid[data-lum="bright"] .sh-jobdock .job-fill.indet { background: rgba(20,30,60,.35); }
+
+/* 列表滚动避让：--job-dock-h 由 jobdock.js ResizeObserver 写入（2.1
+   style.css:1478 #active-list 同款） */
+.vw-active { padding-bottom: calc(var(--job-dock-h, 0px) + 24px); }
+
+/* 移动端（<640）：让开悬浮底栏（底栏 bottom 12 + 高 60 + 间隙 12 = 84；
+   底栏定位见 §4 .sh-bottombar style.css:429-434 本文件） */
+@media (max-width: 639.98px) {
+  .sh-jobdock {
+    right: 12px;
+    bottom: calc(env(safe-area-inset-bottom) + 84px);
+  }
+}

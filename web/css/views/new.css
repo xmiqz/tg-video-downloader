@@ -1,0 +1,474 @@
+/* ============================================================
+   views/new.css — T12 新建下载视图切片（替换 T8 占位）
+   所有权：本文件 + web/js/views/new.js（恰两文件，零改基座）。
+
+   纪律：
+   - 只消费 tokens.css 令牌 + ui.css 组件类（.u-card/.u-seg/.u-progress/
+     .u-empty/.u-btn）；类名 nw- 前缀（与旧壳 .steps/.form-card/.video-row
+     等及外壳 .sh-/组件 .u- 零碰撞）。
+   - 裸值就近注明旧壳出处（web/style.css / web/index.html 文件:行）；
+     断点 767.98/768 例外（媒体查询不可 var()，口径=FR-23 ≥768 平板
+     起桌面形态，与 ui.css OVERLAY_FORM_BREAKPOINT 同源）。
+   - 视觉口径逐段对照旧壳"新建向导"（style.css:511-592、1075-1128）；
+     结果行桌面表格化密度 / 手机卡片（任务书 §2.10，≥768 断点）。
+   - 动效只走 --dur-*、--ease-*；自有动画双套归零（见文末 §9：
+     prefers-reduced-motion 与 #sh-root[data-v22-rm="on"]，终态保留）。
+   ============================================================ */
+
+/* ---------- 0. 视图根与页头 ---------- */
+.vw-new {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0; /* 360px 防横向溢出（FR-23 小屏） */
+}
+.nw-head h2 {
+  margin: 0;
+  font-size: 24px;               /* 2.1 .page-head h2（style.css:355） */
+  letter-spacing: .3px;          /* style.css:355 */
+  color: var(--color-text-strong);
+  line-height: 1.4;
+}
+/* .nw-sub 双用拆分（T19a 字号对标）：页头副题 = 2.1 .page-sub
+   13px / margin-top 6px（style.css:356） */
+.nw-head .nw-sub {
+  margin: 6px 0 0;               /* 2.1 .page-sub margin-top:6px（style.css:356） */
+  font-size: var(--text-sm);     /* 2.1 .page-sub 13px（style.css:356） */
+  color: var(--color-text-muted);
+}
+
+/* ---------- 1. 步骤条（对照 style.css:512-522 steps/step/step-line） ---------- */
+.nw-steps {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-1);
+}
+.nw-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);     /* 2.1 .step 13px（style.css:513） */
+}
+.nw-step i {
+  width: 32px;   /* 旧壳步骤圆径 32px（style.css:514） */
+  height: 32px;
+  border-radius: var(--radius-pill);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-style: normal;
+  font-size: var(--text-sm);
+  background: var(--color-surface-sunk);
+  border: var(--line-1) solid var(--color-border);
+  transition: background var(--dur-sm) var(--ease-standard),
+    color var(--dur-sm) var(--ease-standard);
+}
+.nw-step.is-active { color: var(--color-text-strong); }
+.nw-step.is-active i {
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-strong));
+  color: var(--color-on-primary);
+  border-color: transparent;
+}
+.nw-step.is-done i {
+  background: var(--color-surface-raise);   /* 旧壳完成态高亮反转（style.css:521） */
+  color: var(--color-text);
+  border-color: transparent;
+}
+.nw-step-line {
+  flex: 0 1 var(--space-10);   /* 旧壳连接线 54px（style.css:522）近似 4px 栅格 40px */
+  height: 2px;                 /* 旧壳连接线 2px 高（style.css:522） */
+  border-radius: var(--radius-pill);
+  background: var(--color-border);
+}
+
+/* ---------- 2. 表单（对照 style.css:523-529 form-card/form-grid 口径） ---------- */
+.nw-wiz { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
+.nw-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.nw-label, .nw-field label {
+  font-size: var(--text-xs);     /* 2.1 label 12px（style.css:219） */
+  color: var(--color-text-muted);
+}
+.nw-input {
+  width: 100%;
+  min-height: 44px;            /* FR-24 命中区（表单输入同款） */
+  box-sizing: border-box;
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+  font-size: var(--text-md);
+  color: var(--input-text);
+  background: var(--input-bg);
+  border: var(--line-1) solid var(--input-border);
+  border-radius: var(--input-radius);
+  transition: var(--input-transition);
+}
+.nw-input::placeholder { color: var(--input-placeholder); }
+.nw-input:focus {
+  outline: none;
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 0 var(--space-1) var(--input-ring);
+}
+/* 日期输入默认不可压缩（会把同排挤扁）：与数字输入同权（style.css:558-559） */
+.nw-dual input[type="date"] { flex: 1 1 0; min-width: 0; }
+/* 窄布局隐藏 number 上下箭头仍可键入（style.css:560-565） */
+.nw-field input[type="number"]::-webkit-inner-spin-button,
+.nw-field input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.nw-dual {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);           /* 旧壳 dual-input 9px（style.css:555）近似 8px 栅格 */
+  min-width: 0;
+}
+.nw-dual .nw-input { flex: 1 1 0; min-width: 0; }
+.nw-dual > span[aria-hidden] { color: var(--color-text-faint); flex: none; }
+/* 基础设置二列网格（2.1 .form-grid/.top-gap 逐值 style.css:525-526：
+   1fr 1fr / 行距 0 列距 16px / 上距 4px）——limit | parallel 同排 */
+.nw-grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 16px;                 /* 2.1 .form-grid gap:0 16px（style.css:525） */
+  margin-top: 4px;             /* 2.1 .top-gap margin-top:4px（style.css:526） */
+}
+
+/* T52 任务选号行（2.1 .task-acct 系 逐值 style.css:1397-1405） */
+.nw-taskacct {
+  display: flex;
+  align-items: center;
+  gap: 8px;                    /* 2.1 .task-acct gap:8px（style.css:1398） */
+  flex-wrap: wrap;
+  margin: 10px 0 2px;          /* 2.1 .task-acct margin:10px 0 2px（style.css:1399） */
+}
+.nw-taskacct-label, .nw-taskacct-note {
+  font-size: 11.5px;           /* 2.1 style.css:1401；无 token 字面量 */
+  color: var(--color-text-faint);
+}
+.nw-taskacct-note { flex-basis: 100%; opacity: .85; }   /* style.css:1402 */
+/* 选号 seg 紧凑（2.1 .acct-seg-host .seg style.css:1405：4px 11px / 11.5px） */
+.nw-acctseg .u-seg { gap: 2px; padding: 3px; }          /* 2.1 .segmented（style.css:361） */
+.nw-acctseg .u-seg-item {
+  min-height: 0;               /* 2.1 紧凑无命中区下限；<768 断点回补 FR-24 */
+  padding: 4px 11px;           /* style.css:1405 */
+  font-size: 11.5px;           /* style.css:1405 */
+}
+/* FR-24 命中区回补（触屏窄口）：仅 <768 还原 44px，桌面保持 2.1 紧凑形态 */
+@media (max-width: 767.98px) {
+  .nw-adv .u-seg-item, .nw-acctseg .u-seg-item { min-height: 44px; }
+}
+
+/* ---------- 3. 高级折叠（对照 style.css:533-551 adv 系） ---------- */
+.nw-adv-toggle {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  text-align: left;
+  color: var(--color-text-muted);
+}
+.nw-caret {
+  display: inline-block;
+  transition: transform var(--dur-md) var(--ease-standard); /* 旧壳 .35s（style.css:542）近似 --dur-md=320ms */
+}
+.nw-adv-toggle.open .nw-caret { transform: rotate(180deg); } /* style.css:543 */
+.nw-adv-toggle.open { color: var(--color-text); }
+.nw-hint {
+  /* 2.1 .adv-hint 行内并排（style.css:543）：不占整行，同行内联于「高级筛选」 */
+  font-size: 11.5px;             /* 2.1 .adv-hint 11.5px（style.css:544）；无 token 字面量 */
+  color: var(--color-text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nw-adv {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-sunk);
+  border: var(--line-1) solid var(--color-border);
+  animation: nw-rise var(--dur-md) var(--ease-out);   /* 旧壳 rise .35s（style.css:550）近似 */
+}
+.nw-adv[hidden] { display: none; }
+/* 高级筛选行（2.1 .adv-row/.adv-field 逐值 style.css:551-553：flex-wrap、
+   槽 14px、槽宽 1 1 200px、排序小槽 1 1 180px） */
+.nw-advrow {
+  display: flex;
+  gap: 14px;                   /* 2.1 .adv-row gap:14px（style.css:551） */
+  margin-top: 2px;             /* 2.1 .adv-row margin-top:2px（style.css:551） */
+  flex-wrap: wrap;
+}
+.nw-advrow .nw-field { flex: 1 1 200px; min-width: 0; }   /* style.css:552 */
+.nw-advrow .nw-field--small { flex: 1 1 180px; }           /* 2.1 .adv-field.small（style.css:553） */
+/* seg 槽位 2.1 .segmented/.segmented.grow 逐值（style.css:360-367）：
+   容器 2px 槽/3px 内衬、满槽等分、.seg 紧凑 7px 10px */
+.nw-adv .u-seg {
+  align-self: stretch;
+  width: 100%;                 /* 2.1 .segmented.grow（style.css:366） */
+  gap: 2px;                    /* 2.1 .segmented gap:2px（style.css:361） */
+  padding: 3px;                /* 2.1 .segmented padding:3px（style.css:361） */
+}
+.nw-adv .u-seg-item {
+  flex: 1 1 0;                 /* 2.1 .segmented.grow .seg（style.css:367） */
+  min-width: 0;
+  min-height: 0;               /* 2.1 .seg 无命中区下限；<768 断点回补 FR-24 */
+  padding: 7px 10px;           /* 2.1 .segmented.grow .seg（style.css:367） */
+}
+
+/* ---------- 4. 操作区与提示 ---------- */
+.nw-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.nw-actions--between { justify-content: space-between; align-items: center; } /* style.css:528 */
+.nw-err {
+  margin: 0;
+  min-height: var(--text-md);
+  font-size: var(--text-xs);     /* 2.1 .login-err 12px（style.css:250） */
+  color: var(--color-danger-text);   /* 旧壳 .login-err 红（style.css 设置页同族） */
+  word-break: break-word;
+}
+.nw-err:empty { display: none; }
+.nw-note {
+  margin: 0;
+  font-size: var(--text-xs);     /* 2.1 .wiz-note 12px（style.css:529） */
+  color: var(--color-text-muted);   /* style.css:529 .wiz-note 口径 */
+  word-break: break-word;
+}
+.nw-note:empty { display: none; }
+
+/* ---------- 5. 步骤 2：流式进度区（对照 style.css:1080-1106 search-progress 系） ---------- */
+.nw-prog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunk);
+  border: var(--line-1) solid var(--color-border);
+}
+.nw-prog[hidden] { display: none; }
+.nw-prog-head { display: flex; align-items: center; gap: var(--space-3); }
+.nw-prog-head .u-progress { flex: 1 1 auto; min-width: 0; }
+.nw-prog-head .nw-cancel-btn { flex: none; }
+.nw-phase {
+  font-size: 12.5px;             /* 2.1 .search-phase-text 12.5px（style.css:1096）；无 token 字面量 */
+  color: var(--color-text);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;   /* style.css:1097 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nw-counts {
+  font-size: 11.5px;             /* 2.1 .search-counts 11.5px（style.css:1101） */
+  color: var(--color-text-faint);       /* style.css:1100-1103 */
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+.nw-pnote {
+  font-size: 11.5px;             /* 2.1 .search-note 11.5px（style.css:1104） */
+  color: var(--color-text-faint);       /* style.css:1104 */
+  word-break: break-word;
+}
+.nw-pnote.warn { color: var(--color-warning); }   /* style.css:1105 */
+.nw-pnote.error { color: var(--color-danger); }   /* style.css:1106 */
+.nw-pnote:empty { display: none; }
+
+/* ---------- 6. 步骤 2：结果工具条（对照 style.css:476-479 search-box / 任务书 §2.7） ---------- */
+.nw-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.nw-searchbox {
+  position: relative;
+  flex: 1 1 200px;              /* 旧壳 search-box flex:1 max-width:360px（style.css:476） */
+  max-width: 360px;
+  min-width: 0;
+}
+.nw-search-ico {
+  position: absolute;
+  left: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-text-faint);
+  pointer-events: none;
+}
+.nw-search-input { padding-left: calc(var(--space-8) + var(--space-1)); }
+.nw-selact { display: flex; gap: var(--space-2); }
+
+/* 视觉隐藏 label（a11y：搜索框文字关联，不占布局） */
+.nw-sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- 7. 结果列表（对照 style.css:568-592 video 系 + 1075-1128 引用标签） ---------- */
+.nw-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);           /* 旧壳 9px（style.css:568）近似 8px 栅格 */
+  max-height: 44vh;              /* 旧壳 .video-list 44vh 内滚动（style.css:568） */
+  overflow-y: auto;
+  padding-right: var(--space-1);
+  min-height: 120px;             /* 等待态最小视觉占位（4px 栅格 30 倍） */
+  overscroll-behavior: contain;
+}
+.nw-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);           /* 旧壳 14px（style.css:571）近似 12px 栅格 */
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunk);
+  border: var(--line-1) solid var(--color-border);
+  cursor: pointer;
+  transition: border-color var(--dur-sm) var(--ease-standard),
+    transform var(--dur-sm) var(--ease-standard);
+}
+@media (hover: hover) and (pointer: fine) {   /* T17 去 hover 依赖 */
+  .nw-row:hover { border-color: var(--color-border-strong); transform: translateX(3px); } /* style.css:577 */
+}
+.nw-row:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 var(--space-1) var(--input-ring);
+}
+.nw-row.is-sel {
+  border-color: var(--color-primary);           /* style.css:578 选态描边 */
+  background: var(--color-primary-soft);        /* style.css:579 选态底 */
+}
+.nw-cbox {
+  width: 19px;                  /* 旧壳勾选框 19px（style.css:581） */
+  height: 19px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  border: 2px solid var(--color-border-strong); /* 旧壳 2px（style.css:582） */
+  color: var(--color-on-primary);
+  font-size: var(--text-xs);     /* 2.1 .cbox 12px（style.css:584） */
+  transition: background var(--dur-sm) var(--ease-standard),
+    border-color var(--dur-sm) var(--ease-standard);
+}
+.nw-row.is-sel .nw-cbox {
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-strong));
+  border-color: transparent;
+}
+.nw-info { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+.nw-name {
+  font-size: var(--text-sm);     /* 2.1 .video-name 13px（style.css:587） */
+  font-weight: 500;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nw-reftag {                    /* 引用来源紫系标签（style.css:1112-1118） */
+  display: inline-block;
+  margin-right: var(--space-1);
+  font-size: 10px;               /* 2.1 .ref-tag 10px（style.css:1114） */
+  padding: 2px 7px;             /* 旧壳 2px 7px（style.css:1114） */
+  border-radius: var(--radius-xs);
+  color: var(--color-primary-strong);
+  background: var(--color-primary-soft);
+  border: var(--line-1) solid var(--color-border);
+  vertical-align: 1px;            /* 旧壳出处：style.css:1117（.ref-tag vertical-align:1px 同值） */
+}
+.nw-info .nw-sub {               /* 列表副题：2.1 .video-sub（style.css:589） */
+  margin-top: 3px;               /* 2.1 .video-sub margin-top:3px（style.css:589） */
+  font-size: 11.5px;             /* 2.1 .video-sub 11.5px（style.css:589） */
+  color: var(--color-text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;      /* 单行截断（style.css:589-590） */
+}
+.nw-refinline {                 /* 引用文本行内截断（style.css:1120-1124） */
+  display: inline-block;
+  max-width: 340px;             /* 旧壳 340px（style.css:1121） */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  color: var(--color-text-faint);
+}
+.nw-side {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-1);
+}
+.nw-size { font-size: var(--text-xs); color: var(--color-text-muted); } /* 2.1 .video-size 12px（style.css:591） */
+.nw-srctag {                    /* 来源小标签（style.css:470） */
+  font-size: 10px;               /* 2.1 .src-tag 10px（style.css:470） */
+  padding: 2px 7px;             /* 旧壳 2px 7px（style.css:470） */
+  border-radius: var(--radius-xs);
+  background: var(--color-surface-raise);
+  color: var(--color-text-muted);
+}
+
+/* ---------- 8. 断点：≥768 平板/桌面（FR-23 ≥768 平板起桌面形态；
+       与 ui.css OVERLAY_FORM_BREAKPOINT 同源）—— 条件区双列 + 结果行表格化密度 ---------- */
+@media (min-width: 768px) {
+  /* 结果行表格化：勾选 | 名称(含标签/截断) | 日期·摘要 | 体积/来源，
+     密度对齐旧壳行网格（hover/选中语义不变） */
+  .nw-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 2.2fr) minmax(140px, 1.4fr) auto;
+    /* ↑ 旧壳出处：旧壳结果行为 flex 行（style.css:570-576，无网格模板）——
+       minmax(140px, 1.4fr) 无旧壳同款，是 T12 ≥768 表格化密度的中列档；
+       份额语义就近旧壳 .video-info flex:1（可长主列，style.css:586）与
+       .video-size flex-shrink:0（固定尾列，style.css:591）：140px 保底
+       日期·摘要不塌陷、1.4fr 随行宽舒展 */
+    column-gap: var(--space-4);
+    align-items: center;
+  }
+  .nw-info .nw-sub { margin-top: 2px; }   /* 旧壳出处：同值 .acct-sub margin-top:2px
+                                     （style.css:1358）；语义近亲 .video-sub
+                                     margin-top:3px（style.css:589）——桌面
+                                     表格化密度收紧一档 */
+}
+
+/* ≥1024（shell side 形态）：条件卡上限 680px 左对齐（旧壳 .form-card
+   max-width:680px，style.css:523），向导不铺满 1040 视图宿主 */
+@media (min-width: 1024px) {
+  .nw-wiz { max-width: 760px; }  /* 旧壳 680px + 桌面舒展余量（任务书 §2.1 放宽为舒展布局授权） */
+}
+
+/* ---------- 9. 动效双套归零（终态保留不动画；任务书 §1.6） ---------- */
+@keyframes nw-rise {
+  from { opacity: 0; transform: translateY(var(--space-2)); } /* 旧壳 rise 语义（style.css:550） */
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nw-adv { animation: none; }
+  .nw-caret { transition: none; }
+  .nw-step i { transition: none; }
+  .nw-row { transition: none; }
+  .nw-row:hover { transform: none; }
+  .nw-cbox { transition: none; }
+}
+#sh-root[data-v22-rm="on"] .nw-adv,
+#sh-root[data-v22-rm="on"] .nw-row:hover { animation: none; }
+#sh-root[data-v22-rm="on"] .nw-caret,
+#sh-root[data-v22-rm="on"] .nw-step i,
+#sh-root[data-v22-rm="on"] .nw-row,
+#sh-root[data-v22-rm="on"] .nw-cbox { transition: none; }
+#sh-root[data-v22-rm="on"] .nw-row:hover { transform: none; }

@@ -332,6 +332,48 @@ kernel32.GetTickCount64.restype = ctypes.c_ulonglong
 kernel32.GetNativeSystemInfo.argtypes = [ctypes.POINTER(SYSTEM_INFO)]
 kernel32.GetNativeSystemInfo.restype = None
 
+# --- dwmapi（T19c 沉浸式标题栏） -------------------------------------------
+# DWMWA_USE_IMMERSIVE_DARK_MODE=20（Win10 1809+；旧内测值 19 不再回溯）、
+# DWMWA_WINDOW_CORNER_PREFERENCE=37（Win11）、DWMWA_SYSTEMBACKDROP_TYPE=38
+# （Win11 22H2+）。属性不被系统支持时 DwmSetWindowAttribute 返回失败
+# HRESULT，调用侧一律静默忽略（系统版本差异不阻塞建窗）。
+DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+DWMWA_WINDOW_CORNER_PREFERENCE = 37
+DWMWA_SYSTEMBACKDROP_TYPE = 38
+
+try:
+    dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
+    dwmapi.DwmSetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD,
+                                             ctypes.c_void_p, wintypes.DWORD]
+    dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long   # HRESULT
+except Exception:
+    dwmapi = None
+
+
+def set_immersive_caption(hwnd, dark, backdrop=True):
+    """沉浸式标题栏（T19c）：深/浅色 caption + Win11 圆角 + Mica 背景，
+    对齐 Windows 自带软件（计算器/设置）的窗口标签观感。
+
+    dark=True 深色 caption（白字白钮），False 浅色；backdrop=True 附加
+    Mica 主窗背景（DWMSBT_MAINWINDOW=2）。任何属性写失败（Win10 无
+    Mica/旧构建属性号差异）静默忽略，绝不抛异常阻塞建窗。
+    """
+    if not hwnd or dwmapi is None:
+        return
+
+    def _set(attr, val):
+        v = ctypes.c_int(val)
+        try:
+            dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(v),
+                                         ctypes.sizeof(v))
+        except Exception:
+            pass
+
+    _set(DWMWA_USE_IMMERSIVE_DARK_MODE, 1 if dark else 0)
+    _set(DWMWA_WINDOW_CORNER_PREFERENCE, 2)      # DWMWCP_ROUND
+    if backdrop:
+        _set(DWMWA_SYSTEMBACKDROP_TYPE, 2)      # DWMSBT_MAINWINDOW（Mica）
+
 
 # ============================================================================
 # 环境探测

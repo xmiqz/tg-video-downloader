@@ -1,0 +1,50 @@
+/* web/css/gestures.css — T17 手势共享样式（gs- 消费域）。
+   所有权：T17 新建；由 gestures.js 首用时注入 <link>（同 router boot 注入 ui.css 范式）。
+   颜色全令牌；动效仅 --dur-*、--ease-*；§12 双路归零（prefers-reduced-motion +
+   #sh-root[data-v22-rm=on]）。托盘按钮命中区 ≥44px（FR-24）。 */
+
+/* 1. 滑动宿主与托盘（宿主 = 行的父容器；托盘随行定位由 JS 同步 top/height） */
+.gs-swipe-host {
+  position: relative;
+}
+.gs-tray {
+  position: absolute;
+  right: 0;
+  display: flex;
+  align-items: stretch;
+  z-index: 0;
+  visibility: hidden;   /* 收起/拖动态不透出（玻璃卡半透明底防串色） */
+}
+.gs-swipe-host.gs-drag > .gs-tray,
+.gs-swipe-host.gs-open > .gs-tray { visibility: visible; }
+.gs-tray-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;               /* FR-24 命中区 */
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--color-text-strong);
+  background: var(--color-surface-sunk);
+}
+.gs-tray-btn--danger {
+  color: var(--color-danger-text);
+  background: var(--color-danger-soft);
+}
+
+/* 2. 滑动行（JS 写 transform；pan-y 保纵向滚动，横向手势由 JS 轴锁接管） */
+.gs-swipe-item {
+  position: relative;
+  z-index: 1;
+  touch-action: pan-y;
+  transition: transform var(--dur-sm) var(--ease-out);
+}
+
+/* 3. 动效归零（双路） */
+@media (prefers-reduced-motion: reduce) {
+  .gs-swipe-item { transition: none; }
+}
+#sh-root[data-v22-rm="on"] .gs-swipe-item { transition: none; }

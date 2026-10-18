@@ -1,0 +1,223 @@
+/* ============================================================
+   views/login.css — 登录弹层（叠加形态，对齐 2.1 #login.login-mask）
+   口径（2026-10-18 用户裁决）：桌面 ≥768 回 2.1 精确几何逐值（同窗口
+   尺寸下组件大小位置一致）；<768 移动断点保命中区 ≥44px（FR-24）。
+   出处基准：tr_old_style.css:236-260（登录）/ 1012-1018（notice/guest-btn）。
+   深浅双主题经语义令牌派生；弹层节点挂 body（router renderLogin），
+   故 rm 归零选择器带 #sh-root 兄弟位（见 §9）。
+   ============================================================ */
+
+/* ---------- 1. 弹层遮罩（2.1 .login-mask：style.css:237-240） ----------
+   fixed 全屏盖在当前版面上、卡居中；窄视口留 24px 呼吸位防溢出，
+   高度不足时纵向滚动（软键盘/矮窗可用）。 */
+.lg-view {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal, 6000);  /* fallback 同步 tokens.css（须高于 #sh-root 5000） */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* ---------- 2. 登录卡（2.1 .login-card：style.css:241-246） ----------
+   width 380px（:242）/ padding 40px 34px 34px / 圆角 --r-xl=28px /
+   居中文案 / pop 进场；材质沿 .u-card 玻璃体系（tokens --glass-*）。 */
+/* T19j：液态叠加面羽化加强（用户裁决 2026-10-19）——登录卡同折叠胶囊
+   配方 blur(20px) saturate(160%)（shell.css:766），修液态下层穿透。 */
+html.liquid .lg-login-card {
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+}
+.lg-login-card {
+  width: 380px;
+  max-width: 100%;
+  padding: 40px 34px 34px;
+  border-radius: var(--radius-xl);
+  text-align: center;
+  gap: 0;
+  animation: lg-pop .5s var(--ease-spring);
+}
+@keyframes lg-pop {
+  from { opacity: 0; transform: scale(.9) translateY(14px); } /* style.css:246 */
+}
+
+/* ---------- 3. 品牌徽章 + 标题 + 副题（2.1 卡内逐序） ----------
+   logo-badge：style.css:251-257（62px/圆角 18px/品牌渐变/800/20px/光晕）；
+   h1：style.css:247（22px/margin-top 16px/letter-spacing .3px）；
+   login-sub：style.css:248（13px/--ink-dim/margin 8px 0 6px）。 */
+.lg-logo-badge {
+  width: 62px;
+  height: 62px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 18px;
+  background: var(--btn-primary-bg);
+  color: var(--color-on-primary);
+  font-weight: 800;
+  font-size: 20px;
+  box-shadow: var(--badge-glow);
+}
+.lg-title {
+  margin: 16px 0 0;
+  font-size: 22px;
+  letter-spacing: .3px;
+}
+.lg-sub {
+  margin: 8px 0 6px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+/* ---------- 4. 步骤块 / 表单（2.1 .login-step：style.css:249 text-align:left） ---------- */
+.lg-step {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  text-align: left;
+  animation: lg-step-in .35s var(--ease-out, ease-out);
+}
+.lg-step[hidden] { display: none; }
+@keyframes lg-step-in {
+  from { opacity: 0; transform: translateY(8px); }
+}
+
+/* label：2.1 style.css:219（12px/--ink-dim/margin 16px 0 7px） */
+.lg-label {
+  margin: 16px 0 7px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* 输入：2.1 style.css:220-233（padding 12px 14px/圆角 --r-md=14px/
+   深底 rgba(7,9,20,.38)/描边 rgba(255,255,255,.12)）；移动端补 ≥44
+   触达高（<768 断点见 §8）。 */
+.lg-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 0;
+  padding: 12px 14px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--input-text);
+  background: var(--input-bg);
+  border: var(--line-1) solid var(--input-border);
+  border-radius: var(--radius-md);
+  transition: border-color .2s, box-shadow .2s, background .2s;
+}
+.lg-input::placeholder { color: var(--input-placeholder); }
+.lg-input:focus {
+  outline: none;
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 0 4px var(--input-ring);
+  background: var(--input-bg);
+}
+.lg-input:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+}
+
+/* 满宽动作钮（2.1 .btn.block：style.css:209 width 100%/margin-top 10px/
+   圆角 --r-md=14px）；按钮本体 padding/字号由 ui.css .u-btn（对齐 2.1 .btn）。 */
+.lg-block {
+  width: 100%;
+  margin-top: 10px;
+  border-radius: var(--radius-md);
+}
+
+/* ---------- 5. 错误 / 受控提示（2.1 逐值） ----------
+   .login-err：style.css:250（#ff8a97/12px/margin-top 12px/min-height 16px）；
+   #login-notice：style.css:1013-1016（#ffb84d/12px/margin 8px 0 2px/
+   min-height 16px/居中/1.5 行高）。 */
+.lg-err {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--color-danger-text);
+  line-height: 1.5;
+  min-height: 16px;
+  overflow-wrap: anywhere;
+}
+.lg-err[hidden] { display: none; }
+.lg-notice {
+  margin: 8px 0 2px;
+  font-size: 12px;
+  color: var(--color-warning);
+  line-height: 1.5;
+  text-align: center;
+  min-height: 16px;
+  overflow-wrap: anywhere;
+}
+.lg-notice[hidden] { display: none; }
+
+/* 游客按钮（2.1 #guest-btn：style.css:1018 margin-top 6px） */
+.lg-guest-btn { margin-top: 6px; }
+
+/* ---------- 6. 账号卡（已登录态，v2.2 自有） ---------- */
+.lg-me {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.lg-avatar {
+  width: var(--space-10);
+  height: var(--space-10);
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  background: var(--btn-primary-bg);
+  color: var(--color-on-primary);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.lg-me-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.lg-me-name {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--color-text-strong);
+  overflow-wrap: anywhere;
+}
+.lg-me-user {
+  font-size: var(--text-sm);
+  color: var(--color-text-faint);
+  overflow-wrap: anywhere;
+}
+.lg-card { animation: lg-pop .5s var(--ease-spring); }
+.lg-card[hidden] { display: none; }
+
+/* ---------- 7. 减弱动效双路归零 ----------
+   弹层节点挂 body（#sh-root 兄弟位），归零选择器两处齐配；
+   视觉终态保留（G13 审计按 #sh-root[data-v22-rm="on"] 形式剥除）。 */
+@media (prefers-reduced-motion: reduce) {
+  .lg-view .lg-card,
+  .lg-view .lg-step {
+    animation: none;
+    transition: none;
+  }
+}
+#sh-root[data-v22-rm="on"] .lg-card,
+#sh-root[data-v22-rm="on"] .lg-step,
+#sh-root[data-v22-rm="on"] ~ .lg-view .lg-card,
+#sh-root[data-v22-rm="on"] ~ .lg-view .lg-step {
+  animation: none;
+  transition: none;
+}
+
+/* ---------- 8. 移动断点（<768）：命中区 ≥44 ----------
+   D9 口径：桌面 2.1 精确几何；移动端触达面保 FR-24 下限。 */
+@media (max-width: 767.98px) {
+  .lg-input { min-height: 44px; }
+  .lg-block { min-height: 44px; }
+}

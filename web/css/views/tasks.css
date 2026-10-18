@@ -1,0 +1,543 @@
+/* ============================================================
+   views/tasks.css — T14 任务库视图切片（替换 T8 占位）
+   所有权：本文件 + web/js/views/tasks.js（恰两文件，零改基座）。
+
+   纪律：
+   - 只消费 tokens.css 令牌 + ui.css 组件类（.u-card/.u-seg/.u-empty/
+     .u-btn/.u-overlay）；类名 tk- 前缀（与旧壳 .task-card/.sheet/.ditem
+     等及外壳 .sh-/组件 .u-/其他视图 nw-/lg-/ac- 零碰撞）。
+   - 裸值就近注明旧壳出处（web/style.css / web/index.html 文件:行）；
+     断点 767.98/768 例外（媒体查询不可 var()，口径=FR-23 ≥768 平板起
+     桌面形态，与 ui.css OVERLAY_FORM_BREAKPOINT 同源）。
+   - 视觉口径逐段对照旧壳"任务库/详情滑层"（style.css:473-510 任务网格、
+     606-687 详情滑层族、595-599 空态）；响应式：桌面网格 ↔ 手机单列
+     卡片（768 断点，任务书 §行为需求 1）。
+   - 动效只走 --dur-*、--ease-*（自有 keyframe 无：离散态切换全过渡化）；
+     双路归零防御性成对保留（见文末 §11）。
+   ============================================================ */
+
+/* ---------- 0. 视图根与页头 ---------- */
+.vw-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 0;                  /* T19f-A：2.1 逐段 margin 承接（page-head/toolbar 各自下边距） */
+  min-width: 0; /* 360px 防横向溢出（FR-23 小屏） */
+}
+.tk-head {
+  margin-bottom: 22px;     /* 2.1 .page-head（style.css:354） */
+}
+.tk-head h2 {
+  margin: 0;
+  font-size: 24px;               /* 2.1 .page-head h2（style.css:355） */
+  letter-spacing: .3px;          /* style.css:355 */
+  color: var(--color-text-strong);
+  line-height: 1.4;
+}
+.tk-sub {
+  margin: 6px 0 0;         /* 2.1 .page-sub（style.css:356） */
+  font-size: 13px;         /* 2.1 style.css:356（弃 clamp --text-sm） */
+  color: var(--color-text-muted);
+}
+
+/* ---------- 1. 工具条：搜索 + 筛选分段（对照 style.css:473-481 toolbar/search-box） ---------- */
+.tk-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;               /* 2.1 .toolbar（style.css:474-475） */
+  flex-wrap: wrap;
+  margin-bottom: 18px;     /* 2.1 style.css:475 */
+}
+.tk-search {
+  position: relative;
+  flex: 1 1 200px;            /* 旧壳 search-box flex:1 max-width:360px（style.css:476） */
+  max-width: 360px;
+  min-width: 0;
+}
+.tk-search-ico {
+  position: absolute;
+  left: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-text-faint);
+  pointer-events: none;       /* 旧壳 opacity .55（style.css:478）语义由 --text-faint 承载 */
+}
+.tk-toolbar .tk-search .tk-input { padding-left: 36px; }  /* 2.1 style.css:479 */
+.tk-input {
+  width: 100%;
+  min-height: 44px;           /* FR-24 命中区（表单输入同款） */
+  box-sizing: border-box;
+  padding: 10px 14px;      /* 2.1 input 口径（style.css:479） */
+  font: inherit;
+  font-size: 14px;         /* 2.1 body 14px（style.css:37；弃 clamp --text-md） */
+  color: var(--input-text);
+  background: var(--input-bg);
+  border: var(--line-1) solid var(--input-border);
+  border-radius: var(--radius-pill);   /* 旧壳 search-box input 圆胶囊 999px（style.css:479） */
+  transition: var(--input-transition);
+}
+.tk-input::placeholder { color: var(--input-placeholder); }
+.tk-input:focus {
+  outline: none;
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 0 var(--space-1) var(--input-ring);
+}
+/* 视觉隐藏 label（a11y：搜索框文字关联，不占布局；同 nw-sr-only 范式） */
+.tk-sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+/* 筛选分段：手机横滑由 .u-seg-scroll overflow-x:auto 承载（FR-25 ④） */
+.tk-toolbar .u-seg { flex: none; margin-left: auto; min-width: 0; }  /* 2.1 .segmented 贴右（style.css:474 space-between） */
+
+/* ---------- 2. 列表区（对照 style.css:484 task-grid） ---------- */
+.tk-grid {
+  display: grid;
+  grid-template-columns: 1fr;         /* 手机单列卡片（任务书 §行为需求 1） */
+  gap: var(--space-4);                /* 旧壳 gap:16px（style.css:484） */
+  min-width: 0;
+}
+/* ≥768 平板/桌面：自动填充网格（旧壳 repeat(auto-fill,minmax(322px,1fr))
+   style.css:484；minmax 322px 为旧壳既有视觉常量） */
+@media (min-width: 768px) {
+  .tk-grid { grid-template-columns: repeat(auto-fill, minmax(322px, 1fr)); }
+}
+
+/* ---------- 3. 任务卡（对照 style.css:485-509 task-card 族） ---------- */
+.tk-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;                          /* T19f-A：2.1 逐件 margin 承接（style.css:495-505） */
+  padding: 19px;                   /* 2.1 style.css:488 */
+  border-radius: var(--radius-lg);    /* 旧壳 var(--r-lg)（style.css:488） */
+  background: var(--glass-card-bg);
+  border: var(--line-1) solid var(--glass-card-border);
+  box-shadow: var(--glass-card-shadow);
+  backdrop-filter: blur(var(--glass-card-blur)) saturate(var(--gl-sat));
+  -webkit-backdrop-filter: blur(var(--glass-card-blur)) saturate(var(--gl-sat));
+  cursor: pointer;
+  transition: transform var(--dur-md) var(--ease-spring),
+    border-color var(--dur-md) var(--ease-standard);   /* 旧壳 .35s var(--spring)（style.css:489） */
+}
+@media (hover: hover) and (pointer: fine) {   /* T17 去 hover 依赖：触屏不粘滞 */
+  .tk-card:hover {
+    transform: translateY(-4px);        /* 旧壳 hover 上浮（style.css:492） */
+    border-color: var(--color-border-strong);
+  }
+}
+.tk-card:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 var(--space-1) var(--input-ring);
+}
+.tk-title {
+  margin: 0 0 4px;                    /* 2.1 h3 margin-bottom 4px（style.css:495） */
+  font-size: 15.5px;                  /* 2.1 h3（style.css:495） */
+  font-weight: 600;
+  color: var(--color-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tk-channel {
+  font-size: 12px;                    /* 2.1 .task-channel（style.css:497） */
+  margin-bottom: 13px;                /* 2.1 style.css:497 */
+  color: var(--color-primary);        /* 旧壳 #a8bcff 品牌淡紫（style.css:497）→ 语义色派生 */
+}
+
+/* 阶段位（对照旧壳 .task-phase 骨架位 app.js:1707 + .dl-phase 小胶囊语言） */
+.tk-phase {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tk-phase[hidden] { display: none; }
+.tk-phase::before {
+  content: "●";
+  margin-right: var(--space-1);
+  color: var(--color-primary);        /* 进行中主色点（活跃相位语义） */
+}
+.tk-phase[data-phase="done"]::before { color: var(--color-success); }
+.tk-phase[data-phase="aborted"]::before,
+.tk-phase[data-phase="error"]::before { color: var(--color-danger); }
+
+/* 标签行（对照 style.css:506-509 tag-row/mini-tag） */
+.tk-tags {
+  display: flex;
+  gap: 6px;                           /* 2.1 .tag-row（style.css:506） */
+  flex-wrap: wrap;
+  margin-bottom: 11px;                /* 2.1 style.css:506 */
+}
+.tk-tag {
+  font-size: 11px;                    /* 2.1 .mini-tag（style.css:507） */
+  padding: 2px 9px;                   /* 旧壳 2px 9px（style.css:508） */
+  border-radius: var(--radius-xs);
+  background: var(--color-surface-raise);
+  color: var(--color-text-muted);
+}
+.tk-tag--fail {
+  background: var(--color-danger-soft);
+  color: var(--color-danger-text);    /* 旧壳 .mini-tag.fail（style.css:509） */
+}
+
+/* 进度条（对照 style.css:498-502 task-bar/task-fill） */
+.tk-bar {
+  height: 7px;                        /* 旧壳 7px（style.css:498）非4px倍率视觉常量 */
+  margin-bottom: 11px;                /* 2.1 .task-bar（style.css:499） */
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+  background: var(--color-surface-sunk);
+  box-shadow: inset 0 var(--line-1) 3px var(--color-scrim);  /* 旧壳 inset 阴影（style.css:499）近似 */
+}
+.tk-fill {
+  height: 100%;
+  border-radius: var(--radius-xs);
+  background: linear-gradient(90deg, var(--color-primary), var(--color-primary-strong));
+  transition: width 500ms var(--ease-standard);   /* 旧壳 .5s var(--ease)（style.css:501）；500ms 同 ui.css 确定进度槽宽时长白名单 */
+}
+.tk-fill--full {
+  background: linear-gradient(90deg, var(--color-success), var(--color-success));
+  /* 旧壳 #2bc48e→#34d9a0（style.css:502）→ 成功语义色派生（tokens 无成功双色阶，保单色） */
+}
+
+/* 统计行（对照 style.css:503 task-stat） */
+.tk-stat {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: 12px;                    /* 2.1 .task-stat（style.css:503） */
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.tk-stat span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tk-stat span:last-child { flex: none; }
+
+/* T19i：任务详情滑层——2.1 右侧滑层（style.css:607-623）+ 底部按钮常驻
+   （2.1 :633-638/#sheet-view 内滚分工、:684-687 .sheet-foot flex:none）。
+   <768 保持底部弹层形态，同样内滚+按钮常驻（修默认窗口底部按钮排被裁）。 */
+.u-overlay.tk-sheet-ov .u-overlay-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;                /* 面板不整滚，内区分工（2.1 :633-638） */
+}
+.u-overlay.tk-sheet-ov .u-overlay-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;                /* 转由 .tk-dlist 内滚 */
+}
+.tk-sheet-ov .tk-dlist {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;                /* 2.1 .detail-list（style.css:639-641） */
+}
+.tk-sheet-ov .tk-sfoot { flex: none; }   /* 底部按钮常驻（2.1 :686） */
+@media (min-width: 768px) {
+  .u-overlay.tk-sheet-ov {
+    align-items: stretch;
+    justify-content: flex-end;
+    padding: 14px;                 /* 2.1 top/right/bottom 14px（style.css:615） */
+  }
+  .u-overlay.tk-sheet-ov .u-overlay-panel {
+    width: min(470px, 92vw);       /* 2.1 style.css:616 */
+    max-height: none;              /* 2.1 全高面板（:615 top:14 bottom:14） */
+    padding: 20px 20px 16px;       /* 2.1 style.css:619 */
+    border-radius: 28px;           /* 2.1 var(--r-xl)（style.css:617） */
+    transform: translateX(calc(100% + 30px));   /* 2.1 右滑入（style.css:620） */
+  }
+  .u-overlay.tk-sheet-ov.is-open .u-overlay-panel {
+    transform: none;               /* 2.1 .sheet.show（style.css:623） */
+  }
+}
+
+/* T52 任务选号行（2.1 .task-acct 族，style.css:1397-1407 逐值） */
+.tk-acct {
+  display: flex;
+  align-items: center;
+  gap: 8px;                        /* 2.1 style.css:1398 */
+  flex-wrap: wrap;
+  margin: 10px 0 2px;              /* 2.1 style.css:1399 */
+}
+.tk-acct-label,
+.tk-acct-note {
+  font-size: 11.5px;               /* 2.1 style.css:1401 */
+  color: var(--color-text-faint);
+}
+.tk-acct-note {
+  flex-basis: 100%;                /* 2.1 style.css:1402 */
+  opacity: .85;
+}
+.tk-acct-seg .u-seg-item {
+  padding: 4px 11px;               /* 2.1 .acct-seg-host .seg（style.css:1405） */
+  font-size: 11.5px;
+}
+
+/* 快捷操作行（对照 style.css:504-505 task-actions） */
+.tk-actions {
+  display: flex;
+  gap: 7px;                            /* 2.1 .task-actions（style.css:504） */
+  flex-wrap: wrap;
+  margin-top: 15px;                    /* 2.1 style.css:504 */
+}
+.tk-actions .u-btn {
+  flex: 1 1 auto;
+  min-height: 44px;                    /* FR-24 命中区（卡操作手机拇指区） */
+  padding: 8px 4px;                    /* 2.1 .task-actions .btn（style.css:505） */
+  font-size: 12px;                     /* 2.1 style.css:505 */
+}
+.u-btn.is-busy { opacity: .9; pointer-events: none; }   /* 旧壳 .btn.is-busy（style.css:678） */
+
+/* ---------- 4. 错误内联块（app.js:1672-1676 内联错误位语义） ---------- */
+.tk-errblock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--glass-card-bg);
+  border: var(--line-1) solid var(--glass-card-border);
+  color: var(--color-text);
+}
+.tk-errtitle {
+  margin: 0;
+  font-size: var(--text-lg);
+  color: var(--color-danger);          /* 旧壳 h3 style=color:var(--danger)（app.js:1674） */
+}
+.tk-errhint {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+/* ============================================================
+   5. 详情弹层内部（消费 ui.css .u-overlay 外壳；此区为 body 内容，
+      对照旧壳 #sheet 族 index.html:420-483 / style.css:606-687）
+   ============================================================ */
+.u-overlay-body .tk-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+/* 进度区（对照 style.css:431-434 sheet-progress + .ov-bar big 族） */
+.tk-sprog { display: flex; flex-direction: column; gap: var(--space-2); }
+.tk-sbar {
+  height: 8px;                         /* 旧壳 .ov-bar big 8px 槽（style.css:385-394 同族） */
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+  background: var(--color-surface-sunk);
+}
+.tk-sbar .tk-sfill {
+  height: 100%;
+  border-radius: var(--radius-xs);
+  background: linear-gradient(90deg, var(--color-primary), var(--color-primary-strong));
+  transition: width 500ms var(--ease-standard);   /* 同 .tk-fill 口径（旧壳 .ov-fill .5s） */
+}
+.tk-scounters {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);      /* 旧壳 .sheet-counters（style.css:629-631） */
+}
+.tk-scounters b { color: var(--color-text); font-weight: 600; }
+
+/* 详情状态分段（app.js:1915-1923 label+N；组件 .u-seg 横滑自带） */
+.tk-sheet .u-seg { max-width: 100%; }
+
+/* 详情搜索框（对照 .sheet-search style.css:442-445/481） */
+.tk-ssearch {
+  position: relative;
+  flex: none;
+  min-width: 0;
+}
+.tk-ssearch .tk-input { padding-left: var(--space-8); }
+
+/* ---------- 6. 条目列表（对照 style.css:639-687 detail-list/ditem 族） ---------- */
+.tk-dlist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);                 /* 旧壳 8px（style.css:641） */
+  max-height: 52vh;                    /* 弹层内独立滚动（旧壳 .detail-list flex:1 overflow-y:auto
+                                           style.css:639；52vh 折中面板 88vh 上限内） */
+  overflow-y: auto;
+  min-height: 120px;
+  padding-right: var(--space-1);
+  overscroll-behavior: contain;
+}
+.tk-ditem {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-3) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunk);   /* 旧壳 rgba(7,9,20,.34)（style.css:643）→ sunk 语义 */
+  border: var(--line-1) solid var(--color-border);
+  transition: border-color var(--dur-sm) var(--ease-standard);
+}
+@media (hover: hover) and (pointer: fine) {   /* T17 去 hover 依赖 */
+  .tk-ditem:hover { border-color: var(--color-border-strong); }
+}
+.tk-dmain {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.tk-dinfo {
+  flex: 1 1 auto;
+  min-width: 0;
+  cursor: pointer;                     /* 旧壳 .ditem-info（style.css:655） */
+  border-radius: var(--radius-xs);
+}
+.tk-dinfo:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 var(--space-1) var(--input-ring);
+}
+.tk-dname {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tk-dsub {
+  margin-top: var(--space-1);
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
+/* 状态徽标（对照 .badge 族语汇 style.css:445-452 同族） */
+.tk-badge {
+  padding: 2px 7px;                    /* 旧壳 2px 7px（style.css:470 同族） */
+  border-radius: var(--radius-xs);
+  background: var(--color-surface-raise);
+  color: var(--color-text-muted);
+}
+.tk-badge--done { background: var(--color-primary-soft); color: var(--color-primary); }
+.tk-badge--fail { background: var(--color-danger-soft); color: var(--color-danger-text); }
+.tk-badge--wait { background: var(--color-warning-soft); color: var(--color-warning); }
+.tk-badge--run { background: var(--color-surface-raise); color: var(--color-text-muted); }
+/* 来源小标签（对照 .src-tag style.css:470-471 紫系） */
+.tk-srctag {
+  padding: 2px 7px;                    /* 旧壳 2px 7px（style.css:470） */
+  border-radius: var(--radius-xs);
+  background: var(--color-primary-soft);
+  color: var(--color-primary-strong);  /* 旧壳紫系 rgba(139,91,255,.22)/#c8b6ff 派生 */
+}
+/* 半成标记（app.js:2013 旧壳内联 color:#ffb84d → warning 语义令牌派生） */
+.tk-half { color: var(--color-warning); }
+
+/* 条目操作（对照 .mini-action style.css:661-667） */
+.tk-dacts {
+  display: flex;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+.tk-mact {
+  min-width: 44px;                     /* FR-24 命中区（旧壳 4px 8px 小垫扩为触控可点） */
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  border: var(--line-1) solid var(--color-border);
+  background: var(--color-surface-raise);
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  cursor: pointer;
+  transition: background var(--dur-sm) var(--ease-spring),
+    color var(--dur-sm) var(--ease-standard),
+    transform var(--dur-sm) var(--ease-spring);
+}
+@media (hover: hover) and (pointer: fine) {   /* T17 去 hover 依赖 */
+  .tk-mact:hover {
+    background: var(--color-primary-soft);
+    color: var(--color-text);
+    transform: translateY(-1px);         /* 旧壳 hover 上移（style.css:666） */
+  }
+}
+.tk-mact--danger {
+  color: var(--color-danger-text);     /* 旧壳 .mini-action.danger（style.css:667） */
+  border-color: var(--color-danger-soft);
+}
+.tk-mact.is-busy { opacity: .85; pointer-events: none; }   /* 旧壳 .mini-action.is-busy（style.css:679） */
+
+/* 条目文本展开（对照 .ditem-text style.css:681-683：max-height 0↔160px） */
+.tk-dtext {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height var(--dur-lg) var(--ease-out);   /* 旧壳 .4s var(--ease)（style.css:681）≈--dur-lg */
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  line-height: 1.65;
+}
+.tk-ditem.is-open .tk-dtext {
+  max-height: 160px;                   /* 旧壳 160px（style.css:683）视觉常量 */
+  margin-top: var(--space-2);
+  overflow-y: auto;
+}
+
+/* ---------- 7. 弹层 footer（对照 .sheet-foot style.css:684-687） ---------- */
+.tk-sfoot {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding-top: var(--space-2);
+  border-top: var(--line-1) solid var(--color-border);
+}
+.tk-sfoot .u-btn {
+  flex: 1 1 auto;
+  min-height: 44px;                    /* FR-24 命中区 */
+  padding: var(--space-2) var(--space-2);
+}
+.tk-sfoot .u-btn.is-dim { opacity: .4; }   /* 旧壳 resumeBtn.disabled opacity .4（app.js:1930） */
+.tk-sfoot .u-btn[hidden] { display: none; }
+
+/* ---------- 8. 断点：≥768 平板/桌面密度（FR-23 ≥768 平板起桌面形态） ---------- */
+@media (min-width: 768px) {
+  /* 桌面条目操作回落紧凑密度（<768 触控档保 44px 命中；桌面键鼠档
+     36px 可点密度——minmax 视觉常量白名单口径） */
+  .tk-mact { min-width: 36px; min-height: 36px; }
+  .tk-sfoot .u-btn { flex: 1 1 140px; }
+  .tk-dlist { max-height: 48vh; }
+}
+
+/* ---------- 9. 窄列兜底（320/360 防溢出） ---------- */
+.tk-actions .u-btn { max-width: 100%; }
+.tk-card { min-width: 0; }
+.tk-dname, .tk-title { min-width: 0; }
+
+/* ---------- 10. 确认弹层（消费 .u-overlay modal 形态；文案区排版） ---------- */
+.u-overlay-body > p { margin: 0; }
+
+/* ---------- 11. 动效双路归零（任务书铁律 6：终态保留不动画） ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .tk-card, .tk-card:hover { transition: none; transform: none; }
+  .tk-fill, .tk-sbar .tk-sfill { transition: none; }
+  .tk-mact, .tk-mact:hover { transition: none; transform: none; }
+  .tk-ditem { transition: none; }
+  .tk-dtext { transition: none; }
+}
+#sh-root[data-v22-rm="on"] .tk-card,
+#sh-root[data-v22-rm="on"] .tk-card:hover { transition: none; transform: none; }
+#sh-root[data-v22-rm="on"] .tk-fill,
+#sh-root[data-v22-rm="on"] .tk-sbar .tk-sfill { transition: none; }
+#sh-root[data-v22-rm="on"] .tk-mact,
+#sh-root[data-v22-rm="on"] .tk-mact:hover { transition: none; transform: none; }
+#sh-root[data-v22-rm="on"] .tk-ditem { transition: none; }
+#sh-root[data-v22-rm="on"] .tk-dtext { transition: none; }

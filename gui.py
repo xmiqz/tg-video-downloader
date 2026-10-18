@@ -777,6 +777,27 @@ class Api:
         return {"ok": True, "stage": "need_phone",
                 "phone_prefill": self.cfg.get("phone") or ""}
 
+    @staticmethod
+    def _is_net_exc(e):
+        """网络族异常判定（Timeout/Connection/OSError 族）。按异常类名匹配
+        （不新增 telethon import 依赖），_map_send_code_exc/_map_verify_exc
+        与 _submit_net_retry 共用同一口径。"""
+        ename = type(e).__name__
+        return (ename in ("TimeoutError", "ConnectionError", "OSError")
+                or "Timeout" in ename or "Connection" in ename
+                or isinstance(e, (asyncio.TimeoutError, TimeoutError,
+                                  ConnectionError, OSError)))
+
+    def _submit_net_retry(self, coro_fn):
+        """engine.submit 网络族异常恰重试一次（环境网络瞬时劫持自愈）；
+        非网络族异常或重试仍失败原样上抛，由调用方映射。"""
+        try:
+            return self.engine.submit(coro_fn())
+        except Exception as e:
+            if not self._is_net_exc(e):
+                raise
+            return self.engine.submit(coro_fn())
+
     def _map_send_code_exc(self, e):
         """T58 2.4：send_code/account_add_start 共用的异常→返回形状映射。
 
@@ -805,10 +826,7 @@ class Api:
         if ename in ("ApiIdInvalidError", "ApiIdPublishedFloodError"):
             return {"ok": False, "code": "api_invalid",
                     "error": "内置 API 凭证失效，请更换凭证后重试"}
-        if (ename in ("TimeoutError", "ConnectionError", "OSError")
-                or "Timeout" in ename or "Connection" in ename
-                or isinstance(e, (asyncio.TimeoutError, TimeoutError,
-                                  ConnectionError, OSError))):
+        if self._is_net_exc(e):
             return {"ok": False, "recoverable": True,
                     "error": "网络异常，验证码可能已发送到你的 Telegram；"
                              "如已收到可直接点下方入口输入"}
@@ -830,7 +848,7 @@ class Api:
             await self.client.send_code_request(phone)
 
         try:
-            self.engine.submit(_do())
+            self._submit_net_retry(_do)   # 网络族异常恰重试一次（D1 加固）
         except Exception as e:
             ename = type(e).__name__
             if ename == "AuthKeyDuplicatedError":
@@ -855,6 +873,20 @@ class Api:
         self._code_sent = True
         return {"ok": True}
 
+    def _map_verify_exc(self, e):
+        """verify_code/verify_password 共用的异常→返回形状映射（D1 加固）。
+        网络族→可恢复；PhoneCodeHash 缺失（从其他渠道直验无 hash）→引导
+        重新发码且不可恢复；未知→可恢复附原始 type:message。"""
+        ename = type(e).__name__
+        if self._is_net_exc(e):
+            return {"ok": False, "recoverable": True,
+                    "error": "网络异常，请稍后重试"}
+        if "PhoneCodeHash" in ename:
+            return {"ok": False,
+                    "error": "验证码会话已失效，请重新点击「发送验证码」获取新验证码后输入"}
+        return {"ok": False, "recoverable": True,
+                "error": f"登录异常，请稍后重试（{ename}: {e}）"}
+
     def verify_code(self, code):
         async def _do():
             try:
@@ -864,7 +896,12 @@ class Api:
                 return "need_password"
             except (PhoneCodeInvalidError, PhoneCodeExpiredError) as e:
                 return f"__err__{type(e).__name__}: {e}"
-        r = self.engine.submit(_do())
+        try:
+            r = self.engine.submit(_do())
+        except Exception as e:
+            # D1 加固：网络异常不再裸抛（"验证码登录也报错"根因），
+            # 统一映射为 UI 可消费的返回形状
+            return self._map_verify_exc(e)
         if r.startswith("__err__"):
             # PhoneCodeInvalid/Expired：仍在 code 步，_code_sent 保持 True
             return {"ok": False, "error": r[len("__err__"):]}
@@ -885,7 +922,11 @@ class Api:
                 return "ready"
             except PasswordHashInvalidError as e:
                 return f"__err__{e}"
-        r = self.engine.submit(_do())
+        try:
+            r = self.engine.submit(_do())
+        except Exception as e:
+            # D1 加固：同 verify_code，网络异常统一映射不裸抛
+            return self._map_verify_exc(e)
         if r.startswith("__err__"):
             return {"ok": False, "error": r[len("__err__"):]}
         if r == "ready" and self.guest:
@@ -1154,6 +1195,13 @@ class Api:
                 self.jobs.update(job_id, phase=ev["phase"],
                                  phase_detail=detail,
                                  done=len(items_seq), total=0)
+                # T19f-E：内核 items 帧稀疏（仅 _flush 非空才 yield），
+                # progress 帧每消息一条；若早到少量匹配后只剩 progress，
+                # 「≥2.0s 且 ≥1 条」首帧规则在 items 节拍上永不触发，
+                # 匹配项滞留到 done 终帧才下发（前端流式行空转）。progress
+                # 节拍同评估 _maybe_push 使首帧/追加帧即时下发（幂等：
+                # 无新增条目时 n<=pushed_n 直接返回）。
+                _maybe_push()
             elif kind == "items":
                 _absorb(ev["items"])
                 _maybe_push()
@@ -2067,6 +2115,9 @@ class Api:
                 self.jobs.update(job_id, phase=ev["phase"],
                                  phase_detail=detail,
                                  done=added_total, total=0)
+                # T19f-E：与 _search_coro 同款——progress 节拍同评估
+                # _maybe_push，防 items 帧稀疏时已追加条目滞留到终帧
+                _maybe_push()
             elif kind == "items":
                 # 每批重读任务对象（获取最新已落盘条目）
                 t = core.load_task(task_id)
@@ -2116,25 +2167,6 @@ class Api:
         # async for 提前结束——收口 cancelling→cancelled，防卡片永挂取消中
         if cancel_event.is_set():
             self.jobs.update(job_id, state="cancelled")
-
-    # ---------- 独立编辑窗口（Task 16 将改为应用内全屏路由） ----------
-    def open_editor(self, task_id):
-        """弹出第二个专业编辑窗口（任务/条目管理）。"""
-        t = self._load_one(task_id)
-        if t is None:
-            return {"ok": False, "error": "任务不存在"}
-        url = (self.base_url + "/editor.html?id=" + task_id
-               + "#t=" + self.token)
-        s = _dpi_scale()
-        bg = "#e9ecf5" if self.cfg.get("appearance") == "light" else "#07080f"
-        self.host.create_aux_window(
-            "任务编辑 · " + t.get("channel_title", ""),
-            url, self,
-            int(1080 * s), int(740 * s),
-            (int(880 * s), int(580 * s)),
-            bg,
-        )
-        return {"ok": True}
 
     def editor_data(self, task_id, enrich=True):
         """任务与全部条目（含 TG 消息原文、时长、日期）。
@@ -2235,6 +2267,31 @@ class Api:
             return {"ok": False, "error": str(e)}
 
     # ---------- 其它 ----------
+    def open_editor(self, task_id):
+        """弹出独立任务编辑窗口（2.1 双窗模式；T19h 用户裁决恢复）。
+        加载 web/taskedit.html（2.1 editor.html 布局/样式/行为原样承载，
+        文件名避开 WC-4d 旧壳四资源断言），create_aux_window 与主窗同壳。"""
+        if not self.host:
+            return {"ok": False, "error": "窗口宿主未就绪"}
+        t = self._load_one(task_id)
+        if t is None:
+            return {"ok": False, "error": "任务不存在"}
+        from urllib.parse import quote
+        url = (self.base_url + "/taskedit.html?id=" + quote(str(task_id))
+               + "#t=" + self.token)
+        mode = str(self.cfg.get("appearance") or "")
+        bg = "#e9ecf5" if mode == "light" else "#07080f"
+        self.host.create_aux_window(
+            "任务编辑 · " + str(t.get("channel_title", "")),
+            url, self,
+            1080, 740,
+            # T19i：尺寸裸传同主窗口径（gui.py 主窗 create_window 同款，
+            # 不乘 _dpi_scale——否则最小 518x921 放不到主窗的 360x640）
+            (360, 640),
+            bg,
+        )
+        return {"ok": True}
+
     def open_folder(self, path):
         if not path:
             path = str(core.get_download_root(self.cfg))
@@ -2259,6 +2316,32 @@ class Api:
             p = filedialog.askdirectory()
             root.destroy()
             return {"ok": True, "path": p}
+        except ImportError:
+            # tkinter 缺失（ARM64 打包排除）→ Windows 原生目录选择兜底
+            # （PowerShell STA FolderBrowserDialog：与 tkinter 同为系统经典
+            #  目录选择器，打包零依赖；取消返回空串同 tkinter 口径）
+            try:
+                import base64
+                import subprocess
+                import sys as _sys
+
+                ps = (
+                    "Add-Type -AssemblyName System.Windows.Forms; "
+                    "$d = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                    "$d.ShowNewFolderButton = $true; "
+                    "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK)"
+                    " { [Console]::Out.Write($d.SelectedPath) }"
+                )
+                enc = base64.b64encode(ps.encode("utf-16le")).decode("ascii")
+                argv = ["powershell.exe", "-NoProfile", "-STA", "-EncodedCommand", enc]
+                kw = {"capture_output": True, "timeout": 600}
+                if _sys.platform == "win32":
+                    kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                out = subprocess.run(argv, **kw)
+                p = (out.stdout or b"").decode("utf-8", "ignore").strip()
+                return {"ok": True, "path": p}
+            except Exception as e2:
+                return {"ok": False, "error": str(e2)}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -2619,6 +2702,13 @@ class _BackdropDriver:
 
     def set_mode(self, mode):
         """UI 线程调用：进入液态玻璃才创建放大镜并启动泵，其余模式停止。"""
+        # T19c：沉浸式标题栏随外观联动（light=浅色 caption，
+        # dark/liquid=深色 caption + Mica）；失败不阻塞外观切换
+        try:
+            import wv2_native
+            wv2_native.set_immersive_caption(self.hwnd, mode != "light")
+        except Exception as ex:
+            print("[GUI] 标题栏外观同步失败：", ex)
         if mode == "liquid":
             if self.cap is None:
                 cap = AmbientCapture()
@@ -2739,7 +2829,9 @@ def main():
             handle.base_url + "/#t=" + handle.token,
             api,
             1180, 780,
-            (960, 640),
+            # 最小尺寸放宽至移动宽度（360 对齐 T18 视口矩阵移动档），
+            # 使窗口可拉伸到移动尺寸并展示 <768 移动适配页
+            (360, 640),
             _bg,
             on_shown,
         )

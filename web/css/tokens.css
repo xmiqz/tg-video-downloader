@@ -1,0 +1,344 @@
+/* ============================================================
+   tokens.css — T7 设计令牌与主题系统（v2.2 W1）
+   消费方：T8 shell / T10 ui / T15 settings。纯 CSS 变量，零 JS。
+   主题契约：
+     1) :root 与 :root[data-theme="light"] = 浅色（默认）；
+     2) 深色两路并存：
+        ① @media (prefers-color-scheme: dark) 内
+           :root:not([data-theme="light"]) —— 系统深色跟随；
+        ② :root[data-theme="dark"] —— 显式指定，任意系统生效；
+     3) 级联：显式 data-theme 优先于系统媒体（② 置于 ① 后，
+        同特异性后者胜出；light 经 :not() 排除出系统深色）。
+     4) 深浅两套 semantic 键一致，无缺项回退。
+   ============================================================ */
+
+/* ============ 1. base 层：原始原料（允许裸值；语义/组件层只许 var） ============ */
+:root,
+:root[data-theme="light"] {
+  /* --- 1.1 色板 raw：浅色默认（深色覆盖见文末 dark 块） --- */
+  --raw-bg: #f2f5fc;          --raw-bg-2: #ffffff;
+  --raw-bg-sunk: #e8edf7;    --raw-ink: #1b2233;
+  --raw-ink-dim: rgba(27,34,51,.68);  --raw-ink-mute: rgba(27,34,51,.45);
+  --raw-brand-1: #4f7cff;    --raw-brand-2: #8b5bff;
+  --raw-brand-soft: rgba(79,124,255,.16);  --raw-on-brand: #ffffff;
+  --raw-danger: #e5455a;     --raw-danger-soft: rgba(229,69,90,.14);
+  --raw-danger-ink: #cf3b50; --raw-ok: #16a97c;
+  --raw-warn: #d98f1f;       --raw-warn-soft: rgba(217,143,31,.16);
+  --raw-border: rgba(20,30,60,.12);  --raw-border-strong: rgba(20,30,60,.24);
+  --raw-scrim: rgba(16,22,40,.35);   --raw-frost: rgba(238,242,250,.45);
+  --raw-shade: rgba(30,42,80,.35);   --raw-shade-strong: rgba(30,42,80,.14);
+  --raw-shade-deep: rgba(4,6,18,.32); --raw-ring: rgba(79,124,255,.22);
+  /* T8 追加（最小）：液态玻璃底栏边缘虹彩原料 + 无滤镜降级实面原料 */
+  --raw-irid-1: rgba(64,201,224,.50);   /* 浅青 */
+  --raw-irid-2: rgba(96,219,156,.48);   /* 浅绿 */
+  --raw-irid-3: rgba(230,146,224,.50);  /* 淡粉紫 */
+  --raw-solid: #ffffff;                 /* 降级不透明实面（浅色） */
+
+  /* --- 1.2 玻璃原料（T19a 对齐 2.1 材质三表：静态亮 style.css:156-171、
+     静态暗 :138-155、liquid :67-102（双主题同值，无浅色特供）；
+     html.liquid 补偿块见 §6。2.1 只有两种材质面：.glass 与 .btn.glass-btn） --- */
+  --gl-blur-l: 34px;         --gl-blur-m: 24px;  --gl-blur-s: 12px;
+  --gl-sat: 185%;
+  /* .glass 面：静态亮两停 .72→.52（:160-161）；3 停模板 42% 中停=线性插值 .64 */
+  --gl-g-a: rgba(255,255,255,.72);  --gl-g-b: rgba(255,255,255,.64);
+  --gl-g-c: rgba(255,255,255,.52);  --gl-l-1: rgba(255,255,255,.10);
+  --gl-l-2: rgba(255,255,255,.16);  --gl-l-3: rgba(255,255,255,.06);
+  --gl-e-a: rgba(20,30,60,.12);     --gl-e-b: rgba(20,30,60,.12);
+  --gl-hi: rgba(255,255,255,.9);    --gl-hi-soft: rgba(255,255,255,.55);
+  --gl-sh-color: rgba(30,42,80,.14);
+  --gl-shadow: 0 12px 30px var(--gl-sh-color);
+  /* .btn.glass-btn 钮面：静态亮渐变 :167-171，hi 阴影经 :150-155 块透传（.4） */
+  --gl-btn-a: rgba(255,255,255,.85);  --gl-btn-b: rgba(255,255,255,.62);
+  --gl-btn-e: rgba(20,30,60,.12);     --gl-btn-hi: rgba(255,255,255,.4);
+
+  /* --- 1.3 间距（4px 栅格） --- */
+  --space-0: 0;    --space-1: 4px;   --space-2: 8px;   --space-3: 12px;
+  --space-4: 16px; --space-5: 20px;  --space-6: 24px;  --space-8: 32px;
+  --space-10: 40px; --space-12: 48px; --space-14: 56px; --space-16: 64px;
+  --line-1: 1px;   --line-hair: 1.5px;  /* 非4px倍率白名单：细边框/高光 */
+
+  /* --- 1.4 clamp() 字号阶梯 --- */
+  --text-xs: clamp(11px,.30vw+10px,12px); --text-sm: clamp(12px,.40vw+11px,13px);
+  --text-md: clamp(13px,.50vw+12px,14px); --text-lg: clamp(15px,.60vw+14px,17px);
+  --text-xl: clamp(17px,.90vw+15px,20px); --text-2xl: clamp(20px,1.4vw+17px,26px);
+  --text-3xl: clamp(23px,2.0vw+20px,32px);
+
+  /* --- 1.5 圆角 --- */
+  --radius-xs: 6px; --radius-sm: 10px; --radius-md: 14px;
+  --radius-lg: 20px; --radius-xl: 28px; --radius-pill: 999px;
+
+  /* --- 1.6 阴影层级 --- */
+  --shadow-1: 0 1px 2px var(--raw-shade);
+  --shadow-2: 0 4px 12px var(--raw-shade);
+  --shadow-3: 0 12px 30px var(--raw-shade-strong);
+  --shadow-4: 0 24px 60px var(--raw-shade-deep);
+
+  /* --- 1.7 动效时长/缓动（reduced-motion 归零） --- */
+  --dur-xs: 120ms; --dur-sm: 200ms; --dur-md: 320ms; --dur-lg: 420ms;
+  --ease-standard: cubic-bezier(.32,.72,0,1);
+  --ease-out: cubic-bezier(0,0,.2,1);
+  --ease-spring: cubic-bezier(.34,1.45,.48,1);
+
+  /* --- 1.8 z-index 层级 --- */
+  --z-backdrop: 0; --z-base: 1; --z-sticky: 10; --z-nav: 20;
+  /* T19f 修：sheet/toast 300/400→5400/6200。凡挂 body 的弹层（ui
+     .u-overlay 任务详情/确认、.u-actionbar 手机批量条、toast）原先低于
+     #sh-root（fixed z-index:5000，shell.css:25-38）整层被壳压住：详情被
+     列表行盖、点不上、遮罩收不到点击（点窗外不关闭）。壳内层级（--z-overlay
+     200 抽屉遮罩等）不动。弹窗层 .u-overlay 改用 --z-modal（ui.css:154）：
+     与登录弹层同为 6000，同层按 DOM 序后者在上——后开的弹窗天然压住先开
+     的（确认压登录卡、确认压详情），点窗外只关最上层；toast 6200 恒最上
+     （弹层开着时失败提示仍可见）。 */
+  --z-overlay: 200; --z-sheet: 5400; --z-toast: 6200;
+  /* T19a 修：500→6000。登录弹层须高于 #sh-root 5000（点击不被版面吃掉） */
+  --z-modal: 6000;
+}
+
+/* ============ 2. semantic 层：语义令牌（全 var 引用 base，零裸色值） ============ */
+:root,
+:root[data-theme="light"] {
+  /* --- 2.1 语义色 --- */
+  --color-surface: var(--raw-bg);        --color-surface-raise: var(--raw-bg-2);
+  --color-surface-sunk: var(--raw-bg-sunk); --color-text: var(--raw-ink);
+  --color-text-strong: var(--raw-ink);   --color-text-muted: var(--raw-ink-dim);
+  --color-text-faint: var(--raw-ink-mute); --color-primary: var(--raw-brand-1);
+  --color-primary-strong: var(--raw-brand-2); --color-primary-soft: var(--raw-brand-soft);
+  --color-on-primary: var(--raw-on-brand); --color-danger: var(--raw-danger);
+  --color-danger-soft: var(--raw-danger-soft); --color-danger-text: var(--raw-danger-ink);
+  --color-success: var(--raw-ok);        --color-warning: var(--raw-warn);
+  --color-warning-soft: var(--raw-warn-soft); --color-border: var(--raw-border);
+  --color-border-strong: var(--raw-border-strong); --color-scrim: var(--raw-scrim);
+  --color-frost: var(--raw-frost);
+
+  /* --- 2.2 玻璃三档语义（卡片/导航/弹层） --- */
+  --glass-card-bg: linear-gradient(155deg,var(--gl-g-a) 0%,var(--gl-g-b) 42%,var(--gl-g-c) 100%);
+  --glass-card-blur: var(--gl-blur-l);   --glass-card-border: var(--gl-e-a);
+  /* 2.1 静态 hi=1px（:147/:164）；liquid 1.5px+底缘双高光见 §6 */
+  --glass-card-hi: inset 0 1px 0 var(--gl-hi);
+  --glass-card-shadow: var(--gl-shadow);
+  /* 2.1 侧栏=aside.sidebar.glass（index.html:72）与卡同 .glass 材质 → 五键全别名 */
+  --glass-nav-bg: var(--glass-card-bg);
+  --glass-nav-blur: var(--glass-card-blur);  --glass-nav-border: var(--glass-card-border);
+  --glass-nav-hi: var(--glass-card-hi);
+  --glass-nav-shadow: var(--glass-card-shadow);
+  --glass-sheet-bg: linear-gradient(160deg,var(--gl-l-2),var(--gl-l-1));
+  --glass-sheet-blur: var(--gl-blur-l);  --glass-sheet-border: var(--gl-e-a);
+  --glass-sheet-hi: inset 0 var(--line-1) 0 var(--gl-hi-soft);
+  --glass-sheet-shadow: var(--shadow-4);
+
+  /* --- 2.3 底栏边缘虹彩（T8 追加：液态玻璃悬浮底栏边缘色散，浅深两套原料派生） --- */
+  --nav-edge-iridescence: linear-gradient(100deg,
+      transparent 2%, var(--raw-irid-1) 15%, var(--raw-irid-2) 30%,
+      var(--raw-irid-3) 45%, transparent 58%);
+  --nav-edge-opacity: .85;  /* 虹彩带强度（叠加玻璃面上可辨，参考图口径） */
+  --nav-edge-fade: 30%;     /* 虹彩带在 nav 高度上的衰减终点（集中上缘） */
+}
+
+/* ============ 3. 组件层：T8/T10/T15 最小消费集合 ============ */
+:root,
+:root[data-theme="light"] {
+  /* --- 3.1 按钮 --- */
+  --btn-font: var(--text-md);  --btn-h: var(--space-10);
+  --btn-h-pad: var(--space-4); --btn-v-pad: var(--space-2);
+  --btn-radius: var(--radius-md); --btn-gap: var(--space-2);
+  --btn-primary-bg: linear-gradient(135deg,var(--color-primary),var(--color-primary-strong));
+  --btn-primary-text: var(--color-on-primary);
+  /* 2.1 style.css:199-200 逐值：主按钮蓝紫光晕 + 顶部内高光 */
+  --btn-primary-shadow: 0 10px 26px rgba(92, 110, 255, .42), inset 0 1px 0 rgba(255, 255, 255, .4);
+  /* 2.1 style.css:256-257 逐值：logo 徽标光晕（.sh-logo/.lg-logo 共用） */
+  --badge-glow: 0 14px 34px rgba(99, 105, 255, .5), inset 0 1px 0 rgba(255, 255, 255, .45);
+  /* 2.1 .btn.glass-btn 钮面：160deg 渐变+亮边+顶部 1px hi（style.css:150-155） */
+  --btn-ghost-bg: linear-gradient(160deg,var(--gl-btn-a),var(--gl-btn-b));
+  --btn-ghost-border: var(--gl-btn-e);  --btn-ghost-hi: inset 0 1px 0 var(--gl-btn-hi);
+  --btn-ghost-text: var(--color-text);  --btn-danger-bg: var(--color-danger-soft);
+  --btn-danger-text: var(--color-danger-text); --btn-text: var(--color-text);
+  --btn-transition: background var(--dur-sm) var(--ease-standard), transform var(--dur-sm) var(--ease-spring);
+
+  /* --- 3.2 输入框 --- */
+  --input-bg: var(--color-surface-sunk); --input-border: var(--color-border);
+  --input-border-focus: var(--color-primary); --input-ring: var(--raw-ring);
+  --input-radius: var(--radius-md); --input-h: var(--space-12);
+  --input-text: var(--color-text); --input-placeholder: var(--color-text-muted);
+  --input-transition: border-color var(--dur-sm) var(--ease-standard), box-shadow var(--dur-sm) var(--ease-standard);
+
+  /* --- 3.3 底部弹层/模态 --- */
+  --sheet-bg: var(--glass-sheet-bg); --sheet-border: var(--glass-sheet-border);
+  --sheet-radius: var(--radius-xl);  --sheet-shadow: var(--glass-sheet-shadow);
+  --sheet-backdrop: var(--color-scrim); --sheet-max-w: 640px;
+  --sheet-transition: transform var(--dur-md) var(--ease-out), opacity var(--dur-sm) var(--ease-standard);
+
+  /* --- 3.4 导航（T8 侧栏/底栏） --- */
+  --nav-bg: var(--glass-nav-bg); --nav-border: var(--glass-nav-border);
+  --nav-blur: var(--glass-nav-blur); --nav-item-h: var(--space-12);
+  --nav-item-radius: var(--radius-md); --nav-item-hover: var(--gl-l-3);
+  --nav-item-active: linear-gradient(135deg,var(--color-primary-soft),transparent);
+  --nav-text: var(--color-text-muted); --nav-text-active: var(--color-text);
+
+  /* --- 3.5 Toast --- */
+  --toast-bg: var(--glass-sheet-bg); --toast-border: var(--glass-sheet-border);
+  --toast-radius: var(--radius-md);  --toast-shadow: var(--shadow-3);
+  --toast-text: var(--color-text);
+  --toast-transition: transform var(--dur-md) var(--ease-spring), opacity var(--dur-sm) var(--ease-standard);
+}
+
+/* ============ 4. 深色主题：两路并存（base 原料覆盖，语义/组件自动跟随） ============ */
+
+/* 4.1 系统深色跟随 */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --raw-bg: #07080f;  --raw-bg-2: rgba(255,255,255,.05);
+    --raw-bg-sunk: rgba(7,9,20,.55); --raw-ink: #f5f7fe;
+    --raw-ink-dim: rgba(238,242,252,.68); --raw-ink-mute: rgba(231,236,249,.45);
+    --raw-brand-1: #4f7cff; --raw-brand-2: #8b5bff;
+    --raw-brand-soft: rgba(91,134,255,.18); --raw-on-brand: #ffffff;
+    --raw-danger: #ff6172; --raw-danger-soft: rgba(255,97,114,.16);
+    --raw-danger-ink: #ff8a97; --raw-ok: #34d9a0; --raw-warn: #ffb84d;
+    --raw-warn-soft: rgba(255,184,77,.16);
+    --raw-border: rgba(255,255,255,.12); --raw-border-strong: rgba(255,255,255,.24);
+    --raw-scrim: rgba(5,7,14,.55); --raw-frost: rgba(9,11,20,.30);
+    --raw-shade: rgba(4,6,18,.34); --raw-shade-strong: rgba(4,6,18,.42);
+    --raw-shade-deep: rgba(4,6,18,.5); --raw-ring: rgba(91,134,255,.35);
+    /* T19a：静态暗材质=2.1 body:not(.liquid) style.css:138-155 逐值
+       （原值为 liquid 材质，静态模式下玻璃高光/外影过重） */
+    --gl-g-a: rgba(255,255,255,.14); --gl-g-b: rgba(255,255,255,.10);
+    --gl-g-c: rgba(255,255,255,.05); --gl-l-1: rgba(255,255,255,.10);
+    --gl-l-2: rgba(255,255,255,.16); --gl-l-3: rgba(255,255,255,.06);
+    --gl-e-a: rgba(255,255,255,.22); --gl-e-b: rgba(255,255,255,.22);
+    --gl-hi: rgba(255,255,255,.36); --gl-hi-soft: rgba(255,255,255,.18);
+    --gl-sh-color: rgba(4,6,18,.4);
+    --gl-shadow: 0 14px 36px var(--gl-sh-color);
+    --gl-btn-a: rgba(255,255,255,.17); --gl-btn-b: rgba(255,255,255,.06);
+    --gl-btn-e: rgba(255,255,255,.26); --gl-btn-hi: rgba(255,255,255,.4);
+    /* T8 追加：深色虹彩原料（暗玻璃面上提亮）+ 降级实面 */
+    --raw-irid-1: rgba(112,220,255,.42);
+    --raw-irid-2: rgba(120,236,190,.38);
+    --raw-irid-3: rgba(255,178,244,.42);
+    --raw-solid: #171a28;
+  }
+}
+
+/* 4.2 显式深色（任意系统生效；置于 4.1 后，同特异性后者胜出） */
+:root[data-theme="dark"] {
+  --raw-bg: #07080f;  --raw-bg-2: rgba(255,255,255,.05);
+  --raw-bg-sunk: rgba(7,9,20,.55); --raw-ink: #f5f7fe;
+  --raw-ink-dim: rgba(238,242,252,.68); --raw-ink-mute: rgba(231,236,249,.45);
+  --raw-brand-1: #4f7cff; --raw-brand-2: #8b5bff;
+  --raw-brand-soft: rgba(91,134,255,.18); --raw-on-brand: #ffffff;
+  --raw-danger: #ff6172; --raw-danger-soft: rgba(255,97,114,.16);
+  --raw-danger-ink: #ff8a97; --raw-ok: #34d9a0; --raw-warn: #ffb84d;
+  --raw-warn-soft: rgba(255,184,77,.16);
+  --raw-border: rgba(255,255,255,.12); --raw-border-strong: rgba(255,255,255,.24);
+  --raw-scrim: rgba(5,7,14,.55); --raw-frost: rgba(9,11,20,.30);
+  --raw-shade: rgba(4,6,18,.34); --raw-shade-strong: rgba(4,6,18,.42);
+  --raw-shade-deep: rgba(4,6,18,.5); --raw-ring: rgba(91,134,255,.35);
+  /* T19a：静态暗材质=2.1 body:not(.liquid) style.css:138-155 逐值（同 4.1） */
+  --gl-g-a: rgba(255,255,255,.14); --gl-g-b: rgba(255,255,255,.10);
+  --gl-g-c: rgba(255,255,255,.05); --gl-l-1: rgba(255,255,255,.10);
+  --gl-l-2: rgba(255,255,255,.16); --gl-l-3: rgba(255,255,255,.06);
+  --gl-e-a: rgba(255,255,255,.22); --gl-e-b: rgba(255,255,255,.22);
+  --gl-hi: rgba(255,255,255,.36); --gl-hi-soft: rgba(255,255,255,.18);
+  --gl-sh-color: rgba(4,6,18,.4);
+  --gl-shadow: 0 14px 36px var(--gl-sh-color);
+  --gl-btn-a: rgba(255,255,255,.17); --gl-btn-b: rgba(255,255,255,.06);
+  --gl-btn-e: rgba(255,255,255,.26); --gl-btn-hi: rgba(255,255,255,.4);
+  /* T8 追加：深色虹彩原料 + 降级实面（与 4.1 系统深色块同值） */
+  --raw-irid-1: rgba(112,220,255,.42);
+  --raw-irid-2: rgba(120,236,190,.38);
+  --raw-irid-3: rgba(255,178,244,.42);
+  --raw-solid: #171a28;
+}
+
+/* ============ 5. 降级（FR-22 / NFR-8） ============ */
+
+/* 5.1 减弱动效：时长归零、缓动线性 */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-xs: 0ms; --dur-sm: 0ms; --dur-md: 0ms; --dur-lg: 0ms;
+    --ease-standard: linear; --ease-out: linear; --ease-spring: linear;
+  }
+}
+
+/* 5.2 无 backdrop-filter：不透明/纯色玻璃降级面
+   （T8 消化 T7 收割应改②：原深色路径 var(--raw-bg-2) 为 5% 白纱，
+   无滤镜时背后内容直接透出不可读；现统一为不透明实色 --raw-solid，
+   浅色=白、深色=暗实面板；blur 原料归零杜绝残留滤镜计算。） */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root {
+    --gl-blur-l: 0; --gl-blur-m: 0; --gl-blur-s: 0;
+    --glass-card-bg: var(--raw-solid);
+    --glass-nav-bg: var(--raw-solid);
+    --glass-sheet-bg: var(--raw-solid);
+  }
+}
+
+/* 5.3 低端/小屏：降模糊、减叠层、去重阴影（中端手机帧率） */
+@media (max-width: 640px) {
+  :root {
+    --gl-blur-l: 20px; --gl-blur-m: 14px; --gl-blur-s: 8px;
+    --gl-g-a: rgba(255,255,255,.85); --gl-g-b: rgba(255,255,255,.68);
+    --gl-g-c: rgba(255,255,255,.55);
+    --gl-shadow: 0 8px 20px var(--gl-sh-color);
+    --sheet-max-w: 100%;
+  }
+}
+
+/* ============ 6. 材质补偿：html.liquid（2.1 body.liquid，style.css:67-102） ============
+   壳在液态玻璃模式给 <html> 挂 .liquid（shell.css:114 起关实时模糊）；本块整组
+   换回 2.1 liquid 材质（双主题同值——2.1 liquid 块无主题限定，无浅色特供）。
+   静态默认值=2.1 body:not(.liquid)（§1.2/§4）。选择器 :root.liquid 与深色块
+   同特异性 (0,2,0)，置于文末由后者胜出，覆盖显式/系统深色与浅色基底。 */
+:root.liquid {
+  --gl-g-a: rgba(255,255,255,.20);  --gl-g-b: rgba(255,255,255,.10);
+  --gl-g-c: rgba(255,255,255,.05);
+  --gl-e-a: rgba(255,255,255,.34);  --gl-e-b: rgba(255,255,255,.34);
+  --gl-hi: rgba(255,255,255,.55);
+  --gl-sh-color: rgba(4,6,18,.42);
+  --gl-shadow: 0 16px 40px var(--gl-sh-color);
+  /* liquid 双内高光：顶 1.5px .55 + 底缘 1px .08（:90-93 逐值；静态为单 1px 顶 hi） */
+  --glass-card-hi: inset 0 1.5px 0 rgba(255,255,255,.55),
+    inset 0 -1px 0 rgba(255,255,255,.08);
+  --gl-btn-a: rgba(255,255,255,.22);  --gl-btn-b: rgba(255,255,255,.08);
+  --gl-btn-e: rgba(255,255,255,.36);  --gl-btn-hi: rgba(255,255,255,.55);
+}
+
+/* ============ 7. 液态玻璃亮底可见度自适应（T19d） ============
+   液态玻璃背景=窗口后方实时捕获帧，明暗动态变化；liquid 的浅墨文字
+   （--raw-ink 族深色表）在亮捕获上几乎不可见。router.js _setBackdrop
+   采样帧亮度（12x8 均值，节流 1.5s，滞后 ≥160/≤120 双阈值）给 <html>
+   挂 data-lum="bright"。本块仅亮底条件生效：整组原料换回浅色表
+   （§1.1/§1.2 原值）+ 玻璃面换 2.1 静态亮 .glass 材质（style.css:160-171），
+   深墨文字落在亮玻璃面上保对比；暗底（data-lum="dark" 或缺省）零变化，
+   §6 2.1 liquid 材质逐值保持不动。
+   选择器 :root.liquid[data-lum="bright"] 特异性 (0,3,0)，压过
+   §4.2 显式深色与 §6 liquid 块的 (0,2,0)，与主题级联无冲突。 */
+:root.liquid[data-lum="bright"] {
+  /* --- 浅色原料表（§1.1 原值，覆盖深色表） --- */
+  --raw-bg: #f2f5fc;          --raw-bg-2: #ffffff;
+  --raw-bg-sunk: #e8edf7;    --raw-ink: #1b2233;
+  --raw-ink-dim: rgba(27,34,51,.68);  --raw-ink-mute: rgba(27,34,51,.45);
+  --raw-brand-soft: rgba(79,124,255,.16);
+  --raw-danger: #e5455a;     --raw-danger-soft: rgba(229,69,90,.14);
+  --raw-danger-ink: #cf3b50; --raw-ok: #16a97c;
+  --raw-warn: #d98f1f;       --raw-warn-soft: rgba(217,143,31,.16);
+  --raw-border: rgba(20,30,60,.12);  --raw-border-strong: rgba(20,30,60,.24);
+  --raw-scrim: rgba(16,22,40,.35);   --raw-frost: rgba(238,242,250,.45);
+  --raw-shade: rgba(30,42,80,.35);   --raw-shade-strong: rgba(30,42,80,.14);
+  --raw-shade-deep: rgba(4,6,18,.32); --raw-ring: rgba(79,124,255,.22);
+  --raw-irid-1: rgba(64,201,224,.50);
+  --raw-irid-2: rgba(96,219,156,.48);
+  --raw-irid-3: rgba(230,146,224,.50);
+  --raw-solid: #ffffff;
+  /* --- 玻璃面换 2.1 静态亮 .glass/.btn.glass-btn 材质（style.css:160-171）---
+     亮白半透明面托住深墨文字；liquid 的 .20→.05 暗玻璃面在亮捕获上
+     会与浅墨文字一起融掉，故整组随亮底切亮面。 */
+  --gl-g-a: rgba(255,255,255,.72);  --gl-g-b: rgba(255,255,255,.64);
+  --gl-g-c: rgba(255,255,255,.52);
+  --gl-e-a: rgba(20,30,60,.12);     --gl-e-b: rgba(20,30,60,.12);
+  --gl-hi: rgba(255,255,255,.9);    --gl-hi-soft: rgba(255,255,255,.55);
+  --gl-sh-color: rgba(30,42,80,.14);
+  --gl-shadow: 0 12px 30px var(--gl-sh-color);
+  --gl-btn-a: rgba(255,255,255,.85);  --gl-btn-b: rgba(255,255,255,.62);
+  --gl-btn-e: rgba(20,30,60,.12);     --gl-btn-hi: rgba(255,255,255,.4);
+  /* 内高光回静态亮单顶 hi（§2.2 默认形，覆盖 §6 liquid 双高光） */
+  --glass-card-hi: inset 0 1px 0 var(--gl-hi);
+}

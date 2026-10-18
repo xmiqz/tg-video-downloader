@@ -1,0 +1,518 @@
+/* ============================================================
+   ui.css — T10 通用组件库样式（web/js/ui/* 的唯一样式宿主）
+   消费方契约（t8_contract.md §7 R4-①）：router.js boot() 动态 link
+   引导装载（T18 翻版后唯一壳，与视图层样式同型引导）。
+   纪律（t10 任务书 §2；fix2 spec-J2/std-J1 收口订正）：
+     - 只消费 tokens.css 既有令牌（颜色/间距/圆角/阴影/动效/玻璃参数），
+       零硬编码色值；组件固有常量白名单（均注明来源）：
+       · 44px 最小命中区（FR-24 可点元素 ≥44×44）
+       · 4px 栅格（tokens.css --space-* 的最小单位，FR-22 间距体系）
+       · 768px / 767.98px 媒体查询（OVERLAY_FORM_BREAKPOINT，
+         FR-23 ≥768 平板起为桌面形态；媒体查询不可用 var()）
+       · 视口几何常量（视口相对布局不消费令牌，防长内容溢出视口）：
+         88vh 弹层高度上限（对齐旧壳 .modal style.css:713）、
+         70vh toast 栈上限（对齐旧壳 TgToast host app.js:3688）、
+         38vh toast 详情区上限（对齐旧壳 app.js:3730）、
+         92vw 小屏宽度钳（同 style.css:713 .modal 宽度钳口径）
+       · 520px toast 栈宽（对齐旧壳 TgToast host width min(520px,92vw)
+         app.js:3688；弹层面板宽走 --sheet-max-w 令牌，此处非令牌）
+       · 38% 不定进度滑块宽 + 1.15s 往复（对齐旧壳 .job-fill.indet
+         style.css:986-987 的既有视觉语言）
+       · 6px 背板模糊 + 140% 饱和（.u-overlay-mask 玻璃参数；非令牌数值，
+         玻璃参数派生口径：对齐旧壳模态遮罩玻璃语汇 style.css:708
+         backdrop-filter: blur(8px)，取 --glass-* 档位近似并补 saturate
+         以贴合液态玻璃观感）
+       · 微位移反馈常量：scale(.97) 按压/pop 进入缩放比（视觉比例）、
+         translateY(16px) modal pop 进入位移（4px 栅格 4 倍）、
+         translateY(-8px) 空态 bob 与 toast 离场位移（4px 栅格 2 倍，
+         对齐旧壳 bob style.css:597）、translateY(100%) sheet 全高
+         滑入（自身高度语义）、translateX(-50%) host 水平居中惯例
+       · 3px toast 左缘色带强调宽（视觉常量，非色值非栅格倍数）
+       · 24px 辅助 pill 最小高（.u-toast-pill；4px 栅格 6 倍，次要
+         小件非主命中区；主命中区 44px 见 .u-btn/.u-seg-item）
+       · 48px 空态图标字号（对齐旧壳 .empty-ico style.css:596）
+       · 8px 进度槽高（对齐旧壳 .ov-bar style.css:385，4px 栅格 2 倍）
+       · 240ms 退出过渡（.u-toast/.is-out；4px 栅格 60 倍，短于
+         --dur-lg 以免级联等待）
+       · 3s 空态 bob 周期（对齐旧壳 .empty-ico style.css:596）
+       · 500ms 确定进度 width 过渡（对齐旧壳 .ov-fill style.css:392）
+     - 类名统一 u- 前缀（与旧壳 .empty-state/.segmented/.sheet 及
+       外壳 .sh-* 命名空间零碰撞）；样式自持，不复制 shell.css 玻璃
+       底栏实现（玻璃材质经 --glass-* 三档令牌派生 tokens.css §2.2）。
+     - prefers-reduced-motion 双路归零（订正旧头注「动效全走 --dur-*」
+       的不实宣称；spec-J2）：
+       · 第一路 tokens.css §5.1 媒体块：经 --dur-* / --sheet-transition /
+         --toast-transition 的动效时长随令牌归零（弹层过渡/按钮/分段/
+         关闭钮反馈/toast 进场等）；
+       · 第二路 本文件 §9 媒体块：四个裸时长动效（空态 bob 3s、不定
+         进度 1.15s、toast 离场 240ms、确定进度 width 500ms）显式
+         animation/transition 归零；视觉终态保留（图标/进度条/toast
+         仍渲染，仅无运动）。
+   ============================================================ */
+
+/* ============================================================
+   1. 基元：按钮 / 滚动锁
+   ============================================================ */
+
+/* 1.1 按钮基类（overlay 动作 / actionbar / 空态动作共用）
+      2.1 .btn 逐值对标（style.css:184-193）：padding 10px 18px / 全圆角
+      999px / 13px；自然高 ≈41px ≥36（J3-1440 桌面地板）。
+      命中区 FR-24：<768 断点 min-height 44px（C2-390/J2-360/I6/G12 均在
+      移动视口量测）；--md 同受断点保护。 */
+.u-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 36px; /* J3 桌面密度地板（2.1 自然高 ≈41px 不触发） */
+  padding: 10px 18px; /* 2.1 .btn style.css:187 */
+  font: inherit;
+  font-size: 13px; /* 2.1 .btn style.css:189 */
+  border-radius: var(--radius-pill); /* 2.1 .btn 999px style.css:188 */
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--dur-sm) var(--ease-standard),
+    transform var(--dur-sm) var(--ease-spring);
+  background: var(--glass-card-bg);
+  color: var(--color-text);
+}
+.u-btn:active { transform: scale(.97); } /* 按压反馈缩放比（视觉常量，白名单：微位移反馈） */
+.u-btn--primary {
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-text);
+  box-shadow: var(--btn-primary-shadow); /* 2.1 style.css:199-200 主按钮光晕（tokens 3.1） */
+}
+.u-btn--danger { background: var(--color-danger-soft); color: var(--color-danger-text); }
+.u-btn--ghost {
+  background: var(--btn-ghost-bg);
+  color: var(--btn-ghost-text);
+  border-color: var(--btn-ghost-border);
+  box-shadow: var(--btn-ghost-hi); /* 2.1 .btn.glass-btn 顶部 1px hi（style.css:154/:101） */
+}
+.u-btn--md { min-height: 36px; } /* 2.1 同 .btn 几何；命中区走下方断点 */
+@media (max-width: 767.98px) {
+  .u-btn, .u-btn--md { min-height: 44px; } /* FR-24 移动命中区常量 */
+}
+@media (hover: hover) and (pointer: fine) {
+  /* 2.1 .btn:hover 提起反馈（style.css:194）；变体自持底色（2.1 .btn.primary
+     不吃 .btn:hover 底色），底色提亮仅基础/ghost 面 */
+  .u-btn:hover { transform: translateY(-2px) scale(1.02); }
+  .u-btn:not(.u-btn--primary):not(.u-btn--danger):hover { background: rgba(255, 255, 255, .13); }
+}
+
+/* 1.2 滚动锁（overlay open 时挂 documentElement；唯一全局副作用类） */
+.u-scroll-lock { overflow: hidden; }
+
+/* ============================================================
+   2. 卡片（.u-card，对齐旧壳 .glass 容器语义 style.css:175）
+   ============================================================ */
+.u-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  border-radius: var(--radius-lg);
+  background: var(--glass-card-bg);
+  backdrop-filter: blur(var(--glass-card-blur)) saturate(var(--gl-sat));
+  -webkit-backdrop-filter: blur(var(--glass-card-blur)) saturate(var(--gl-sat));
+  border: 1px solid var(--glass-card-border);
+  box-shadow: var(--glass-card-shadow), var(--glass-card-hi);
+}
+.u-card--flush { padding: 0; }
+.u-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.u-card-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  color: var(--color-text-strong);
+  line-height: 1.4;
+}
+.u-card-sub {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+.u-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+/* ============================================================
+   3. 模态 / 底部弹层 同构（.u-overlay，一套 API 两种 data-form）
+      对齐旧壳 .modal-mask 居中（style.css:706-716）与 v2.2 新形态
+      贴底 sheet（FR-25 ⑥ / FR-24 手机底部弹层）。
+   ================================================================ */
+.u-overlay {
+  position: fixed;
+  inset: 0;
+  /* T19f：与登录弹层同层（--z-modal 6000）；同层按 DOM 序后者在上，
+     后开的弹窗（确认/详情）压住先开的，点窗外只关最上层 */
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: flex-end;   /* sheet 缺省贴底（data-form 切换承载重心） */
+  justify-content: center;
+}
+.u-overlay[data-form="modal"] { align-items: center; }
+.u-overlay[hidden] { display: none; }
+/* T19g：退场过渡期（is-open 已摘、hidden 未置）不拦截触摸/点击——
+   否则关掉弹层后 400ms 内点击/滑动打在隐形层上「没反应」 */
+.u-overlay:not(.is-open) { pointer-events: none; }
+
+/* T19j：液态叠加面羽化加强（用户裁决 2026-10-19）——弹层面板/吐司
+   同折叠胶囊配方 blur(20px) saturate(160%)（shell.css:766），修液态
+   下层内容穿透文字不可读（shell.css 同款块覆盖底栏/侧栏/下载卡）。 */
+html.liquid .u-overlay-panel,
+html.liquid .u-toast {
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+}
+
+.u-overlay-mask {
+  position: absolute;
+  inset: 0;
+  background: var(--sheet-backdrop);
+  /* 玻璃参数派生（非令牌）：对齐旧壳 .modal-mask blur(8px)（style.css:708），
+     取档位近似并补 saturate 以贴合液态玻璃观感（头注白名单） */
+  backdrop-filter: blur(6px) saturate(140%);
+  -webkit-backdrop-filter: blur(6px) saturate(140%);
+  opacity: 0;
+  transition: opacity var(--dur-sm) var(--ease-standard);
+}
+
+.u-overlay-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: min(var(--sheet-max-w), 100%);
+  max-height: 88vh; /* 弹层高度上限（对齐旧壳 .modal style.css:713；视口几何常量） */
+  overflow-y: auto;
+  padding: var(--space-5) var(--space-5) calc(var(--space-5) + env(safe-area-inset-bottom, 0px));
+  border-radius: var(--sheet-radius) var(--sheet-radius) 0 0; /* sheet 贴底：仅上圆角 */
+  background: var(--sheet-bg);
+  border: 1px solid var(--sheet-border);
+  box-shadow: var(--sheet-shadow);
+  transform: translateY(100%); /* sheet 全高滑入（自身高度位移语义；时长经 --sheet-transition 归零于 reduce） */
+  transition: var(--sheet-transition);
+}
+/* 模态形态：居中 + 四角圆 + pop 进入（对齐旧壳 .modal 语义 style.css:712-716） */
+.u-overlay[data-form="modal"] .u-overlay-panel {
+  align-self: center;
+  border-radius: var(--sheet-radius);
+  transform: translateY(16px) scale(.97); /* modal pop 进入（对齐旧壳 .modal pop 语义 style.css:715；16px=4px 栅格 4 倍，.97 缩放比视觉常量） */
+}
+.u-overlay.is-open .u-overlay-mask { opacity: 1; }
+.u-overlay.is-open .u-overlay-panel { transform: none; }
+
+.u-overlay-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.u-overlay-title {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-xl);
+  color: var(--color-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.u-overlay-sub {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  line-height: 1.6;
+}
+.u-overlay-x {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;  /* FR-24 命中区 */
+  height: 44px; /* FR-24 命中区 */
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  cursor: pointer;
+  transition: background var(--dur-sm) var(--ease-standard),
+    transform var(--dur-sm) var(--ease-spring);
+}
+.u-overlay-x:active { transform: rotate(90deg); }
+.u-overlay-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.u-overlay-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+}
+
+/* ============================================================
+   4. Toast（.u-toast 族；host .u-toaster 顶部居中栈，
+      对齐旧壳 TgToast host 位置模式 app.js:3685-3688）
+   ============================================================ */
+.u-toaster {
+  position: fixed;
+  top: var(--space-5);
+  left: 50%;
+  transform: translateX(-50%); /* host 水平居中（几何定位惯例，同旧壳 TgToast app.js:3686） */
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: min(520px, 92vw); /* 对齐旧壳 TgToast host 宽（app.js:3688） */
+  max-height: 70vh; /* 对齐旧壳 TgToast host 上限（app.js:3688） */
+  pointer-events: none;
+}
+.u-toast {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--toast-radius);
+  background: var(--toast-bg);
+  border: 1px solid var(--toast-border);
+  border-left-width: 3px; /* 左缘色带强调宽（视觉常量，白名单；非色值非栅格倍数） */
+  box-shadow: var(--toast-shadow);
+  color: var(--toast-text);
+  font-size: var(--text-md);
+  transition: var(--toast-transition);
+}
+.u-toast--error { border-left-color: var(--color-danger); }
+.u-toast--ok { border-left-color: var(--color-success); }
+.u-toast--warn { border-left-color: var(--color-warning); }
+
+.u-toast-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.u-toast-mark { flex: none; font-size: var(--text-md); }
+.u-toast--error .u-toast-mark { color: var(--color-danger); }
+.u-toast--ok .u-toast-mark { color: var(--color-success); }
+.u-toast--warn .u-toast-mark { color: var(--color-warning); }
+.u-toast-text {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  line-height: 1.45;
+  word-break: break-all;
+}
+.u-toast-pill {
+  flex: none;
+  font: inherit;
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-3);
+  min-height: 24px; /* 辅助 pill 下限（4px 栅格 6 倍；次要小件非主命中区 44px） */
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-sunk);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background var(--dur-sm) var(--ease-standard);
+}
+.u-toast-detail {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunk);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 38vh; /* 对齐旧壳 toast 详情区（app.js:3730） */
+  overflow-y: auto;
+}
+.u-toast-detail[hidden] { display: none; }
+.u-toast.is-out { opacity: 0; transform: translateY(-8px); transition: opacity 240ms var(--ease-standard), transform 240ms var(--ease-standard); } /* 离场：-8px=2×4px 栅格微位移；240ms 裸时长（短于 --dur-lg 免级联等待）——reduce 由 §9 显式归零 */
+
+/* ============================================================
+   5. 空态（.u-empty，对齐旧壳 .empty-state style.css:595-599）
+   ============================================================ */
+.u-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0; /* 2.1 逐值：间距由子项 margin 承载（style.css:595-599） */
+  padding: 80px 20px; /* style.css:595 */
+  color: var(--color-text-faint);
+}
+.u-empty-ico {
+  font-size: 48px; /* 与旧壳 .empty-ico 同尺寸（style.css:596 惯例，非色值） */
+  margin-bottom: 16px; /* style.css:596 */
+  animation: u-empty-bob 3s var(--ease-standard) infinite alternate; /* 3s 循环对齐旧壳 .empty-ico bob（style.css:596）——reduce 由 §9 显式归零 */
+}
+@keyframes u-empty-bob { to { transform: translateY(-8px); } /* 对齐旧壳 bob style.css:597（8px = 2×4px 栅格） */ }
+.u-empty-title {
+  margin: 0 0 9px; /* style.css:598 */
+  font-size: 16px; /* style.css:598 */
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+.u-empty-hint {
+  margin: 0 0 20px; /* style.css:599 */
+  font-size: 13px; /* style.css:599 */
+  line-height: 1.6;
+  color: var(--color-text-faint);
+}
+.u-empty-hint[hidden] { display: none; }
+.u-empty .u-btn { margin-top: 0; }
+
+/* ============================================================
+   6. 进度条（.u-progress；确定型对齐 .ov-bar/.ov-fill style.css:385-394，
+      不定型对齐 .job-fill.indet style.css:986-987）
+   ============================================================ */
+.u-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+}
+.u-progress-track {
+  position: relative;
+  flex: 1;
+  height: 8px; /* 对齐旧壳 .ov-bar 高度（style.css:385，4px 栅格 2 倍） */
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-sunk);
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+}
+.u-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--btn-primary-bg); /* 渐变经令牌派生（同旧壳 .ov-fill 渐变语义） */
+  transition: width 500ms var(--ease-standard); /* 对齐旧壳 .ov-fill width .5s（style.css:392） */
+}
+.u-progress[data-determinate="false"] .u-progress-fill {
+  position: absolute;
+  width: 38%;   /* 组件固有常量：对齐旧壳 .job-fill.indet（style.css:986） */
+  animation: u-progress-indet 1.15s var(--ease-standard) infinite alternate; /* 对齐 .job-fill.indet 1.15s（style.css:986） */
+  transition: none;
+}
+@keyframes u-progress-indet { from { left: -38%; } to { left: 100%; } /* 同 .jobindet（style.css:987） */ }
+.u-progress-label {
+  flex: none;
+  font-size: var(--text-md);
+  font-weight: 700;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+.u-progress-label[hidden] { display: none; }
+
+/* ============================================================
+   7. 分段控件（.u-seg，对齐旧壳 .segmented/.seg style.css:360-377；
+      手机横滑 = .u-seg-scroll overflow-x:auto）
+   ============================================================ */
+.u-seg {
+  display: inline-flex;
+  max-width: 100%;
+  padding: var(--space-1);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-sunk);
+  border: 1px solid var(--color-border);
+}
+.u-seg-scroll {
+  display: flex;
+  gap: var(--space-1);
+  overflow-x: auto;
+  max-width: 100%;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+}
+.u-seg-scroll::-webkit-scrollbar { display: none; }
+.u-seg-item {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px; /* FR-24 命中区 */
+  padding: var(--space-1) var(--space-4);
+  scroll-snap-align: center;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 12.5px; /* 2.1 .seg 12.5px（style.css:370）；无 token 字面量 */
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--dur-sm) var(--ease-standard),
+    background var(--dur-sm) var(--ease-standard);
+}
+.u-seg-item.is-active {
+  background: var(--color-surface-raise);
+  color: var(--color-text-strong);
+  font-weight: 600;
+  box-shadow: var(--shadow-1), var(--glass-card-hi);
+}
+
+/* ============================================================
+   8. 底部动作条（.u-actionbar，对齐旧壳 .bulk-bar style.css:696-703；
+      safe-area 内聚 FR-23；≥768 桌面为内联条）
+   ============================================================ */
+.u-actionbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3);
+  padding-bottom: calc(var(--space-2) + env(safe-area-inset-bottom, 0px)); /* FR-23 安全区内聚 */
+  margin: var(--space-2);
+  border-radius: var(--radius-lg);
+  background: var(--glass-nav-bg);
+  backdrop-filter: blur(var(--glass-nav-blur)) saturate(var(--gl-sat));
+  -webkit-backdrop-filter: blur(var(--glass-nav-blur)) saturate(var(--gl-sat));
+  border: 1px solid var(--glass-nav-border);
+  box-shadow: var(--glass-nav-shadow), var(--glass-nav-hi);
+}
+/* <768：固定贴底（跟随内容流之外的悬浮动作条） */
+@media (max-width: 767.98px) { /* OVERLAY_FORM_BREAKPOINT-0.02（FR-23 ≥768 平板起为桌面形态） */
+  .u-actionbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: var(--z-sheet);
+  }
+}
+.u-actionbar[hidden] { display: none; }
+.u-actionbar-count {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+/* ============================================================
+   9. 消减动效（prefers-reduced-motion: reduce）— fix2 spec-J2
+      双路归零口径（本块为第二路；第一路见 tokens.css §5.1）：
+      第一路（tokens.css §5.1，--dur-xs/sm/md/lg→0ms）覆盖本文件全部
+        经 --dur-* / --sheet-transition / --toast-transition 的动效
+        （弹层过渡、按钮/分段/关闭钮反馈、toast 进场等）；
+      第二路（本块）显式归零四个未走 --dur-* 的裸时长动效：
+        空态 bob 3s（§5）、不定进度 u-progress-indet 1.15s（§6）、
+        toast 离场 .is-out 240ms（§4）、确定进度 width 500ms（§6）。
+      视觉终态保留（停运动不消形）：空态图标/进度条/toast 照常渲染，
+      离场与关闭直接跳终态、无中间帧动画。
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  .u-empty-ico,
+  .u-progress[data-determinate="false"] .u-progress-fill { animation: none; }
+  .u-progress-fill { transition: none; }
+  .u-toast.is-out { transition: none; }
+}
