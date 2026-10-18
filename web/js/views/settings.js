@@ -48,11 +48,12 @@
 //   零 DOM/window 访问。
 //
 // 外观即时生效口径（T7 契约：外壳消费 <html data-theme>）：静态暗→
-//   data-theme="dark"、静态亮→"light"、液态玻璃→新壳无实时采样面
-//   （shell.css:40 于 #sh-root 存在时隐藏 #backdrop），按静态暗渲染——
-//   同旧壳非 Windows 降级口径（app.js:2555-2556）与编辑器窗口口径
-//   （editor.js 无采样按静态暗）；set_appearance 仍保存 "liquid" 原值，
-//   localStorage.appearance 与 router.js:419-420 启动引导同一数据源。
+//   data-theme="dark"、静态亮→"light"、液态玻璃→html.liquid 预烘焙
+//   玻璃态（shell.css §0b #sh-backdrop 背景层 + _setBackdrop 消费方，
+//   router.js 启动引导），仅 Windows 生效——同旧壳非 Windows 降级口径
+//   （app.js:2555-2556）与编辑器窗口口径（editor.js 无采样按静态暗）；
+//   set_appearance 仍保存 "liquid" 原值，
+//   localStorage.appearance 与 router.js 启动引导同一数据源。
 //
 // 范围外（本波不实现不预埋）：
 //   - 上传目标分区等候选池禁项（kickoff 铁令）；
@@ -169,7 +170,8 @@ export function nextAltId(ids) {
 
 // ============================================================
 // S6 effectiveTheme —— 外观模式 → data-theme（app.js:2553-2560 + T7 契约）
-// liquid 新壳无采样面按静态暗降级（同旧壳非 Windows 口径）。
+// liquid 令牌基底 = dark（2.1 液态玻璃为暗底玻璃），liquid 态由
+// html.liquid 单独承载（applyAppearance 消费）。
 // ============================================================
 export function effectiveTheme(mode) {
   return String(mode || "") === "light" ? "light" : "dark";
@@ -639,8 +641,17 @@ async function loadAll() {
 // 外观（app.js:2553-2593）
 // ============================================================
 function applyAppearance(mode) {
-  // 即时生效：data-theme 令牌层（T7 契约）；liquid 无采样面按静态暗
-  document.documentElement.setAttribute("data-theme", effectiveTheme(mode));
+  // 即时生效（对齐 2.1 app.js:2551-2562）：data-theme 令牌层（T7 契约）+
+  // html.liquid 态（shell.css §0b 预烘焙玻璃材质）；liquid 仅 Windows 生效，
+  // 其余平台按静态暗降级（app.js:2555-2556）。非 liquid 清 backdrop 图。
+  const IS_WIN = /windows/i.test((typeof navigator !== "undefined" && navigator.userAgent) || "");
+  const eff = (String(mode || "") === "liquid" && !IS_WIN) ? "dark" : mode;
+  document.documentElement.setAttribute("data-theme", effectiveTheme(eff));
+  document.documentElement.classList.toggle("liquid", eff === "liquid");
+  if (eff !== "liquid" && typeof window !== "undefined" &&
+      typeof window._setBackdrop === "function") {
+    window._setBackdrop("");
+  }
   syncSeg(mode);
 }
 

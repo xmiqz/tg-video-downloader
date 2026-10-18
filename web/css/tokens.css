@@ -123,7 +123,11 @@
   --btn-h-pad: var(--space-4); --btn-v-pad: var(--space-2);
   --btn-radius: var(--radius-md); --btn-gap: var(--space-2);
   --btn-primary-bg: linear-gradient(135deg,var(--color-primary),var(--color-primary-strong));
-  --btn-primary-text: var(--color-on-primary); --btn-primary-shadow: var(--shadow-2);
+  --btn-primary-text: var(--color-on-primary);
+  /* 2.1 style.css:199-200 逐值：主按钮蓝紫光晕 + 顶部内高光 */
+  --btn-primary-shadow: 0 10px 26px rgba(92, 110, 255, .42), inset 0 1px 0 rgba(255, 255, 255, .4);
+  /* 2.1 style.css:256-257 逐值：logo 徽标光晕（.sh-logo/.lg-logo 共用） */
+  --badge-glow: 0 14px 34px rgba(99, 105, 255, .5), inset 0 1px 0 rgba(255, 255, 255, .45);
   --btn-ghost-bg: var(--glass-card-bg); --btn-ghost-border: var(--glass-card-border);
   --btn-ghost-text: var(--color-text);  --btn-danger-bg: var(--color-danger-soft);
   --btn-danger-text: var(--color-danger-text); --btn-text: var(--color-text);

@@ -64,7 +64,7 @@
   color: var(--color-on-primary);
   font-weight: 800;
   font-size: var(--text-2xl);
-  box-shadow: var(--shadow-2);
+  box-shadow: var(--badge-glow); /* 2.1 style.css:256-257 logo 光晕（tokens 3.1） */
 }
 
 /* ---------- 4. 步骤指示（1/2/3，done/active 形态） ---------- */

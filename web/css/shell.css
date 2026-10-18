@@ -28,7 +28,7 @@
   z-index: 5000;
   display: grid;
   grid-template-columns: var(--sh-side-w, 232px) 1fr;
-  background: var(--color-surface);
+  background: transparent; /* 视觉底层三件套（§0b）由 body 承底，玻璃面透出 */
   color: var(--color-text);
   font: var(--text-md)/1.6 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
 }
@@ -48,6 +48,73 @@ body:has(> #sh-root) #append-modal {
   display: none !important;
 }
 body:has(> #sh-root) { overflow: hidden; }
+
+/* ---------- 0b. 视觉底层三件套（对齐 2.1 旧壳 style.css:49-126） ----------
+   #sh-backdrop（液态玻璃背景图层）/ .sh-ambient（静态暗亮光斑）/
+   #sh-frost（霜层面）。层 id/class 用 sh- 前缀避开上方旧壳隐藏规则。
+   [hidden] 全局防御：组件 CSS 的 display:grid/flex 会压过 UA 的
+   [hidden]{display:none}，与 editor/settings 兜底同口径。 */
+[hidden] { display: none !important; }
+body { background: var(--color-surface); }
+#sh-backdrop {
+  position: fixed; inset: 0;
+  z-index: var(--z-backdrop);
+  display: none;
+  background-color: #0a0c14;               /* style.css:52 */
+  background-size: cover; background-position: 0 0;
+  transform: scale(1.03);                  /* style.css:55 */
+  transition: background-color .4s;        /* style.css:56 */
+}
+html.liquid #sh-backdrop { display: block; }
+#sh-backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(155deg, rgba(8, 10, 18, .06), rgba(8, 10, 18, .22));  /* style.css:60-62 */
+}
+.sh-ambient {
+  position: fixed; inset: 0;
+  z-index: var(--z-backdrop);
+  overflow: hidden;
+}
+html.liquid .sh-ambient { display: none; }  /* style.css:113-115 */
+.sh-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(70px);                      /* style.css:108 */
+  opacity: .55;                            /* style.css:109 */
+}
+.sh-b1 {
+  width: 46vw; height: 46vw;
+  left: -12vw; top: -14vw;                 /* style.css:111 */
+  background: radial-gradient(circle, #3b6bff, transparent 65%);  /* style.css:110 */
+}
+.sh-b2 {
+  width: 40vw; height: 40vw;
+  right: -10vw; top: -8vw;                 /* style.css:116 */
+  background: radial-gradient(circle, #a35bff, transparent 65%);  /* style.css:115 */
+}
+:root[data-theme="light"] .sh-blob { opacity: .42; }  /* style.css:114 */
+#sh-frost {
+  position: fixed; inset: 0;
+  z-index: var(--z-backdrop);
+  pointer-events: none;
+  background: rgba(9, 11, 20, .3);         /* style.css:121 */
+}
+:root[data-theme="light"] #sh-frost { background: rgba(232, 237, 248, .38); }  /* style.css:123-125 */
+html.liquid #sh-frost { display: none; }   /* style.css:122 */
+
+/* liquid 卡片材质 = 预烘焙模糊帧（镜面渐变 + 内高光），禁实时
+   backdrop-filter（2.1 style.css:65-71 口径）。清单 = 全部 backdrop-filter
+   消费方（grep 核实），与 9.3 降级块同归零口径。 */
+html.liquid .sh-side, html.liquid .sh-bar-mat, html.liquid .sh-drawer,
+html.liquid .v22-ph-card, html.liquid .u-card, html.liquid .u-actionbar,
+html.liquid .u-overlay-mask, html.liquid .ac-ov-card, html.liquid .ac-bulk,
+html.liquid .ac-group, html.liquid .ac-card, html.liquid .tk-card,
+html.liquid .ev-move-mask {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
 
 .sh-svgdefs { position: absolute; width: 0; height: 0; overflow: hidden; }
 
@@ -87,6 +154,7 @@ body:has(> #sh-root) { overflow: hidden; }
   font-size: var(--text-sm);
   font-weight: 700;
   flex: none;
+  box-shadow: var(--badge-glow);           /* 2.1 style.css:256-257 logo 光晕 */
 }
 .sh-brand-name { overflow: hidden; text-overflow: ellipsis; }
 
@@ -153,6 +221,19 @@ body:has(> #sh-root) { overflow: hidden; }
   .sh-nav-item { flex-direction: column; justify-content: center; gap: 2px; padding: var(--space-2) 0; }
   .sh-nav-item .sh-nav-label { font-size: var(--text-xs); }
   .sh-side-foot .sh-nav-item { flex-direction: column; gap: 2px; padding: var(--space-2) 0; }
+}
+
+/* ---------- 3b. 桌面（≥1024）：2.1 浮起面板口径 ----------
+   .app padding:14px gap:14px（style.css:263）+ .sidebar 浮起玻璃面板
+   padding:22px 16px / 全描边 / r-xl=28px（style.css:265-266）。
+   仅 ≥1024 生效，避开 640–1023.98 rail 块的 padding 覆盖冲突。 */
+@media (min-width: 1024px) {
+  #sh-root { padding: 14px; gap: 14px; }
+  .sh-side {
+    padding: 22px 16px;
+    border: var(--line-1) solid var(--glass-nav-border);
+    border-radius: var(--radius-xl);
+  }
 }
 
 /* ---------- 4. 手机形态（<640）：沉浸内容 + 悬浮液态玻璃底栏 + 抽屉 ---------- */
@@ -243,11 +324,11 @@ body:has(> #sh-root) { overflow: hidden; }
   background: linear-gradient(135deg, var(--color-primary), var(--color-primary-strong));
   color: var(--color-on-primary);
   font-size: var(--text-xl);
-  box-shadow: var(--shadow-2);
+  box-shadow: var(--btn-primary-shadow);   /* 2.1 style.css:199-200 主按钮光晕 */
   transition: transform var(--dur-sm) var(--ease-spring), box-shadow var(--dur-sm) var(--ease-standard);
 }
 .sh-bar-fab:active { transform: scale(.94); }
-.sh-bar-fab.is-active { box-shadow: var(--shadow-2), 0 0 0 3px var(--color-primary-soft); }
+.sh-bar-fab.is-active { box-shadow: var(--btn-primary-shadow), 0 0 0 3px var(--color-primary-soft); }
 
 /* 材质层：半透明渐变 + backdrop 模糊 + 细描边 + 顶部高光（参考图语汇） */
 .sh-bar-mat {

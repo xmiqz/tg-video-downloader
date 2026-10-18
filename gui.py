@@ -777,6 +777,27 @@ class Api:
         return {"ok": True, "stage": "need_phone",
                 "phone_prefill": self.cfg.get("phone") or ""}
 
+    @staticmethod
+    def _is_net_exc(e):
+        """网络族异常判定（Timeout/Connection/OSError 族）。按异常类名匹配
+        （不新增 telethon import 依赖），_map_send_code_exc/_map_verify_exc
+        与 _submit_net_retry 共用同一口径。"""
+        ename = type(e).__name__
+        return (ename in ("TimeoutError", "ConnectionError", "OSError")
+                or "Timeout" in ename or "Connection" in ename
+                or isinstance(e, (asyncio.TimeoutError, TimeoutError,
+                                  ConnectionError, OSError)))
+
+    def _submit_net_retry(self, coro_fn):
+        """engine.submit 网络族异常恰重试一次（环境网络瞬时劫持自愈）；
+        非网络族异常或重试仍失败原样上抛，由调用方映射。"""
+        try:
+            return self.engine.submit(coro_fn())
+        except Exception as e:
+            if not self._is_net_exc(e):
+                raise
+            return self.engine.submit(coro_fn())
+
     def _map_send_code_exc(self, e):
         """T58 2.4：send_code/account_add_start 共用的异常→返回形状映射。
 
@@ -805,10 +826,7 @@ class Api:
         if ename in ("ApiIdInvalidError", "ApiIdPublishedFloodError"):
             return {"ok": False, "code": "api_invalid",
                     "error": "内置 API 凭证失效，请更换凭证后重试"}
-        if (ename in ("TimeoutError", "ConnectionError", "OSError")
-                or "Timeout" in ename or "Connection" in ename
-                or isinstance(e, (asyncio.TimeoutError, TimeoutError,
-                                  ConnectionError, OSError))):
+        if self._is_net_exc(e):
             return {"ok": False, "recoverable": True,
                     "error": "网络异常，验证码可能已发送到你的 Telegram；"
                              "如已收到可直接点下方入口输入"}
@@ -830,7 +848,7 @@ class Api:
             await self.client.send_code_request(phone)
 
         try:
-            self.engine.submit(_do())
+            self._submit_net_retry(_do)   # 网络族异常恰重试一次（D1 加固）
         except Exception as e:
             ename = type(e).__name__
             if ename == "AuthKeyDuplicatedError":
@@ -855,6 +873,20 @@ class Api:
         self._code_sent = True
         return {"ok": True}
 
+    def _map_verify_exc(self, e):
+        """verify_code/verify_password 共用的异常→返回形状映射（D1 加固）。
+        网络族→可恢复；PhoneCodeHash 缺失（从其他渠道直验无 hash）→引导
+        重新发码且不可恢复；未知→可恢复附原始 type:message。"""
+        ename = type(e).__name__
+        if self._is_net_exc(e):
+            return {"ok": False, "recoverable": True,
+                    "error": "网络异常，请稍后重试"}
+        if "PhoneCodeHash" in ename:
+            return {"ok": False,
+                    "error": "验证码会话已失效，请重新点击「发送验证码」获取新验证码后输入"}
+        return {"ok": False, "recoverable": True,
+                "error": f"登录异常，请稍后重试（{ename}: {e}）"}
+
     def verify_code(self, code):
         async def _do():
             try:
@@ -864,7 +896,12 @@ class Api:
                 return "need_password"
             except (PhoneCodeInvalidError, PhoneCodeExpiredError) as e:
                 return f"__err__{type(e).__name__}: {e}"
-        r = self.engine.submit(_do())
+        try:
+            r = self.engine.submit(_do())
+        except Exception as e:
+            # D1 加固：网络异常不再裸抛（"验证码登录也报错"根因），
+            # 统一映射为 UI 可消费的返回形状
+            return self._map_verify_exc(e)
         if r.startswith("__err__"):
             # PhoneCodeInvalid/Expired：仍在 code 步，_code_sent 保持 True
             return {"ok": False, "error": r[len("__err__"):]}
@@ -885,7 +922,11 @@ class Api:
                 return "ready"
             except PasswordHashInvalidError as e:
                 return f"__err__{e}"
-        r = self.engine.submit(_do())
+        try:
+            r = self.engine.submit(_do())
+        except Exception as e:
+            # D1 加固：同 verify_code，网络异常统一映射不裸抛
+            return self._map_verify_exc(e)
         if r.startswith("__err__"):
             return {"ok": False, "error": r[len("__err__"):]}
         if r == "ready" and self.guest:

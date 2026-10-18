@@ -627,20 +627,23 @@ function buildDom() {
 
   // —— 页头（index.html:132-140 承接；标题+副标题+选择/全选入口）——
   const sub = el("p", { class: "ac-sub", text: "实时监控所有下载进度，点击任意任务查看消息详情" }); // index.html:135
+  // 2.1 空态页头口径（index.html head-actions 静态提示）：无任务只显提示，
+  // 选择/全选隐藏（hidden 初始即藏，refreshActive 按数据翻显）。
+  const bulkHint = el("span", { class: "ac-sub", text: "勾选卡片可批量操作" });
   const selectBtn = el("button", {
     class: "u-btn u-btn--ghost ac-select-btn", type: "button",
-    text: "选择", "aria-pressed": "false", onclick: toggleSelectMode,
+    text: "选择", "aria-pressed": "false", hidden: true, onclick: toggleSelectMode,
   });
   const selAllBtn = el("button", {
     class: "u-btn u-btn--ghost", type: "button",
-    text: "全选", disabled: true, onclick: function () { selectAllToggle(); },
+    text: "全选", disabled: true, hidden: true, onclick: function () { selectAllToggle(); },
   });
   root.append(el("header", { class: "ac-head" }, [
     el("div", { class: "ac-head-main" }, [
       el("h2", { text: "下载中" }),
       sub,
     ]),
-    el("div", { class: "ac-head-actions" }, [selAllBtn, selectBtn]),
+    el("div", { class: "ac-head-actions" }, [bulkHint, selAllBtn, selectBtn]),
   ]));
 
   // —— 断网 banner（行为需求 §6：navigator.onLine + RPC 异常可见）——
@@ -788,7 +791,8 @@ function buildDom() {
   pendingBulkAction = "";
 
   refs = {
-    root: root, sub: sub, selectBtn: selectBtn, selAllBtn: selAllBtn,
+    root: root, sub: sub, bulkHint: bulkHint,
+    selectBtn: selectBtn, selAllBtn: selAllBtn,
     offlineBar: offlineBar, hintBar: hintBar, hintTextEl: hintTextEl,
     overview: overview, prog: prog, ovPct: ovPct, ovDetail: ovDetail,
     ovSpeed: ovSpeed, ovEta: ovEta,
@@ -833,6 +837,10 @@ async function refreshActive() {
     refs.empty.hidden = false;
     refs.overview.hidden = true;
     refs.fetchBar.hidden = true;
+    // 2.1 空态页头口径：选择/全选隐藏，只显静态提示
+    refs.selectBtn.hidden = true;
+    refs.selAllBtn.hidden = true;
+    refs.bulkHint.hidden = false;
     refs.sub.textContent = "实时监控所有下载进度，点击任意任务查看消息详情";
     clearGroups();
     syncSelUI(sel.state);
@@ -840,6 +848,10 @@ async function refreshActive() {
   }
   refs.empty.hidden = true;
   refs.overview.hidden = false;
+  // 有任务：翻显选择/全选，收起静态提示（2.1 有任务页头含批量入口）
+  refs.selectBtn.hidden = false;
+  refs.selAllBtn.hidden = false;
+  refs.bulkHint.hidden = true;
 
   // 总览（app.js:1123-1157）
   const a = overviewAggregate(states);

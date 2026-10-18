@@ -393,12 +393,42 @@ export async function boot() {
   uiCss.href = "css/ui.css";
   doc.head.appendChild(uiCss);
 
-  // 主题镜像：与 index.html 引导脚本同一数据源（localStorage.appearance，
-  // 后端配置为准、这里仅镜像）。默认 dark（对齐产品默认"静态暗"）；liquid
-  // 亦为暗底玻璃。data-theme 只作用于 html 令牌层。
+  // —— 视觉底层三件套（对齐 2.1 旧壳 style.css:49-126）——
+  // #sh-backdrop（液态玻璃背景图层）/ .sh-ambient（静态暗亮光斑）/
+  // #sh-frost（霜层面）；样式在 shell.css §0b。层元素由本壳自建（index.html
+  // 零改动，WC-4a 冻结保持绿）。
+  const backdropEl = doc.createElement("div");
+  backdropEl.id = "sh-backdrop";
+  const ambientEl = doc.createElement("div");
+  ambientEl.className = "sh-ambient";
+  ambientEl.setAttribute("aria-hidden", "true");
+  ambientEl.innerHTML = '<div class="sh-blob sh-b1"></div><div class="sh-blob sh-b2"></div>';
+  const frostEl = doc.createElement("div");
+  frostEl.id = "sh-frost";
+  frostEl.setAttribute("aria-hidden", "true");
+  doc.body.appendChild(backdropEl);
+  doc.body.appendChild(ambientEl);
+  doc.body.appendChild(frostEl);
+
+  // bridge.js:85-92 _setBackdrop → window._setBackdrop 消费方（2.1
+  // app.js:2546-2548 同口径：写背景图；空串清图）
+  win._setBackdrop = function (url) {
+    backdropEl.style.backgroundImage = url ? 'url("' + url + '")' : "";
+  };
+
+  // 主题镜像（对齐 2.1 app.js:2551-2562 applyAppearance）：localStorage.appearance
+  // 同一数据源（后端配置为准、这里仅镜像）。默认 dark；liquid 仅 Windows 生效，
+  // 其余平台按静态暗降级（app.js:2555-2556）。html.liquid 切换与 data-theme
+  // 只作用于 html 令牌层；非 liquid 清 backdrop 图。
+  const IS_WIN = /windows/i.test((win.navigator && win.navigator.userAgent) || "");
+  function applyAppearance(mode) {
+    const eff = (mode === "liquid" && !IS_WIN) ? "dark" : mode;
+    doc.documentElement.setAttribute("data-theme", eff === "light" ? "light" : "dark");
+    doc.documentElement.classList.toggle("liquid", eff === "liquid");
+    if (eff !== "liquid") win._setBackdrop("");
+  }
   try {
-    var m = (win.localStorage.getItem("appearance") || "dark").toLowerCase();
-    doc.documentElement.setAttribute("data-theme", m === "light" ? "light" : "dark");
+    applyAppearance((win.localStorage.getItem("appearance") || "dark").toLowerCase());
   } catch (e) { /* 私有模式等异常沿用系统主题 */ }
 
   const root = buildShellDom();

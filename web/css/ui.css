@@ -78,7 +78,7 @@
 .u-btn--primary {
   background: var(--btn-primary-bg);
   color: var(--btn-primary-text);
-  box-shadow: var(--shadow-2);
+  box-shadow: var(--btn-primary-shadow); /* 2.1 style.css:199-200 主按钮光晕（tokens 3.1） */
 }
 .u-btn--danger { background: var(--color-danger-soft); color: var(--color-danger-text); }
 .u-btn--ghost { background: var(--btn-ghost-bg); color: var(--btn-ghost-text); border-color: var(--btn-ghost-border); }
@@ -318,29 +318,30 @@
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: var(--space-2);
-  padding: var(--space-16) var(--space-5);
+  gap: 0; /* 2.1 逐值：间距由子项 margin 承载（style.css:595-599） */
+  padding: 80px 20px; /* style.css:595 */
   color: var(--color-text-faint);
 }
 .u-empty-ico {
   font-size: 48px; /* 与旧壳 .empty-ico 同尺寸（style.css:596 惯例，非色值） */
+  margin-bottom: 16px; /* style.css:596 */
   animation: u-empty-bob 3s var(--ease-standard) infinite alternate; /* 3s 循环对齐旧壳 .empty-ico bob（style.css:596）——reduce 由 §9 显式归零 */
 }
 @keyframes u-empty-bob { to { transform: translateY(-8px); } /* 对齐旧壳 bob style.css:597（8px = 2×4px 栅格） */ }
 .u-empty-title {
-  margin: 0;
-  font-size: var(--text-lg);
+  margin: 0 0 9px; /* style.css:598 */
+  font-size: 16px; /* style.css:598 */
   font-weight: 600;
-  color: var(--color-text-strong);
-}
-.u-empty-hint {
-  margin: 0;
-  font-size: var(--text-md);
-  line-height: 1.6;
   color: var(--color-text-muted);
 }
+.u-empty-hint {
+  margin: 0 0 20px; /* style.css:599 */
+  font-size: 13px; /* style.css:599 */
+  line-height: 1.6;
+  color: var(--color-text-faint);
+}
 .u-empty-hint[hidden] { display: none; }
-.u-empty .u-btn { margin-top: var(--space-2); }
+.u-empty .u-btn { margin-top: 0; }
 
 /* ============================================================
    6. 进度条（.u-progress；确定型对齐 .ov-bar/.ov-fill style.css:385-394，
