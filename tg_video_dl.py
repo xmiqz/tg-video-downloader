@@ -969,7 +969,8 @@ async def _pull_ids_retry(client, ent, chunk):
 
 
 async def _search_ref_matches(client, pending, entity, discuss, pools,
-                               terms, mode, excludes, raw, cancel=None):
+                               terms, mode, excludes, raw, cancel=None,
+                               max_batches=ENRICH_MAX_BATCHES):
     """T47：为"自身文本未命中"的候选补全外部文本并二次匹配。
 
     外部文本三桶（self 桶已在 search_videos 主循环判定）：
@@ -990,7 +991,8 @@ async def _search_ref_matches(client, pending, entity, discuss, pools,
 
     批量与缓存：先把全部待补候选的目标 id 汇总（跨候选去重、剔除
     池内已有、剔除候选自身 id），按 entity 分组、id 升序，每
-    ENRICH_BATCH_SIZE 个一批 get_messages；ENRICH_MAX_BATCHES 预算
+    ENRICH_BATCH_SIZE 个一批 get_messages；max_batches 批次预算
+    （缺省 ENRICH_MAX_BATCHES；search_videos_stream 按扫描窗口联动放大）
     耗尽即停（truncated），取回消息全部入池供同批其它候选复用。
 
     T48 起改为异步生成器（消费方：search_videos_stream）：
@@ -1091,7 +1093,7 @@ async def _search_ref_matches(client, pending, entity, discuss, pools,
         ent_t = plan_ent[eid]
         pool = pools.setdefault(eid, {})
         for i in range(0, len(ids), ENRICH_BATCH_SIZE):
-            if batches >= ENRICH_MAX_BATCHES:
+            if batches >= max_batches:
                 truncated = True
                 break
             # T48 取消检查点：每批发请求前轮询（协作式，不用 task.cancel()）
@@ -1198,6 +1200,7 @@ async def search_videos(client, entity, p):
     date_from/date_to  日期区间 YYYY-MM-DD（含端点）
     scope       channel/comments/both
     sort        date/size
+    deep_scan   可选（1/true）：无起始日期也放开到 HARD_SCAN_CAP 深度扫描
     返回 (records, meta)。
     """
     final, meta = [], None
@@ -1254,6 +1257,10 @@ async def search_videos_stream(client, entity, p, cancel=None):
         dto = dto + _dt.timedelta(days=1)   # 含当天
     scope = p.get("scope", "channel")
     sort = p.get("sort", "date")
+    # 深度扫描（可选开关，缺省关）：无起始日期也放开到 HARD_SCAN_CAP，
+    # 让外部文本（引用/相册/转发）候选覆盖突破 MAX_LOCAL_SCAN 翻页窗口。
+    deep_scan = str(p.get("deep_scan", "")).strip().lower() in (
+        "1", "true", "yes", "y", "on")
 
     terms, excludes = parse_keywords(query)
     raw = query.split(",")[0] if mode == "phrase" else query
@@ -1263,7 +1270,15 @@ async def search_videos_stream(client, entity, p, cancel=None):
     # 指定起始日期时，日期本身就是天然的扫描停止点：允许突破
     # MAX_LOCAL_SCAN 继续向旧消息翻页，直到扫到早于 dfrom 的消息；
     # 否则频道历史超过上限时，日期符合的早期视频会被漏扫。
-    scan_cap = HARD_SCAN_CAP if dfrom is not None else MAX_LOCAL_SCAN
+    # deep_scan 显式开关同理放开（扫描停止点仍为 HARD_SCAN_CAP 安全阀）。
+    scan_cap = (HARD_SCAN_CAP
+                if (dfrom is not None or deep_scan) else MAX_LOCAL_SCAN)
+    # 补抓批次预算随扫描窗口乘法联动（×窗口倍数 = scan_cap //
+    # MAX_LOCAL_SCAN）：默认 5000 窗口 ×1 即既有 ENRICH_MAX_BATCHES，
+    # 行为不变（含 monkeypatch 精确生效面）；deep_scan/起始日期把窗口
+    # 放大到 HARD_SCAN_CAP 时 ×20，pending 候选同量增加，预算不联动
+    # 则外部文本补抓被截断、深度扫描白改。
+    enrich_max_batches = ENRICH_MAX_BATCHES * max(1, scan_cap // MAX_LOCAL_SCAN)
 
     def _cancelled():
         return cancel is not None and cancel.is_set()
@@ -1400,6 +1415,8 @@ async def search_videos_stream(client, entity, p, cancel=None):
                     pool[m.id] = m
                     yield _progress("server_search")
         judged_ids = set()
+        local_n = 0        # 本地翻页条目计数（scan_cap 配额只计本地翻页，
+                           # 服务端入池不挤占本地扫描配额）
         agen = client.iter_messages(ent)
         async for m in agen:
             if _cancelled():
@@ -1407,13 +1424,14 @@ async def search_videos_stream(client, entity, p, cancel=None):
             # T47 local_scan 同序：入池 → 判定 → dfrom → cap
             pool[m.id] = m
             judged_ids.add(m.id)
+            local_n += 1
             _after_judge(_judge(m, src), m, src)
             yield _progress("local_scan")
             for frame in _flush():
                 yield {"kind": "items", "items": frame}
             if dfrom is not None and m.date is not None and m.date < dfrom:
                 break   # 已覆盖全部目标时间段，不算触顶
-            if len(pool) >= scan_cap:
+            if local_n >= scan_cap:
                 capped = True
                 # 触顶帧：让 capped=True 的首个 progress 帧落在
                 # local_scan 阶段（其后各帧粘滞携带）
@@ -1542,7 +1560,8 @@ async def search_videos_stream(client, entity, p, cancel=None):
             return
         agen = _search_ref_matches(
             client, pending, entity, discuss, pools,
-            terms, mode, excludes, raw, cancel=cancel)
+            terms, mode, excludes, raw, cancel=cancel,
+            max_batches=enrich_max_batches)
         try:
             async for ev in agen:
                 if ev["kind"] == "batch":
@@ -3773,6 +3792,190 @@ def set_parallel(task, n):
     save_task(task, force=True)
 
 
+# ---------------- 智能重命名（2.3） ----------------
+NAME_MIN_LEN = 6       # 拟用新名主体最短字符数（不足视为无有效句）
+NAME_MAX_LEN = 120     # 拟用新名主体最长字符数（留余量给 (N) 后缀与扩展名）
+NAME_MAX_TOTAL = 240   # 落盘文件名总长上限（Windows 组件上限 255 内）
+_NAME_SPLIT = re.compile(r"[。！？!?；;，,、\n\r\t ]+")
+_NAME_EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,8}")
+
+
+def _split_name_stem(name):
+    """文件名 → (stem, ext)；ext 含点且限 1..8 位字母数字，否则归入 stem。"""
+    stem, ext = os.path.splitext(name or "")
+    if ext and _NAME_EXT_RE.fullmatch(ext):
+        return stem, ext
+    return name or "", ""
+
+
+def smart_name_for(text, query, orig_name="", ref_text=None):
+    """关键词命中句 → 拟用新名（原扩展名保留）；无有效句返回 ""。
+
+    规则：取首个命中词所在句（空格/句读断句）；过短向前后文扩句、
+    过长以命中词为中心向句界收缩；非法字符走 safe_name 清洗；主体
+    长度限 [NAME_MIN_LEN, NAME_MAX_LEN]。重名 (N) 后缀在落盘改名时
+    解析（预览/登记阶段不预占）。单一 Python 实现，TUI/GUI/web 同源。
+    """
+    includes, _ = parse_keywords(query)
+    if not includes:
+        return ""
+    _stem, ext = _split_name_stem(orig_name)
+    for src_text in (text or "", ref_text or ""):
+        if not src_text:
+            continue
+        low = src_text.lower()
+        hit = None
+        for w in includes:
+            i = low.find(w)
+            if i >= 0 and (hit is None or i < hit[0]):
+                hit = (i, i + len(w))
+        if hit is None:
+            continue
+        hs, he = hit
+        # 句段偏移表（边界符之间，去空段）
+        parts, prev = [], 0
+        for m in _NAME_SPLIT.finditer(src_text):
+            parts.append((prev, m.start()))
+            prev = m.end()
+        parts.append((prev, len(src_text)))
+        segs = [(s, e) for s, e in parts if e > s]
+        if not segs:
+            continue
+        lo = hi = 0
+        for i, (s, e) in enumerate(segs):
+            if s <= hs and he <= e:
+                lo = hi = i
+                break
+        else:
+            lo = hi = min(range(len(segs)),
+                          key=lambda i: abs(segs[i][0] - hs))
+        # 扩句：主体过短左右交替逐句延伸（保前后文）
+        grow_right = True
+        while (segs[hi][1] - segs[lo][0]) < NAME_MIN_LEN:
+            if grow_right and hi + 1 < len(segs):
+                hi += 1
+            elif lo > 0:
+                lo -= 1
+            elif hi + 1 < len(segs):
+                hi += 1
+            else:
+                break
+            grow_right = not grow_right
+        s, e = segs[lo][0], segs[hi][1]
+        # 收缩：过长以命中词为中心截窗，两侧尽量贴句界/空格
+        if e - s > NAME_MAX_LEN:
+            pad = max(0, (NAME_MAX_LEN - (he - hs)) // 2)
+            s2 = max(s, hs - pad)
+            e2 = min(e, s2 + NAME_MAX_LEN)
+            s2 = max(s2, e2 - NAME_MAX_LEN)
+            for m in _NAME_SPLIT.finditer(src_text, s2, hs):
+                s2 = m.end()
+            for m in _NAME_SPLIT.finditer(src_text, he, e2):
+                e2 = m.start()
+                break
+            if e2 <= he or s2 >= hs:
+                s2 = max(s, hs - pad)
+                e2 = min(e, s2 + NAME_MAX_LEN)
+            s, e = s2, e2
+        raw = src_text[s:e].strip()
+        raw = raw.strip(" ,，、:：;；-_—.。!！?？\"'“”‘’()（）[]【】")
+        name = safe_name(raw, "").strip("_ ")
+        if len(name) < NAME_MIN_LEN:
+            continue
+        return name[:NAME_MAX_LEN] + ext
+    return ""
+
+
+def _rename_on_disk(folder, cur, want):
+    """folder 内把 cur 改名为 want（重名自动 ' (N)' 后缀）。
+    返回 (最终名, 错误串)；错误时最终名为 None。want 需已含扩展名。"""
+    stem, ext = _split_name_stem(want)
+    if not stem:
+        return None, "新名为空"
+    if len(stem) > NAME_MAX_LEN:
+        stem = stem[:NAME_MAX_LEN]
+    n = 1
+    while True:
+        suffix = f" ({n})" if n > 1 else ""
+        cut = NAME_MAX_TOTAL - len(ext) - len(suffix)
+        cand = stem[:cut] + suffix + ext
+        if cand == cur:
+            return cur, ""
+        if not (folder / cand).exists():
+            try:
+                os.rename(folder / cur, folder / cand)
+            except OSError as e:
+                return None, f"{type(e).__name__}: {e}"
+            return cand, ""
+        n += 1
+
+
+def apply_item_rename(task, ti, new_name=None):
+    """执行单条目改名（新建任务下载完成命名 / 任务库确认改名共用）。
+
+    - 文件已落盘：os.rename（重名 ' (N)' 后缀），orig_name 记首次
+      原名（还原目标），name/rename 同步为最终名；
+    - 文件未落盘（未下载）：只登记 ti["rename"]（拟用新名），待下载
+      完成由 apply_pending_rename 收口。
+    返回 {"ok","renamed","name","error"}（不 print，P5）。"""
+    want = (new_name if new_name is not None else ti.get("rename", "")) or ""
+    want = safe_name(str(want).strip(), "").strip()
+    if not want:
+        return {"ok": False, "renamed": False, "name": ti["name"],
+                "error": "新名为空"}
+    _ws, wext = _split_name_stem(want)
+    if not wext:
+        _os, oext = _split_name_stem(ti["name"])
+        want = want + oext
+    cur = ti["name"]
+    folder = pathlib.Path(task["folder"])
+    if not (folder / cur).exists():
+        ti["rename"] = want
+        return {"ok": True, "renamed": False, "name": cur, "error": ""}
+    final, err = _rename_on_disk(folder, cur, want)
+    if err:
+        return {"ok": False, "renamed": False, "name": cur, "error": err}
+    if final != cur:
+        ti.setdefault("orig_name", cur)   # 只记首次原名（还原目标）
+        ti["name"] = final
+    ti["rename"] = final
+    return {"ok": True, "renamed": final != cur, "name": final, "error": ""}
+
+
+def apply_pending_rename(task, ti):
+    """下载完成收口：登记过拟用新名且与现名不同 → 落盘改名。
+    返回是否实际改名；失败静默保留现名（P5：不 print）。"""
+    want = ti.get("rename") or ""
+    if not want or want == ti["name"]:
+        return False
+    return apply_item_rename(task, ti)["renamed"]
+
+
+def restore_item_names(task, keys):
+    """还原命名（支持多选）：已改名条目回到 orig_name（重名自动
+    ' (N)' 后缀；文件缺失时仅复位 name 记录）。返回
+    {"ok","restored","skipped","errors"}（不 print，P5）。"""
+    folder = pathlib.Path(task["folder"])
+    out = {"ok": True, "restored": 0, "skipped": 0, "errors": []}
+    for key in keys:
+        ti = find_item(task, (key[0], key[1]))
+        if ti is None or not ti.get("orig_name"):
+            out["skipped"] += 1
+            continue
+        cur, orig = ti["name"], ti["orig_name"]
+        if (folder / cur).exists():
+            final, err = _rename_on_disk(folder, cur, orig)
+            if err:
+                out["errors"].append(f"#{ti['msg']} {err}")
+                continue
+            ti["name"] = final
+        else:
+            ti["name"] = orig
+        ti.pop("orig_name", None)
+        out["restored"] += 1
+    return out
+
+
 def _norm_dir(p):
     """目录路径规范化（T50）：expanduser + abspath（normpath 语义，
     折叠分隔符/相对段，不改动盘符大小写）。"""
@@ -5659,6 +5862,11 @@ async def run_download_session(client, task, sess, *, gui=None,
             ti["error"] = error
         else:
             ti.pop("error", None)
+        # 2.3 智能重命名收口：条目登记了拟用新名且已落盘
+        # （done/exists）→ 下载完成即按此命名（重名 (N) 后缀，
+        # orig_name 记原名供还原；失败静默保留现名）。
+        if status in ("done", "exists"):
+            apply_pending_rename(task, ti)
         save_task(task, force=(status in PERSIST_FORCE_STATUSES))
 
     # ---- b. TUI 按键/显示任务（照现状创建：keys.start() 延后到磁盘
@@ -7123,6 +7331,16 @@ def gather_search_params():
     params["scope"] = scope if scope in ("channel", "comments", "both") else "channel"
     sort = ask("排序方式 date/size", "date").lower()
     params["sort"] = "size" if sort == "size" else "date"
+    # 深度扫描开关：仅真实交互终端（TTY）提示。管道/脚本驱动（T47/T48
+    # 冻结应答序、生产 stdin 重定向）不插入额外问题——该提示位于 14 行
+    # 冻结序中段（sort 与 paged_view 之间），管道下提问会吃掉后续应答
+    # 造成序列错位/挂死；非 TTY 缺省 deep_scan=0（GUI/web 走参数下发）。
+    if sys.stdin.isatty():
+        deep = ask("深度扫描（突破 5000 条扫描上限，大频道耗时显著变长）y/N",
+                   "n").lower()
+        params["deep_scan"] = 1 if deep in ("y", "yes") else 0
+    else:
+        params["deep_scan"] = 0
     return params
 
 
@@ -7305,19 +7523,40 @@ async def preview_records(client, entity, title, params, auto_all):
     if stop.is_set():
         print(paint(f" 已中止搜索，已收到 {arrived} 条", YELLOW))
         return []
+    # 文案分流判据由调用侧参数计算（内核 meta 键集合冻结不变）：
+    # use_server 口径 = terms 非空且 mode 属服务端可搜（与内核同式）
+    _terms, _ex = parse_keywords(str(params.get("query", "")))
+    _use_server = (bool(_terms)
+                   and str(params.get("mode", "all"))
+                   in ("phrase", "all", "any"))
+    _deep_scan = str(params.get("deep_scan", "")).strip().lower() in (
+        "1", "true", "yes", "y", "on")
     if not items:
         if meta.get("capped"):
             print(paint(
                 f" 没有找到符合条件的视频（已扫描最近 {meta.get('scan_cap')} 条消息仍触顶）",
                 YELLOW))
-            print(paint(" 可改用关键词走服务端搜索，或放宽大小/日期条件", DIM))
+            if _use_server:
+                print(paint(
+                    " 已走服务端搜索：加词已不能扩大覆盖，可填起始日期扩大扫描范围"
+                    "，或放宽大小/日期条件", DIM))
+            else:
+                print(paint(" 可改用关键词走服务端搜索，或放宽大小/日期条件", DIM))
         else:
             print(paint(" 没有找到符合条件的视频", YELLOW))
         return []
     if meta.get("capped"):
-        print(paint(
-            f" 本地扫描已达 {meta.get('scan_cap')} 条上限，更早的结果未覆盖："
-            "加关键词可走服务端搜索", DIM))
+        head = (f" 本地扫描已达 {meta.get('scan_cap')} 条上限，更早的结果未覆盖："
+                if not _deep_scan else
+                f" 深度扫描已触 {meta.get('scan_cap')} 条安全上限，更早的结果未覆盖：")
+        if _use_server:
+            print(paint(head + "已走服务端搜索，加词已不能扩大覆盖：可填起始日期扩大扫描范围", DIM))
+        elif meta.get("ref_matched") and meta.get("ref_matched") >= len(items):
+            # 纯外部文本命中：关键词在引用/相册/转发原文里，服务端搜索
+            # 只索引消息自身文本，加词走服务端对这类命中无效
+            print(paint(head + "命中均为外部文本（引用/相册/转发），加词走服务端搜索对这类命中无效：可填起始日期扩大扫描范围", DIM))
+        else:
+            print(paint(head + "加关键词可走服务端搜索", DIM))
     before_d = len(items)
     items = dedup_records(items)
     if len(items) < before_d:
@@ -7331,8 +7570,8 @@ async def preview_records(client, entity, title, params, auto_all):
             f"缓存命中 {meta.get('enrich_cache_hits', 0)}）", DIM))
     if meta.get("truncated"):
         print(paint(
-            " 外部文本补抓已达批次预算上限，更早消息的引用/相册文本可能未覆盖",
-            YELLOW))
+            " 外部文本补抓已达批次预算上限，更早消息的引用/相册文本可能未覆盖："
+            "可填起始日期缩小扫描窗口后重试", YELLOW))
     rows = []
     for it in items:
         m = it["msg"]

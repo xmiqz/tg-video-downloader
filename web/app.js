@@ -140,6 +140,7 @@ let currentView = "new";
 const opts = { mode: "all", scope: "channel", sort: "date" };
 let previewData = { items: [], channel: "", title: "" };
 let selected = new Set();
+let renameEdits = {};   // 2.3 智能重命名：行内编辑的拟用新名（key → 名；空串=保持原名）
 let taskFilter = "all";
 // T46 游客（离线受限）模式：guestMode 与后端 login_state().guest 保持一致
 let guestMode = false;
@@ -735,6 +736,7 @@ function collectSearchParams() {
     max_mb: document.getElementById("w-maxmb").value || 0,
     date_from: document.getElementById("w-datefrom").value || "",
     date_to: document.getElementById("w-dateto").value || "",
+    deep_scan: document.getElementById("w-deepscan").checked ? 1 : 0,
   };
 }
 
@@ -759,7 +761,7 @@ async function doPreview() {
   // T48 ACK {"ok":true,"job_id":...}：立即进入步骤 2，初始化流式态
   previewData = {
     items: [], channel: params.channel, title: params.channel,
-    meta: {}, job_id: r.job_id,
+    meta: {}, job_id: r.job_id, params: params,
   };
   selected = new Set();
   arrivedKeys = new Set();
@@ -858,6 +860,16 @@ async function doStart(btn) {
     return { src, mid };
   });
   const parallel = document.getElementById("w-parallel").value || 2;
+  // 2.3 智能重命名：拟用新名（行内编辑优先，默认 it.rename 算句结果）
+  const renames = [];
+  for (const k of selected) {
+    const [src, mid] = k.split("|");
+    const it = previewData.items.find(x => keyOf(x.src, x.mid) === k);
+    const name = (((k in renameEdits) ? renameEdits[k]
+                 : (it && it.rename) || "")).trim();
+    if (it && name && name !== it.name)
+      renames.push({ src, mid: Number(mid), name });
+  }
   let r;
   try {
     r = await withBusy(btn, "准备下载…", () =>
@@ -868,6 +880,15 @@ async function doStart(btn) {
   // T52：任务创建成功即下发账号策略（edit_task {acct_pref}，T51 真实
   // 落盘字段；桩模式 t52demo=1 由 probe 应答并记录入参形状）
   TgAccounts.applyNewTaskAcct(r.task_id);
+  // 2.3：拟用新名随任务下发（item.rename 落盘记录，后续编辑/续传可见；
+  // 未下载条目下载完成即按此命名。失败不阻断建任务）
+  if (renames.length) {
+    try {
+      await api().edit_task(r.task_id, { renames });
+    } catch (e) {
+      console.debug("[rename] edit_task(renames) 调用失败：", e);
+    }
+  }
   switchView("active");
 }
 
@@ -875,6 +896,7 @@ async function doStart(btn) {
 // T48 流式搜索：进度区 / search_items 增量渲染 / 取消 / 终态收敛
 // ============================================================
 function resetSearchProgress() {
+  renameEdits = {};
   const box = document.getElementById("search-progress");
   box.classList.remove("hidden");
   document.getElementById("search-progress-fill").className = "job-fill indet";
@@ -903,11 +925,17 @@ function previewRowHtml(it) {
   const refAttr = it.ref_text ? ` title="${esc(it.ref_text)}"` : "";
   const refInline = it.ref_text
     ? ` <span class="ref-inline">${esc(it.ref_text.slice(0, 60))}</span>` : "";
+  // 2.3 智能重命名：行内「拟命名」可编辑位（默认智能算句结果 it.rename，
+  // 行内编辑优先；空=保持原名；创建任务后下载完成即按此命名）
+  const rn = (k in renameEdits) ? renameEdits[k] : (it.rename || "");
   return `
     <div class="video-row ${on ? "sel" : ""}" data-key="${esc(k)}" onclick="toggleVideo('${esc(k)}')">
       <div class="cbox">${on ? "✓" : ""}</div>
       <div class="video-info">
         <div class="video-name">${mark}${esc(it.name)}</div>
+        <div class="video-rename">拟命名 <input class="rn-input" value="${esc(rn)}"
+          placeholder="留空=保持原名" title="拟用新名（可编辑；任务创建后下载完成即按此命名）"
+          onclick="event.stopPropagation()" oninput="onRenameInput('${esc(k)}', this.value)"></div>
         <div class="video-sub"${refAttr}>${esc(it.date)} · ${esc((it.text || "").slice(0, 70))}${refInline}</div>
       </div>
       <div class="video-size">
@@ -915,6 +943,10 @@ function previewRowHtml(it) {
         <span class="src-tag">${esc(it.src)}</span>
       </div>
     </div>`;
+}
+
+function onRenameInput(k, v) {
+  renameEdits[k] = v;
 }
 
 function appendPreviewRow(it) {
@@ -968,6 +1000,19 @@ function finalizeSearch(data) {
   renderPreview();
 }
 
+// 文案分流判据由调用侧参数计算（内核 meta 键集合冻结不变）：
+// use_server 口径 = terms 非空且 mode 属服务端可搜（与内核同式）
+function searchFlags() {
+  const p = previewData.params || collectSearchParams();
+  const hasTerms = String(p.query || "").split(",")
+    .some(w => w.trim() && !w.trim().startsWith("-"));
+  return {
+    useServer: hasTerms && ["phrase", "all", "any"].includes(String(p.mode || "all")),
+    deepScan: ["1", "true", "yes", "y", "on"].includes(
+      String(p.deep_scan || "").trim().toLowerCase()),
+  };
+}
+
 function finishSearchProgress(meta) {
   document.getElementById("search-progress-fill").className = "job-fill f-done";
   const bits = [];
@@ -980,12 +1025,25 @@ function finishSearchProgress(meta) {
   document.getElementById("search-counts").textContent = bits.join("，");
   const note = document.getElementById("search-note");
   note.classList.remove("error");
-  // truncated/capped 黄行（文案同 TUI 口径）
+  // truncated/capped 黄行（文案同 TUI 口径，按 use_server/命中类型分流）
+  const flags = searchFlags();
   if (meta.truncated) {
-    note.textContent = "外部文本补抓已达批次预算上限，更早消息的引用/相册文本可能未覆盖";
+    note.textContent = "外部文本补抓已达批次预算上限，更早消息的引用/相册文本可能未覆盖：可填起始日期缩小扫描窗口后重试";
     note.classList.add("warn");
   } else if (meta.capped) {
-    note.textContent = "本地扫描已达上限，更早的结果未覆盖：加关键词可走服务端搜索";
+    const head = flags.deepScan
+      ? `深度扫描已触 ${meta.scan_cap} 条安全上限，更早的结果未覆盖：`
+      : "本地扫描已达上限，更早的结果未覆盖：";
+    if (flags.useServer) {
+      note.textContent = head + "已走服务端搜索，加词已不能扩大覆盖：可填起始日期扩大扫描范围";
+    } else if (meta.ref_matched && meta.ref_matched >= previewData.items.length
+               && previewData.items.length > 0) {
+      // 纯外部文本命中：关键词在引用/相册/转发原文里，服务端搜索只索引
+      // 消息自身文本，加词走服务端对这类命中无效
+      note.textContent = head + "命中均为外部文本（引用/相册/转发），加词走服务端搜索对这类命中无效：可填起始日期扩大扫描范围";
+    } else {
+      note.textContent = head + "加关键词可走服务端搜索";
+    }
     note.classList.add("warn");
   } else {
     note.textContent = "";
@@ -2275,6 +2333,88 @@ async function bulkRemove() {
   sheet.sel.clear();
   renderBulkBar();
   await reloadSheet();
+}
+
+// ---------- 2.3 智能重命名（任务库：命名前后预览可编辑 + 还原命名多选） ----------
+function renameScopeItems() {
+  // 处理范围：多选条目优先，无勾选则全任务条目
+  if (!sheet.sel.size) return sheet.task.items.slice();
+  return sheet.task.items.filter(ti =>
+    sheet.sel.has(keyOf(ti.src || "频道", ti.msg)));
+}
+function toggleRenamePanel() {
+  const on = document.getElementById("rename-inc-done").checked;
+  document.getElementById("rename-panel").classList.toggle("hidden", !on);
+  if (on) renderRenameRows();
+}
+function renderRenameRows() {
+  const el = document.getElementById("rename-rows");
+  const rows = renameScopeItems();
+  el.innerHTML = rows.length ? rows.map(ti => {
+    const k = keyOf(ti.src || "频道", ti.msg);
+    return `<div class="rn-row">
+      <span class="rn-before" title="${esc(ti.name)}">${esc(ti.name)}</span>
+      <span class="rn-arrow">→</span>
+      <input class="rn-input" data-k="${esc(k)}" value="${esc(ti.rename || "")}"
+             placeholder="留空不改">
+    </div>`;
+  }).join("") : `<div class="rn-empty">没有可处理的条目</div>`;
+}
+let renameConfirmBusy = false;
+async function renameConfirm(btn) {
+  const renames = [];
+  document.querySelectorAll("#rename-rows .rn-input").forEach(inp => {
+    const name = inp.value.trim();
+    if (!name) return;
+    const [src, mid] = inp.dataset.k.split("|");
+    renames.push({ src, mid: Number(mid), name });
+  });
+  if (!renames.length) return alert("没有可应用的命名（请在「→」后填写新名）");
+  if (renameConfirmBusy) return;
+  renameConfirmBusy = true;
+  let r;
+  try {
+    r = await withBusy(btn, "改名中…", () =>
+      api().edit_task(sheet.taskId, { renames }));
+  } catch (e) {
+    showErr("改名失败", e);
+    return;
+  } finally {
+    renameConfirmBusy = false;
+  }
+  if (!r || !r.ok)
+    return showErr("改名失败", (r && r.error) || "操作未生效");
+  alert(`已改名 ${r.renamed} 条，已登记 ${r.recorded} 条` +
+    ((r.warnings && r.warnings.length) ? "\n" + r.warnings.join("\n") : ""));
+  await reloadSheet();
+  renderRenameRows();
+}
+// 还原命名（支持多选）：选中条目回到原始命名（orig_name）
+let bulkRestoreBusy = false;
+async function bulkRestore() {
+  const keys = bulkKeys();
+  if (!keys.length) return alert("请先勾选要还原命名的条目");
+  if (!confirm(`还原选中 ${keys.length} 条为原始命名？`)) return;
+  if (bulkRestoreBusy) return;
+  bulkRestoreBusy = true;
+  let r;
+  try {
+    r = await api().edit_task(sheet.taskId, { restore: keys });
+  } catch (e) {
+    showErr("还原命名失败", e);
+    return;
+  } finally {
+    bulkRestoreBusy = false;
+  }
+  if (!r || !r.ok)
+    return showErr("还原命名失败", (r && r.error) || "操作未生效");
+  alert(`已还原 ${r.restored} 条` +
+    (r.skipped ? `，跳过 ${r.skipped} 条（未改名）` : "") +
+    ((r.errors && r.errors.length) ? "\n" + r.errors.join("\n") : ""));
+  sheet.sel.clear();
+  renderBulkBar();
+  await reloadSheet();
+  renderRenameRows();
 }
 
 // ---------- 滑层其它操作 ----------

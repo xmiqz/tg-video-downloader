@@ -603,6 +603,23 @@ nav { flex: 1; display: flex; flex-direction: column; gap: 5px; }
 .hint { font-size: 12px; color: var(--ink-mute); margin-top: 18px; line-height: 1.7; }
 .check-line { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--ink-dim); }
 
+/* ---------- 2.3 智能重命名（拟命名行内可编辑 / 任务库前后预览） ---------- */
+.video-rename { display: flex; align-items: center; gap: 6px; margin-top: 4px;
+                 font-size: 11px; color: var(--ink-mute); }
+.video-rename .rn-input { flex: 1; min-width: 0; font-size: 11.5px; }
+.rn-input { background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.16);
+            border-radius: 7px; padding: 4px 8px; color: var(--ink);
+            outline: none; }
+.rn-input:focus { border-color: rgba(120,140,255,.7); }
+.rename-box { margin: 12px 0; }
+#rename-rows { margin: 10px 0; display: flex; flex-direction: column; gap: 6px; }
+.rn-row { display: flex; align-items: center; gap: 8px; }
+.rn-before { flex: 0 0 38%; overflow: hidden; text-overflow: ellipsis;
+             white-space: nowrap; font-size: 11.5px; color: var(--ink-mute); }
+.rn-arrow { color: var(--ink-mute); flex-shrink: 0; }
+.rn-row .rn-input { flex: 1; min-width: 0; }
+.rn-empty { font-size: 12px; color: var(--ink-mute); padding: 6px 0; }
+
 /* ---------- 详情滑层 ---------- */
 .sheet-mask {
   position: fixed; inset: 0; z-index: 70;

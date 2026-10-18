@@ -1045,9 +1045,11 @@ class Api:
         return {"ok": True, "job_id": job_id}
 
     @staticmethod
-    def _search_item_of(r):
+    def _search_item_of(r, query=""):
         """record → 前端 item 序列化：T47 6 键纯增 match_in/ref_text 2 键
-        （.get 取值，缺省 "self"/None 与 record 一致），无其它形变。"""
+        （.get 取值，缺省 "self"/None 与 record 一致），无其它形变；
+        2.3 智能重命名再纯增 rename 1 键（关键词命中句拟名，可为空串；
+        前端行内可编辑，创建任务后下载完成即按所登记名命名）。"""
         return {
             "mid": r["msg"].id,
             "src": r.get("src", core.SRC_CHANNEL),
@@ -1057,6 +1059,9 @@ class Api:
             "text": r["text"],
             "match_in": r.get("match_in", "self"),
             "ref_text": r.get("ref_text"),
+            "rename": core.smart_name_for(
+                r.get("text", "") or "", query, r["name"],
+                r.get("ref_text")),
         }
 
     def _search_push(self, job_id, data):
@@ -1112,7 +1117,7 @@ class Api:
                     self._preview[key] = r
                     fresh.append(r)
             for r in fresh:
-                items_seq.append(self._search_item_of(r))
+                items_seq.append(self._search_item_of(r, p.get("query", "")))
             return len(fresh)
 
         def _maybe_push():
@@ -1182,7 +1187,8 @@ class Api:
                 final_store = {
                     (r.get("src", core.SRC_CHANNEL), r["msg"].id): r
                     for r in records}
-                final_items = [self._search_item_of(r) for r in records]
+                final_items = [self._search_item_of(r, p.get("query", ""))
+                               for r in records]
                 with self._preview_lock:
                     self._search_previews[job_id] = final_store
                     self._preview = dict(final_store)
@@ -1745,6 +1751,58 @@ class Api:
             else:
                 return {"ok": False,
                         "error": "retries 仅支持 0..8 的整数"}
+        # 2.3 智能重命名（不加新 RPC；与 T52 同走 edit_task，单发语义）：
+        # renames=[{src,mid,name}]——已下载条目立即落盘改名（重名
+        # ' (N)' 后缀、orig_name 记原名），未下载条目登记 ti["rename"]
+        # 待下载完成即按此命名；restore=[{src,mid}]——多选还原命名
+        # （回到 orig_name）。任一存在即返回本块结果（不与 folder 混用）。
+        if "renames" in fields:
+            rows = fields["renames"]
+            if not isinstance(rows, list):
+                return {"ok": False, "error": "renames 必须为列表"}
+            renamed = recorded = 0
+            warnings = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    return {"ok": False, "error": "renames 条目必须为对象"}
+                try:
+                    key = (row.get("src", core.SRC_CHANNEL),
+                           int(row.get("mid")))
+                except (TypeError, ValueError):
+                    return {"ok": False, "error": "renames 条目 mid 无效"}
+                ti = core.find_item(t, key)
+                if ti is None:
+                    warnings.append(f"条目不存在：{key[1]}")
+                    continue
+                name = str(row.get("name") or "").strip()
+                if not name:
+                    continue
+                r = core.apply_item_rename(t, ti, name)
+                if not r["ok"]:
+                    warnings.append(f"#{key[1]} {r['error']}")
+                elif r["renamed"]:
+                    renamed += 1
+                else:
+                    recorded += 1
+            core.save_task(t, force=True)
+            return {"ok": True, "renamed": renamed, "recorded": recorded,
+                    "warnings": warnings}
+        if "restore" in fields:
+            rows = fields["restore"]
+            if not isinstance(rows, list):
+                return {"ok": False, "error": "restore 必须为列表"}
+            rkeys = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    return {"ok": False, "error": "restore 条目必须为对象"}
+                try:
+                    rkeys.append((row.get("src", core.SRC_CHANNEL),
+                                  int(row.get("mid"))))
+                except (TypeError, ValueError):
+                    return {"ok": False, "error": "restore 条目 mid 无效"}
+            out = core.restore_item_names(t, rkeys)
+            core.save_task(t, force=True)
+            return out
         folder = (fields.get("folder") or "").strip()
         if not folder:
             return {"ok": True, "warnings": []}

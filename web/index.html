@@ -271,6 +271,10 @@
                   <button class="seg" data-o="size" onclick="setSort('size')">最大优先</button>
                 </div>
               </div>
+              <div class="adv-field small">
+                <label>深度扫描（可突破 5000 条）</label>
+                <input id="w-deepscan" type="checkbox">
+              </div>
             </div>
           </div>
 
@@ -467,7 +471,16 @@
       <span id="bulk-count" class="bulk-count">已选 0</span>
       <button class="btn glass-btn sm" onclick="bulkStatus('pending')">标记重新下载</button>
       <button class="btn glass-btn sm" onclick="bulkStatus('skipped')">标记跳过</button>
+      <button class="btn glass-btn sm" onclick="bulkRestore()">还原命名</button>
       <button class="btn danger sm" onclick="bulkRemove()">移除条目</button>
+    </div>
+    <!-- 2.3 智能重命名：勾选「已下载文件也处理」→ 命名前后预览（可编辑）→ 确认改名 -->
+    <div class="rename-box">
+      <label class="check-line"><input type="checkbox" id="rename-inc-done" onchange="toggleRenamePanel()"> 已下载文件也处理（命名前后预览，可编辑；未下载条目下载完成即按此命名）</label>
+      <div id="rename-panel" class="hidden">
+        <div id="rename-rows"></div>
+        <button class="btn glass-btn sm" onclick="renameConfirm(this)">确认改名</button>
+      </div>
     </div>
     <button class="btn primary block" onclick="openAppend()">＋ 搜索并追加视频到本任务</button>
   </div>
