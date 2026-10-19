@@ -1233,7 +1233,9 @@ async function doStart() {
     const ready = await ensureApi();            // 布尔就绪，非桥对象（见 ensureApi 不变量）
     if (!ready) throw new Error("bridge not ready");
     r = await window.pywebview.api.start_download(previewData.channel, previewData.title,
-      keys, parallel, "", previewData.job_id || "");   // 同步直调（旧壳 app.js:5）
+      keys, parallel, "", previewData.job_id || "",
+      // 2.3：搜索关键词随任务落盘（编辑窗智能命名按搜索上下文生成拟名）
+      String((previewData.params && previewData.params.query) || ""));   // 同步直调（旧壳 app.js:5）
   } catch (e) {
     restoreBtn();
     return;                                    // app.js:866 异常静默

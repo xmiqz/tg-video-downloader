@@ -1378,7 +1378,7 @@ class Api:
 
     # ---------- 建任务并下载 ----------
     def start_download(self, channel, title, keys, parallel, folder="",
-                       job_id=""):
+                       job_id="", query=""):
         """T48：job_id 非空 → 从 _search_previews[job_id] 取记录（作业已
         cancelled 也允许用其已到达部分建任务）；job_id 空/缺失 → 走遗留
         全局 _preview（兼容窗口，至少保留一个版本）。其余逻辑逐行不变。"""
@@ -1413,7 +1413,10 @@ class Api:
         task_items = [core.make_task_item(r) for r in todo]
         tasks = core.build_task_dicts(
             channel, title,
-            {"parallel": max(1, min(int(parallel), 8))},
+            # 2.3：query 随任务落盘（params 子字典自由扩展）——编辑窗/续传
+            # 的智能重命名按搜索上下文生成拟名的依据
+            {"parallel": max(1, min(int(parallel), 8)),
+             "query": str(query or "")},
             str(folder_dest), task_items,
         )
         for t in tasks:
@@ -2193,6 +2196,22 @@ class Api:
                     print("[GUI] 条目详情补全失败：", e)
 
             threading.Thread(target=_bg_enrich, daemon=True).start()
+        # 2.3 智能重命名：缺 rename 的条目按搜索上下文补「拟用名」建议——
+        # 仅响应侧副本不落盘（用户点「应用命名」才经 edit_task 登记，避免
+        # 未确认就改盘）。query 取任务落盘的 params.query（新建时记录）；
+        # 旧任务无 query 时 smart_name_for 回退正文头部上下文命名。
+        q = str((t.get("params") or {}).get("query") or "")
+        items_out = []
+        for ti in t["items"]:
+            if str(ti.get("rename") or "").strip():
+                items_out.append(ti)
+                continue
+            it2 = dict(ti)
+            sug = core.smart_name_for(ti.get("text", "") or "", q,
+                                      ti.get("name", ""))
+            if sug:
+                it2["rename"] = sug
+            items_out.append(it2)
         return {
             "ok": True,
             "task": {
@@ -2203,7 +2222,7 @@ class Api:
                 "parallel": t.get("params", {}).get("parallel", 1),
                 "created": t.get("created", ""),
             },
-            "items": t["items"],
+            "items": items_out,
             "counts": core.task_counts(t),
         }
 
