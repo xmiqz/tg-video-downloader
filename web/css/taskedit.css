@@ -1738,7 +1738,7 @@ body.liquid .sheet { position: fixed; }
   .editor-app { overflow-y: auto; }
   .editor-head, .editor-toolbar { flex: none; }
   .editor-main { flex: none; overflow: visible; }
-  .ed-rename { padding: 10px 12px; margin-top: 8px; max-height: 38vh; }
+  .ed-rename { padding: 10px 12px; margin-top: 8px; max-height: 60vh; }
   .ed-rn-acts { gap: 6px; margin: 8px 0; }
   .ed-rn-note { display: none; }          /* 说明并入 title，节省整行 */
   .rn-row { flex-wrap: wrap; gap: 6px; }
