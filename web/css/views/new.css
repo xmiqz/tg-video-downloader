@@ -515,8 +515,8 @@
 @media (max-width: 767.98px) {
   .nw-rn-input { min-height: 44px; }
 }
-/* 深度扫描勾选框基础盒（T19h ③ 同口径 16px；FIX5K P1） */
-#nw-deepscan { width: 16px; height: 16px; cursor: pointer; }
+/* 深度扫描/更宽命名勾选框基础盒（T19h ③ 同口径 16px；FIX5K P1 / 2.3） */
+#nw-deepscan, #nw-namewide { width: 16px; height: 16px; cursor: pointer; }
 /* 是否重命名勾选（2.3：取消勾选=使用并展示原文件名） */
 .nw-rn-check { width: 16px; height: 16px; flex: none; cursor: pointer; }
 /* 高级详情钮（行内右侧小钮） */

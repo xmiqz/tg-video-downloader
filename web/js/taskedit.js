@@ -87,6 +87,9 @@ async function edLoad() {
 
   edRender();
   edRenameSync();
+  // 2.3：命名上下文档位默认跟随任务建档档位
+  const rnWide = document.getElementById("ed2-rn-wide");
+  if (rnWide) rnWide.checked = String((r.task && r.task.name_wide) || "") === "1";
 
   if (_edNeedEnrich()) _edRefetchStart();
 }
@@ -337,6 +340,19 @@ function edRenameTogglePanel() {
 function edRenameSync() {
   const p = document.getElementById("ed2-rn-panel");
   if (p && !p.classList.contains("hidden")) edRenameRender();
+}
+
+// 2.3「更宽上下文命名」开关：按新档位重取拟名建议（用户已编辑内容保留）
+async function edRenameWideToggle() {
+  const on = document.getElementById("ed2-rn-wide").checked;
+  try {
+    const r = await api().editor_data(TASK_ID, false, on);
+    if (r && r.ok) {
+      state.items = r.items || state.items;
+      edRender();
+    }
+  } catch (e) { /* 静默：保留现建议 */ }
+  edRenameRender();
 }
 
 function rnEff(k, ti) {

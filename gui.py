@@ -1086,7 +1086,7 @@ class Api:
         return {"ok": True, "job_id": job_id}
 
     @staticmethod
-    def _search_item_of(r, query=""):
+    def _search_item_of(r, query="", name_wide=False):
         """record → 前端 item 序列化：T47 6 键纯增 match_in/ref_text 2 键
         （.get 取值，缺省 "self"/None 与 record 一致），无其它形变；
         2.3 智能重命名再纯增 rename 1 键（关键词命中句拟名，可为空串；
@@ -1102,7 +1102,7 @@ class Api:
             "ref_text": r.get("ref_text"),
             "rename": core.smart_name_for(
                 r.get("text", "") or "", query, r["name"],
-                r.get("ref_text")),
+                r.get("ref_text"), wide=name_wide),
         }
 
     def _search_push(self, job_id, data):
@@ -1137,6 +1137,9 @@ class Api:
         _search_previews（cancelled 后已到达部分仍可建任务）。"""
         p = dict(params)
         p.pop("channel", None)
+        # 2.3「更宽上下文命名」开关（与 deep_scan 同款布尔词表解析）
+        name_wide = str(p.get("name_wide", "")).strip().lower() in (
+            "1", "true", "yes", "y", "on")
         job0 = self.jobs.snapshot(job_id) or {}
         t0 = float(job0.get("created_ts", time.time()))
         items_seq = []       # 已到达序列化 item（按到达序，键唯一）
@@ -1158,7 +1161,8 @@ class Api:
                     self._preview[key] = r
                     fresh.append(r)
             for r in fresh:
-                items_seq.append(self._search_item_of(r, p.get("query", "")))
+                items_seq.append(self._search_item_of(
+                    r, p.get("query", ""), name_wide))
             return len(fresh)
 
         def _maybe_push():
@@ -1235,7 +1239,8 @@ class Api:
                 final_store = {
                     (r.get("src", core.SRC_CHANNEL), r["msg"].id): r
                     for r in records}
-                final_items = [self._search_item_of(r, p.get("query", ""))
+                final_items = [self._search_item_of(r, p.get("query", ""),
+                                                    name_wide)
                                for r in records]
                 with self._preview_lock:
                     self._search_previews[job_id] = final_store
@@ -1378,7 +1383,7 @@ class Api:
 
     # ---------- 建任务并下载 ----------
     def start_download(self, channel, title, keys, parallel, folder="",
-                       job_id="", query=""):
+                       job_id="", query="", name_wide=""):
         """T48：job_id 非空 → 从 _search_previews[job_id] 取记录（作业已
         cancelled 也允许用其已到达部分建任务）；job_id 空/缺失 → 走遗留
         全局 _preview（兼容窗口，至少保留一个版本）。其余逻辑逐行不变。"""
@@ -1413,10 +1418,11 @@ class Api:
         task_items = [core.make_task_item(r) for r in todo]
         tasks = core.build_task_dicts(
             channel, title,
-            # 2.3：query 随任务落盘（params 子字典自由扩展）——编辑窗/续传
-            # 的智能重命名按搜索上下文生成拟名的依据
+            # 2.3：query/name_wide 随任务落盘（params 子字典自由扩展）——
+            # 编辑窗/续传的智能重命名按搜索上下文与档位生成拟名的依据
             {"parallel": max(1, min(int(parallel), 8)),
-             "query": str(query or "")},
+             "query": str(query or ""),
+             "name_wide": str(name_wide or "")},
             str(folder_dest), task_items,
         )
         for t in tasks:
@@ -2171,7 +2177,7 @@ class Api:
         if cancel_event.is_set():
             self.jobs.update(job_id, state="cancelled")
 
-    def editor_data(self, task_id, enrich=True):
+    def editor_data(self, task_id, enrich=True, name_wide=None):
         """任务与全部条目（含 TG 消息原文、时长、日期）。
         enrich=True 时后台补全缺失 text/duration；回捞时传 False 仅取本地。"""
         t = self._load_one(task_id)
@@ -2200,7 +2206,15 @@ class Api:
         # 仅响应侧副本不落盘（用户点「应用命名」才经 edit_task 登记，避免
         # 未确认就改盘）。query 取任务落盘的 params.query（新建时记录）；
         # 旧任务无 query 时 smart_name_for 回退正文头部上下文命名。
-        q = str((t.get("params") or {}).get("query") or "")
+        # name_wide=None 跟随任务建档档位（params.name_wide），显式布尔覆盖
+        # （编辑窗「更宽上下文命名」开关即时切换）。
+        tp = t.get("params") or {}
+        q = str(tp.get("query") or "")
+        if name_wide is None:
+            wide = str(tp.get("name_wide", "")).strip().lower() in (
+                "1", "true", "yes", "y", "on")
+        else:
+            wide = bool(name_wide)
         items_out = []
         for ti in t["items"]:
             if str(ti.get("rename") or "").strip():
@@ -2208,7 +2222,7 @@ class Api:
                 continue
             it2 = dict(ti)
             sug = core.smart_name_for(ti.get("text", "") or "", q,
-                                      ti.get("name", ""))
+                                      ti.get("name", ""), wide=wide)
             if sug:
                 it2["rename"] = sug
             items_out.append(it2)
@@ -2221,6 +2235,7 @@ class Api:
                 "folder": t.get("folder", ""),
                 "parallel": t.get("params", {}).get("parallel", 1),
                 "created": t.get("created", ""),
+                "name_wide": "1" if wide else "",
             },
             "items": items_out,
             "counts": core.task_counts(t),

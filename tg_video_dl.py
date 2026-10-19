@@ -3804,6 +3804,7 @@ def set_parallel(task, n):
 # ---------------- 智能重命名（2.3） ----------------
 NAME_MIN_LEN = 6       # 拟用新名主体最短字符数（不足视为无有效句）
 NAME_CTX_MIN = 30      # 命中句扩句目标：前后文上下文至少 30 字（2.3 加大）
+NAME_CTX_WIDE = 100    # 「更宽上下文命名」选项的扩句目标（2.3 追加开关）
 NAME_MAX_LEN = 200     # 拟用新名主体最长字符数（2.3 加大；留余量给 (N) 与扩展名）
 NAME_MAX_TOTAL = 240   # 落盘文件名总长上限（Windows 组件上限 255 内）
 _NAME_SPLIT = re.compile(r"[。！？!?；;，,、\n\r\t ]+")
@@ -3828,17 +3829,18 @@ def _name_segments(src_text):
     return [(s, e) for s, e in parts if e > s]
 
 
-def smart_name_for(text, query, orig_name="", ref_text=None):
+def smart_name_for(text, query, orig_name="", ref_text=None, wide=False):
     """关键词命中句 → 拟用新名（原扩展名保留）；无命中回退正文头部
     上下文；均无有效句返回 ""。
 
-    规则：取首个命中词所在句（空格/句读断句）；向前后文扩句至
-    NAME_CTX_MIN 上下文（2.3 加大）、过长以命中词为中心向句界收缩；
-    无关键词命中（含无关键词）回退正文头部句块命名；非法字符走
-    safe_name 清洗；主体长度限 [NAME_MIN_LEN, NAME_MAX_LEN]。重名 (N)
-    后缀在落盘改名时解析（预览/登记阶段不预占）。单一 Python 实现，
-    TUI/GUI/web 同源。
+    规则：取首个命中词所在句（空格/句读断句）；向前后文扩句至上下文
+    目标（宽窄两档：NAME_CTX_MIN / wide 时 NAME_CTX_WIDE）、过长以命中
+    词为中心向句界收缩；无关键词命中（含无关键词）回退正文头部句块
+    命名；非法字符走 safe_name 清洗；主体长度限 [NAME_MIN_LEN,
+    NAME_MAX_LEN]。重名 (N) 后缀在落盘改名时解析（预览/登记阶段不
+    预占）。单一 Python 实现，TUI/GUI/web 同源。
     """
+    ctx = NAME_CTX_WIDE if wide else NAME_CTX_MIN
     includes, _ = parse_keywords(query)
     _stem, ext = _split_name_stem(orig_name)
     for src_text in (text or "", ref_text or ""):
@@ -3864,9 +3866,9 @@ def smart_name_for(text, query, orig_name="", ref_text=None):
         else:
             lo = hi = min(range(len(segs)),
                           key=lambda i: abs(segs[i][0] - hs))
-        # 扩句：上下文不足 NAME_CTX_MIN 时左右交替逐句延伸（保前后文）
+        # 扩句：上下文不足当前档目标（ctx）时左右交替逐句延伸（保前后文）
         grow_right = True
-        while (segs[hi][1] - segs[lo][0]) < NAME_CTX_MIN:
+        while (segs[hi][1] - segs[lo][0]) < ctx:
             if grow_right and hi + 1 < len(segs):
                 hi += 1
             elif lo > 0:
@@ -3908,7 +3910,7 @@ def smart_name_for(text, query, orig_name="", ref_text=None):
         if not segs:
             continue
         lo = hi = 0
-        while hi + 1 < len(segs) and (segs[hi][1] - segs[lo][0]) < NAME_CTX_MIN:
+        while hi + 1 < len(segs) and (segs[hi][1] - segs[lo][0]) < ctx:
             hi += 1
         raw = src_text[segs[lo][0]:segs[hi][1]][:NAME_MAX_LEN].strip()
         raw = raw.strip(" ,，、:：;；-_—.。!！?？\"'“”‘’()（）[]【】")

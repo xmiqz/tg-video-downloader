@@ -389,6 +389,11 @@ function buildDom() {
     id: "nw-deepscan", type: "checkbox",
     "aria-label": "深度扫描（可突破 5000 条）",
   });
+  // 2.3「更宽上下文命名」开关：拟用名取更宽的前后文（100 字档）
+  const nameWide = el("input", {
+    id: "nw-namewide", type: "checkbox",
+    "aria-label": "更宽上下文命名",
+  });
 
   // 三个 segmented（选项/默认值严格对齐 index.html:229-244/269-273）
   const modeSeg = createSegmented([
@@ -454,6 +459,10 @@ function buildDom() {
       el("div", { class: "nw-field nw-field--small" }, [
         el("span", { class: "nw-label", text: "深度扫描（可突破 5000 条）" }),
         deepScan,
+      ]),
+      el("div", { class: "nw-field nw-field--small" }, [
+        el("span", { class: "nw-label", text: "更宽上下文命名" }),
+        nameWide,
       ]),
     ]),
   ]);
@@ -573,7 +582,7 @@ function buildDom() {
     root: root, step1: step1, step2: step2, wiz1: wiz1, wiz2: wiz2,
     channel: channel, keywords: keywords, limit: limit, parallel: parallel,
     minMb: minMb, maxMb: maxMb, dateFrom: dateFrom, dateTo: dateTo,
-    deepScan: deepScan,
+    deepScan: deepScan, nameWide: nameWide,
     advBtn: advBtn, advPanel: advPanel,
     searchBtn: searchBtn, errBox: errBox, noteBox: noteBox,
     modeSeg: modeSeg, scopeSeg: scopeSeg, sortSeg: sortSeg,
@@ -668,6 +677,8 @@ async function doPreview() {
   // 2.3 FIX5K P1：deep_scan 扩展键——S1 契约 params 恰 10 键冻结面不动
   // （run_seams S1-8），收集后按 T52 扩展键模式并入下发参数
   r0.params.deep_scan = refs.deepScan && refs.deepScan.checked ? 1 : 0;
+  // 2.3：name_wide 扩展键（更宽上下文命名档位）同款并入
+  r0.params.name_wide = refs.nameWide && refs.nameWide.checked ? 1 : 0;
   await cancelSearchJobQuietly();            // app.js:749 T48 旧作业先取消
   refs.noteBox.textContent =
     "正在扫描频道历史消息，频道消息较多时可能需要等待几十秒…"; // app.js:750-751
@@ -1234,8 +1245,9 @@ async function doStart() {
     if (!ready) throw new Error("bridge not ready");
     r = await window.pywebview.api.start_download(previewData.channel, previewData.title,
       keys, parallel, "", previewData.job_id || "",
-      // 2.3：搜索关键词随任务落盘（编辑窗智能命名按搜索上下文生成拟名）
-      String((previewData.params && previewData.params.query) || ""));   // 同步直调（旧壳 app.js:5）
+      // 2.3：搜索关键词/命名上下文档位随任务落盘（编辑窗智能命名按此生成拟名）
+      String((previewData.params && previewData.params.query) || ""),
+      String((previewData.params && previewData.params.name_wide) || ""));   // 同步直调（旧壳 app.js:5）
   } catch (e) {
     restoreBtn();
     return;                                    // app.js:866 异常静默
