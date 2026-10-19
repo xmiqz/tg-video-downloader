@@ -458,7 +458,8 @@ async function edRenameApply(btn) {
   }
   btn.disabled = false; btn.textContent = old; rnApplyBusy = false;
   if (!r || !r.ok) return alert("改名失败：" + ((r && r.error) || "操作未生效"));
-  alert(`已改名 ${r.renamed} 条，已登记 ${r.recorded} 条` +
+  alert(`已改名 ${r.renamed} 条（文件已重命名，请刷新文件夹查看）；` +
+    `已登记 ${r.recorded} 条（未下载条目，下载完成即按此命名）` +
     ((r.warnings && r.warnings.length) ? "\n" + r.warnings.join("\n") : ""));
   await _edRnReload();
 }
