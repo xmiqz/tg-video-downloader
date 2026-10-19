@@ -2236,6 +2236,7 @@ class Api:
                 "parallel": t.get("params", {}).get("parallel", 1),
                 "created": t.get("created", ""),
                 "name_wide": "1" if wide else "",
+                "retries": t.get("params", {}).get("retries", ""),
             },
             "items": items_out,
             "counts": core.task_counts(t),

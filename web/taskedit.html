@@ -45,6 +45,10 @@
           <label>并发 (1-8)</label>
           <input id="ed2-parallel" type="number" min="1" max="8">
         </div>
+        <div class="ed-field narrow">
+          <label>重试次数 (0-8)</label>
+          <input id="ed2-retries" type="number" min="0" max="8" placeholder="默认">
+        </div>
         <label class="check-line"><input id="ed2-move" type="checkbox">
           同时移动已下载文件</label>
         <button class="btn primary" onclick="edSave()">保存设置</button>

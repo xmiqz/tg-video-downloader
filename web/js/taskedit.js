@@ -84,6 +84,9 @@ async function edLoad() {
     "创建：" + (r.task.created || "");
   document.getElementById("ed2-folder").value = r.task.folder || "";
   document.getElementById("ed2-parallel").value = r.task.parallel || 1;
+  document.getElementById("ed2-retries").value =
+    (r.task && r.task.retries !== undefined && r.task.retries !== null
+      && r.task.retries !== "") ? r.task.retries : "";   // 空=默认
 
   edRender();
   edRenameSync();
@@ -612,6 +615,9 @@ function edSave() {
     folder: document.getElementById("ed2-folder").value,
     parallel: Number(document.getElementById("ed2-parallel").value),
     move_files: document.getElementById("ed2-move").checked,
+    // 2.3 T22：任务级重试次数（空=恢复默认；后端仅收 0..8 整数，转 Number）
+    retries: document.getElementById("ed2-retries").value === ""
+      ? "" : Number(document.getElementById("ed2-retries").value),
   };
   api().editor_save(TASK_ID, fields).then((r) => {
     if (r && r.need_login) {
