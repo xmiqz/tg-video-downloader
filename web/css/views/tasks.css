@@ -259,6 +259,12 @@
   .u-overlay.tk-sheet-ov .u-overlay-panel {
     width: min(470px, 92vw);       /* 2.1 style.css:616 */
     max-height: none;              /* 2.1 全高面板（:615 top:14 bottom:14） */
+    height: calc(100vh - 28px);    /* 2.3 修：显式定高（top/bottom 14px）——
+                                      模态基座 align-self:center 下面板高度被
+                                      内容驱动，条目一多撑过视口、标题与按钮排
+                                      双双被裁且无从滚动；定高后内区 flex 链
+                                      （头/底栏固定、列表内滚）才成立 */
+    align-self: stretch;           /* 同修：压过 data-form=modal 的 align-self:center */
     padding: 20px 20px 16px;       /* 2.1 style.css:619 */
     border-radius: 28px;           /* 2.1 var(--r-xl)（style.css:617） */
     transform: translateX(calc(100% + 30px));   /* 2.1 右滑入（style.css:620） */
