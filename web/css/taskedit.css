@@ -1669,7 +1669,24 @@ body.liquid .sheet { position: fixed; }
 }
 
 /* ---------- 2.3 智能重命名（高级）：命名前后预览 / 勾选控制 / 还原多选 ---------- */
-.ed-rename { margin: 12px 0 0; padding: 12px 16px; }
+/* 2.3 移动修：功能块整体定高（flex:none 不挤压 .editor-main 列表区）——
+   无约束时长文案+行列表把 flex:1 的条目表压到不可见，块自身溢出也不可滑；
+   定高后超出内容在块内滚动，条目列表始终可见可达 */
+.ed-rename {
+  flex: none;
+  margin: 12px 0 0;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  max-height: 46vh;
+  min-height: 0;
+}
+.ed-rn-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .ed-rn-acts {
   display: flex;
   align-items: center;
@@ -1683,7 +1700,8 @@ body.liquid .sheet { position: fixed; }
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 40vh;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
 }
 .rn-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -1711,9 +1729,14 @@ body.liquid .sheet { position: fixed; }
 .rn-input:focus { border-color: rgba(120, 140, 255, .7); }
 .rn-input:disabled { opacity: .55; }
 .rn-empty { font-size: 12px; color: var(--ink-mute); padding: 6px 0; }
-/* 窄屏：原名独占一行防溢出 + 输入命中区 44（FR-24） */
+/* 窄屏：两行紧凑排版（勾选+原名一行、新名输入一行）+ 输入命中区 44（FR-24） */
 @media (max-width: 767.98px) {
-  .rn-row { flex-wrap: wrap; }
-  .rn-before { flex: 1 1 100%; }
-  .rn-input { min-height: 44px; }
+  .ed-rename { padding: 10px 12px; margin-top: 8px; max-height: 42vh; }
+  .ed-rn-acts { gap: 6px; margin: 8px 0; }
+  .ed-rn-note { display: none; }          /* 说明并入 title，节省整行 */
+  .rn-row { flex-wrap: wrap; gap: 6px; }
+  .rn-check { order: 0; }
+  .rn-before { flex: 1 1 0; min-width: 0; }   /* 与勾选同行，不再独占 */
+  .rn-arrow { display: none; }
+  .rn-input { flex: 1 1 100%; min-height: 44px; }
 }
