@@ -1731,7 +1731,14 @@ body.liquid .sheet { position: fixed; }
 .rn-empty { font-size: 12px; color: var(--ink-mute); padding: 6px 0; }
 /* 窄屏：两行紧凑排版（勾选+原名一行、新名输入一行）+ 输入命中区 44（FR-24） */
 @media (max-width: 767.98px) {
-  .ed-rename { padding: 10px 12px; margin-top: 8px; max-height: 42vh; }
+  /* 2.3 移动修②：整页单滚模型——原「app 100vh + main 内滚」分栏链在窄高
+     窗口下把上半部（设置/工具/命名块）锁成无滚动面的固定区，条目列表被
+     压到零高不可达；改为 .editor-app 自身单滚，内容自然流高，上半部随手
+     滑走、条目列表随页可达（桌面分栏模型不变） */
+  .editor-app { overflow-y: auto; }
+  .editor-head, .editor-toolbar { flex: none; }
+  .editor-main { flex: none; overflow: visible; }
+  .ed-rename { padding: 10px 12px; margin-top: 8px; max-height: 38vh; }
   .ed-rn-acts { gap: 6px; margin: 8px 0; }
   .ed-rn-note { display: none; }          /* 说明并入 title，节省整行 */
   .rn-row { flex-wrap: wrap; gap: 6px; }
