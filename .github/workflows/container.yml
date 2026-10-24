@@ -1,0 +1,104 @@
+name: container
+
+on:
+  push:
+    tags:
+      - "v2.4*"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - "compose.yaml"
+      - "docker-entrypoint.py"
+      - "requirements-server.txt"
+      - "server_*.py"
+      - "gui.py"
+      - "tg_video_dl.py"
+      - "web/**"
+      - ".github/workflows/container.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build linux/amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: tg-video-downloader:test
+          cache-from: type=gha,scope=tgvd-amd64
+
+      - name: Container smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          data_dir="${RUNNER_TEMP}/tgvd-data"
+          mkdir -p "${data_dir}"
+          cid=$(docker run -d --name tgvd-test \
+            --read-only --tmpfs /tmp:rw,size=64m \
+            --cap-drop ALL --security-opt no-new-privileges \
+            -e PUID=10001 -e PGID=10001 \
+            -v "${data_dir}:/data" -p 18787:8787 \
+            tg-video-downloader:test)
+          trap 'docker rm -f tgvd-test >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18787/healthz >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18787/healthz
+          test "$(curl -sS -o /tmp/rpc.json -w '%{http_code}' \
+            -H 'content-type: application/json' \
+            -d '{"method":"login_state","params":[]}' \
+            http://127.0.0.1:18787/rpc)" = "401"
+          pid_uid=$(docker exec tgvd-test awk '/^Uid:/{print $2}' /proc/1/status)
+          test "${pid_uid}" = "10001"
+          docker exec --user 10001 tgvd-test python -c \
+            "from pathlib import Path; Path('/data/write-probe').write_text('ok')"
+          test -f "${data_dir}/.setup-token"
+
+  publish:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/tg-video-downloader
+          tags: |
+            type=ref,event=tag
+            type=sha,prefix=dev-
+            type=raw,value=dev,enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true

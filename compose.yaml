@@ -1,0 +1,36 @@
+services:
+  tg-video-downloader:
+    image: ${TGVD_IMAGE:-ghcr.io/xmiqz/tg-video-downloader:dev}
+    container_name: tg-video-downloader
+    restart: unless-stopped
+    ports:
+      - "${TGDL_PORT:-8787}:8787"
+    environment:
+      TGDL_HOST: 0.0.0.0
+      TGDL_PORT: "8787"
+      TGDL_DATA_DIR: /data
+      TGDL_ALLOWED_ROOTS: /data
+      TGDL_COOKIE_SECURE: "${TGDL_COOKIE_SECURE:-0}"
+      TGDL_TRUST_PROXY: "${TGDL_TRUST_PROXY:-0}"
+      PUID: "${PUID:-10001}"
+      PGID: "${PGID:-10001}"
+    volumes:
+      - ./data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=3).read()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s

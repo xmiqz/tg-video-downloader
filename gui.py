@@ -319,6 +319,10 @@ class Api:
         # 进程内 HTTP/WS 连接信息（main 启动时从 server_app 句柄注入）
         self.base_url = ""
         self.token = ""
+        # v2.4：同一 Api 同时服务桌面与无头浏览器。无头模式禁用服务器
+        # 上的本地打开/文件选择动作，并把目录写操作限制在允许根目录内。
+        self.runtime_mode = "desktop"
+        self.allowed_roots = ()
         # 事件推送句柄（main 注入；签名 push_event(name:str, params:list)）
         self.push_event = None
         # 实时取光相关（仅 Windows 液态玻璃模式使用）
@@ -364,6 +368,41 @@ class Api:
         # 在 client 内存中）。纯内存态：不写盘、不进 JSON、不加配置键。
         # 唯一信号——connect 早退分支与 login_state 的 has_session 共用。
         self._code_sent = False
+
+    def _resolve_runtime_folder(self, raw, *, create=False):
+        """校验无头模式目录；桌面模式保持原有任意目录语义。"""
+        value = str(raw or "").strip()
+        if not value:
+            value = str(core.DEFAULT_DOWNLOAD_ROOT)
+        path = pathlib.Path(value).expanduser()
+        if not path.is_absolute():
+            path = core.DATA_DIR / path
+        path = path.resolve()
+        if self.runtime_mode != "headless":
+            if create:
+                path.mkdir(parents=True, exist_ok=True)
+            return path, ""
+        roots = tuple(
+            pathlib.Path(root).expanduser().resolve()
+            for root in (self.allowed_roots or (core.DATA_DIR,))
+        )
+        inside = False
+        for root in roots:
+            try:
+                path.relative_to(root)
+                inside = True
+                break
+            except ValueError:
+                continue
+        if not inside:
+            roots_text = "、".join(str(root) for root in roots)
+            return None, f"目录必须位于允许范围内：{roots_text}"
+        if create:
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                return None, f"目录不可用：{type(exc).__name__}: {exc}"
+        return path, ""
 
     # ---------- 外观模式 ----------
     def get_appearance(self):
@@ -454,6 +493,26 @@ class Api:
             return f"{type(e).__name__}: {e}"
         self.client = client
         return None
+
+    def set_api_credentials(self, api_id, api_hash):
+        """Web 首跑向导写入 api_id/api_hash；不改 Telethon 登录流程。"""
+        if self.client is not None:
+            return {"ok": False, "error": "已连接 Telegram，请先退出登录"}
+        aid = str(api_id or "").strip()
+        ahash = str(api_hash or "").strip()
+        if not aid.isdigit() or not 1 <= int(aid) <= 9_999_999_999:
+            return {"ok": False, "error": "api_id 必须是正整数"}
+        if len(ahash) != 32 or any(c not in "0123456789abcdefABCDEF"
+                                   for c in ahash):
+            return {"ok": False, "error": "api_hash 必须是 32 位十六进制字符串"}
+        core.ensure_dirs_and_migrate()
+        cfg = core.load_config()
+        cfg["api_id"] = int(aid)
+        cfg["api_hash"] = ahash.lower()
+        cfg.pop("builtin_api", None)
+        core.save_config(cfg)
+        self.cfg = cfg
+        return {"ok": True}
 
     # ---------- 退出登录 ----------
     def logout(self):
@@ -1407,10 +1466,16 @@ class Api:
         if not todo:
             return {"ok": False, "error": "没有选择视频"}
         if not folder:
-            root = core.get_download_root(self.cfg)
+            raw_root = self.cfg.get("download_root") or str(
+                core.DEFAULT_DOWNLOAD_ROOT
+            )
         else:
-            root = pathlib.Path(folder)
-            root.mkdir(parents=True, exist_ok=True)
+            raw_root = folder
+        root, folder_error = self._resolve_runtime_folder(
+            raw_root, create=True
+        )
+        if folder_error:
+            return {"ok": False, "error": folder_error}
         safe = "".join(c for c in (title or channel) if c not in '\\/:*?"<>|').strip()
         folder_dest = root / (safe or "channel")
         folder_dest.mkdir(parents=True, exist_ok=True)
@@ -1669,6 +1734,12 @@ class Api:
         t = core.load_task(task_id)
         if t is None or t.get("id") != task_id:
             return {"ok": False, "error": "任务不存在"}
+        task_folder, folder_error = self._resolve_runtime_folder(
+            t.get("folder"), create=True
+        )
+        if folder_error:
+            return {"ok": False, "error": folder_error}
+        t["folder"] = str(task_folder)
         if task_id in core.ACTIVE_SESSIONS:
             return {"ok": False, "error": "该任务已在下载中，请勿重复开始"}
         # T50 反向防线：目录搬运中禁开下载（补 worker 已建作业、会话
@@ -1863,7 +1934,13 @@ class Api:
         folder = (fields.get("folder") or "").strip()
         if not folder:
             return {"ok": True, "warnings": []}
-        new_norm = os.path.abspath(os.path.expanduser(folder))
+        resolved_folder, folder_error = self._resolve_runtime_folder(
+            folder, create=False
+        )
+        if folder_error:
+            return {"ok": False, "error": folder_error}
+        folder = str(resolved_folder)
+        new_norm = str(resolved_folder)
         cur_norm = os.path.abspath(os.path.expanduser(
             str(t.get("folder") or "")))
         if new_norm == cur_norm:
@@ -2284,6 +2361,12 @@ class Api:
         return {"ok": True, "items": out}
 
     def open_item_file(self, task_id, src, mid):
+        if self.runtime_mode == "headless":
+            return {
+                "ok": False,
+                "error": "浏览器模式不能在服务器本机打开文件",
+                "unsupported_in_headless": True,
+            }
         r = self.item_file_info(task_id, src, mid)
         if r.get("exists"):
             return self._open_path(r["path"])
@@ -2328,6 +2411,12 @@ class Api:
         return {"ok": True}
 
     def open_folder(self, path):
+        if self.runtime_mode == "headless":
+            return {
+                "ok": False,
+                "error": "浏览器模式不能在服务器本机打开目录",
+                "unsupported_in_headless": True,
+            }
         if not path:
             path = str(core.get_download_root(self.cfg))
         try:
@@ -2342,6 +2431,12 @@ class Api:
             return {"ok": False, "error": str(e)}
 
     def choose_folder(self):
+        if self.runtime_mode == "headless":
+            return {
+                "ok": False,
+                "error": "浏览器模式请直接输入服务器路径",
+                "unsupported_in_headless": True,
+            }
         try:
             import tkinter as tk
             from tkinter import filedialog
@@ -2381,14 +2476,23 @@ class Api:
             return {"ok": False, "error": str(e)}
 
     def get_settings(self):
+        roots = [str(pathlib.Path(root).resolve())
+                 for root in (self.allowed_roots or ())]
         return {
             "download_root": str(
                 self.cfg.get("download_root") or core.DEFAULT_DOWNLOAD_ROOT
             ),
+            "mode": self.runtime_mode,
+            "allowed_roots": roots,
+            "can_open_local": self.runtime_mode != "headless",
+            "can_choose_folder": self.runtime_mode != "headless",
         }
 
     def set_download_root(self, path):
-        self.cfg["download_root"] = path
+        resolved, error = self._resolve_runtime_folder(path, create=True)
+        if error:
+            return {"ok": False, "error": error}
+        self.cfg["download_root"] = str(resolved)
         core.save_config(self.cfg)
         core.get_download_root(self.cfg)
         return {"ok": True}

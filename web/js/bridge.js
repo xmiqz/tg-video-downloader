@@ -2,7 +2,8 @@
 // TG 视频下载器 v2.0 —— 前端传输桥（HTTP/WS 唯一通道）
 //
 // 对接契约（server_app，钉死）：
-//   RPC  POST /rpc   Authorization: Bearer <token>
+//   RPC  POST /rpc   Authorization: Bearer <token>（桌面）
+//                    或同源 HttpOnly 会话 Cookie（v2.4 浏览器）
 //        体 {"method": str, "params": [...]}；200 体即方法原返回值；
 //        非 2xx 体 {"ok":false,"error": str}
 //   WS   /events    连上首消息 {"token": token}，服务端回 {"type":"auth_ok"}
@@ -13,7 +14,7 @@
 // 无外部依赖、无 polyfill、无 postMessage 分支。
 // ============================================================
 
-// ---------- ① token：仅取自 location.hash，不改动 hash ----------
+// ---------- ① 鉴权：桌面 Bearer 或浏览器会话 Cookie ----------
 function readToken() {
   // 形如 #t=<token>；兼容与其他片段以 & 共存的情况，其余片段保持原样
   const m = location.hash.match(/[#&]t=([^&]*)/);
@@ -26,12 +27,31 @@ function readToken() {
 }
 
 const token = readToken();
-if (!token) {
-  // 缺 token：不启动（不安装接缝、不派发事件、不连 WS）
-  console.error("[bridge] 缺少访问令牌（location.hash 中无 #t=），桥接未启动");
-} else {
+
+async function startBridge() {
+  if (token) {
+    boot();
+    return;
+  }
+  try {
+    const resp = await fetch("/auth/status", { cache: "no-store" });
+    const status = resp.ok ? await resp.json() : null;
+    if (status && status.setup_required) {
+      location.replace("/setup");
+      return;
+    }
+    if (!status || !status.authenticated) {
+      location.replace("/login");
+      return;
+    }
+  } catch (e) {
+    console.error("[bridge] 无法确认浏览器会话：", e);
+    return;
+  }
   boot();
 }
+
+startBridge();
 
 function boot() {
   const baseUrl = location.origin; // 页面与服务同源
@@ -40,12 +60,12 @@ function boot() {
   async function rpc(method, args) {
     let resp;
     try {
+      const headers = { "Content-Type": "application/json" };
+      if (token) headers.Authorization = "Bearer " + token;
       resp = await fetch(baseUrl + "/rpc", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer " + token,
-        },
+        headers: headers,
+        credentials: "same-origin",
         body: JSON.stringify({ method: String(method), params: Array.from(args) }),
       });
     } catch (e) {
@@ -61,6 +81,9 @@ function boot() {
     }
 
     if (resp.ok) return data; // 200：体即方法原返回值
+    if (resp.status === 401 && !token) {
+      location.replace("/login");
+    }
     const detail = data && data.error ? data.error : ("HTTP " + resp.status);
     throw new Error(detail);
   }

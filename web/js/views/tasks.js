@@ -843,6 +843,12 @@ async function openSheet(taskId) {
   if (!r || !r.ok) {
     return toast("error", "打开任务详情失败", (r && r.error) || "任务读取失败"); // app.js:1833
   }
+  try {
+    const settings = await window.pywebview.api.get_settings();
+    sheet.headless = !!(settings && settings.mode === "headless");
+  } catch (e) {
+    sheet.headless = false;
+  }
   sheet.taskId = taskId;
   sheet.task = r.task;
   sheet.counts = r.counts;
@@ -914,6 +920,7 @@ function resetSheetBody() {
       // T19f 补齐 2.1 底栏选项（index.html:474-481 逐序：编辑/目录/继续/
       // 恢复跳过/删除；「完成编辑」钮随 v2.2 路由编辑页形态取消）
       el("button", { class: "u-btn u-btn--ghost", type: "button", text: "目录",
+        hidden: !!sheet.headless, id: "tk-sheet-folder",
         onclick: function () { sheetOpenFolder(this); } }),   // app.js:2284 sheetOpenFolder
       el("button", { class: "u-btn u-btn--primary", type: "button", id: "tk-sheet-resume", text: "继续下载",
         onclick: function () { sheetResume(this); } }),   // app.js:2299 sheetResume
@@ -1131,7 +1138,7 @@ function buildDetailItem(ti) {
   const stCls = statusClass(ti.status);
   // 操作面（app.js:1991-2001 浏览态条件）
   const acts = el("div", { class: "tk-dacts" });
-  if (f.exists) {
+  if (f.exists && !sheet.headless) {
     acts.append(el("button", {
       class: "tk-mact", type: "button", title: "播放/打开文件", "aria-label": "播放/打开文件",
       text: "▶",

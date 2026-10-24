@@ -1,0 +1,10 @@
+.git
+.github
+__pycache__
+*.pyc
+build_tmp
+dist
+TG视频下载器数据
+*.exe
+*.spec
+work

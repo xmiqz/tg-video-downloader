@@ -6,7 +6,9 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue?style=flat-square)](https://www.python.org/)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-brightgreen?style=flat-square)](#快速开始)
 
-Telegram 频道视频批量下载工具。纯 Python 实现，基于 [Telethon](https://github.com/LonamiWebs/Telethon)，无需任何外部下载器或 ffmpeg。Windows 提供图形界面（pywebview + WebView2）与控制台 TUI 两种形态；Linux / macOS 提供命令行版本。
+Telegram 频道视频批量下载工具。纯 Python 实现，基于 [Telethon](https://github.com/LonamiWebs/Telethon)，无需任何外部下载器或 ffmpeg。Windows 提供原生 WebView2 图形界面与控制台 TUI；Linux 可从源码或 Docker 运行浏览器版；macOS 提供命令行版本。
+
+> v2.4 Beta 源码线为 `v2.4-dev`，发布从对应 tag 构建；`main` 不作为最新 Beta 的源码入口。
 
 <!-- 截图占位：Windows GUI 主界面 / 深色液态玻璃 -->
 <!-- 截图占位：TUI 控制台下载面板（简洁 / 详细模式） -->
@@ -15,6 +17,7 @@ Telegram 频道视频批量下载工具。纯 Python 实现，基于 [Telethon](
 
 - [特性](#特性)
 - [快速开始](#快速开始) — Releases 产物对照表
+- [Linux / Docker Web 版](#linux--docker-web-版v24) — 首跑向导、鉴权、双架构镜像
 - [首次使用](#首次使用) — 登录步骤、数据目录
 - [GUI 基本用法](#gui-基本用法) — Windows 图形界面
 - [TUI / 命令行用法](#tui--命令行用法) — 交互模式、命令行参数、快捷键表
@@ -53,8 +56,64 @@ Telegram 频道视频批量下载工具。纯 Python 实现，基于 [Telethon](
 | Linux ARM64 | `TGVideoDownloader_linux_arm64` | 命令行版 |
 | macOS Intel | `TGVideoDownloader_mac_x64` | 命令行版（另附 `.command` 双击启动） |
 | macOS Apple Silicon | `TGVideoDownloader_mac_arm64` | 命令行版（另附 `.command` 双击启动） |
+| Docker amd64 / arm64 | `ghcr.io/xmiqz/tg-video-downloader` | v2.4 浏览器版，GHCR 开发镜像 |
 
-**GUI 与 TUI 的区别**：Windows 图形界面版提供完整可视化操作（搜索预览、任务管理、实时进度面板、三种外观主题），适合不熟悉命令行的用户。控制台 TUI 版在终端中运行，提供 ANSI 彩色进度面板与键盘快捷键，适合远程操作或偏好命令行的用户。Linux / macOS 仅有命令行版。
+**GUI 与 TUI 的区别**：Windows 图形界面版提供完整可视化操作（搜索预览、任务管理、实时进度面板、三种外观主题），适合不熟悉命令行的用户。控制台 TUI 版在终端中运行，提供 ANSI 彩色进度面板与键盘快捷键，适合远程操作或偏好命令行的用户。Linux 另提供源码或 Docker 浏览器版；macOS 提供命令行版。
+
+## Linux / Docker Web 版（v2.4）
+
+Linux 不再只能使用命令行。`server_app` 提供与 Windows 界面相同的浏览器 UI，并支持：
+
+- 单用户管理员密码与会话 Cookie
+- 浏览器内完成 API 凭证、手机号、验证码与 Telegram 2FA
+- `/data` 持久卷、非 root 进程、只读根文件系统
+- `linux/amd64` 与 `linux/arm64` 多架构镜像
+- 不依赖外部 CDN、ffmpeg 或桌面显示环境
+
+### Docker Compose
+
+仓库自带 [compose.yaml](./compose.yaml)。先构建本地镜像：
+
+```bash
+docker build -t ghcr.io/xmiqz/tg-video-downloader:dev .
+docker compose up -d
+```
+
+读取一次性初始化令牌：
+
+```bash
+docker compose exec tg-video-downloader cat /data/.setup-token
+```
+
+打开 `http://NAS地址:8787`，输入初始化令牌并设置管理员密码。该密码只保护 Web 管理界面，不是 Telegram 两步验证密码。初始化成功后 `.setup-token` 会自动删除。
+
+升级镜像时保留 `./data` 即可；配置、Telegram session、任务清单、管理员密码哈希和下载文件都在该目录。
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `TGDL_DATA_DIR` | 程序平级数据目录 | 数据卷路径；容器固定使用 `/data` |
+| `TGDL_HOST` | `127.0.0.1` | 监听地址；远程访问需显式设为 `0.0.0.0` |
+| `TGDL_PORT` | `8787` | 服务端口 |
+| `TGDL_ALLOWED_ROOTS` | 数据目录 | 允许下载/移动到的路径，多个路径用系统路径分隔符连接 |
+| `TGDL_COOKIE_SECURE` | `0` | 置于 HTTPS 反向代理后时设为 `1` |
+| `TGDL_TRUST_PROXY` | `0` | 仅在可信反向代理后设 `1`，才会读取 `X-Forwarded-For` |
+| `TGDL_SESSION_HOURS` | `168` | 管理员会话有效期 |
+| `PUID` / `PGID` | `10001` | 容器服务实际运行用户 |
+
+配置优先级为：命令行参数 > `TGDL_*` 环境变量 > 数据目录 `server.json` > 默认值。
+
+### 从源码运行
+
+```bash
+python -m pip install -r requirements-server.txt
+python -m server_app --host 0.0.0.0 --port 8787 --data-dir ./data
+```
+
+如果只在本机访问，省略 `--host`，服务默认只监听 `127.0.0.1`。
+
+> 普通 HTTP 只适合可信局域网。不要直接把 8787 端口暴露到公网；跨网络访问时请使用 HTTPS 反向代理，并设置 `TGDL_COOKIE_SECURE=1`。
 
 ### Linux / macOS 首次运行
 
@@ -75,11 +134,12 @@ macOS 双击附带的 `.command` 文件可直接在终端启动。
 
 ### 数据目录
 
-程序启动时会在自身平级目录生成 `TG视频下载器数据/`：
+桌面与命令行程序启动时会在自身平级目录生成 `TG视频下载器数据/`；Web/Docker 版使用 `/data` 或 `TGDL_DATA_DIR`：
 
 ```
 TG视频下载器数据/
 ├── tg_config.json      # 配置（账号、凭证、下载目录、外观偏好）
+├── auth.json           # v2.4 管理员密码哈希（无明文密码）
 ├── tg_session.session  # 登录会话（免重复登录）
 ├── tasks/              # 任务清单（断点续传）
 └── downloads/          # 下载的视频（默认目录，可修改）
@@ -148,7 +208,7 @@ python tg_video_dl.py
 **Windows 图形界面**（需额外依赖）：
 
 ```bash
-pip install telethon pywebview pythonnet Pillow
+pip install -r requirements-server.txt Pillow
 python gui.py
 ```
 
@@ -185,6 +245,8 @@ PyInstaller 不支持交叉编译，每个平台的包需在该平台构建。
 - 推送 `v*` 标签 → 自动构建全部产物并发布 Release
 - 在 Actions 页面手动触发 → 生成开发预发布版
 
+`.github/workflows/container.yml` 会构建并冒烟测试 Linux amd64 镜像；推送 `v2.4*` 标签时通过 buildx 构建 linux/amd64 与 linux/arm64 并推送到 GHCR。
+
 ## 常见问题
 
 **ARM64 是什么？哪些设备用？**
@@ -210,6 +272,8 @@ ARM64（也称 aarch64）是一种 CPU 架构。Windows on ARM 设备（如 Surf
 - **数据全在本地**：登录会话、配置、任务记录和下载的视频都保存在程序平级的 `TG视频下载器数据/` 目录，不上传任何服务器。
 - **只连 Telegram**：网络通信全部经 Telethon（MTProto）与 Telegram 官方服务器交互，用于登录与下载；程序不含统计、广告或第三方数据上报代码，源码可自行审计。
 - **保管好会话文件**：数据目录里的 `.session` 文件等同于登录凭证，不要分享给他人；换电脑时整体拷贝该目录即可免登录迁移。
+- **远程访问有独立密码**：v2.4 绑定非 loopback 地址时，RPC 与 WebSocket 都必须通过管理员会话或桌面一次性 Bearer。首次密码设置需要 `/data/.setup-token`，防止局域网内其他人抢先占用实例。
+- **推荐 HTTPS**：管理员密码通过明文 HTTP 传输时可能被同网段窃听。仅在本机或完全可信局域网使用 HTTP；其他环境使用 HTTPS 反向代理。
 
 ## 合规与免责声明
 

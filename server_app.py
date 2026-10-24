@@ -1,16 +1,17 @@
 # -*- coding: utf-8 -*-
-"""TG 视频下载器 v2.0 —— 进程内 HTTP/WS 协议层。
+"""TG 视频下载器 v2.4 HTTP/WS service.
 
-本模块是页面与内核之间的唯一协议入口：系统 WebView2 壳与未来无头/容器形态
-复用同一个 app。设计约束：
+The same application factory serves the Windows WebView2 shell and headless
+Linux/Docker deployments. Authentication has two distinct layers:
 
-- RPC 方法名 / JSON 字段与 v1.2.6 完全一致（前端零改动）。方法原样返回其
-  Python 返回值（dict 或 list），本层只做透明 JSON 编解码。
-- 内核（gui.Api / gui.EngineLoop / tg_video_dl）行为与并发语义不变：
-  所有 RPC 调用经 asyncio.to_thread 落到工作线程，绝不阻塞 ASGI 事件循环。
+* the desktop shell keeps its per-process bearer token;
+* remote browser installations use a single administrator password and an
+  HttpOnly session cookie.
 
-对外入口：server_app.start(data_dir=None) -> ServerHandle
+Telegram phone/code/2FA login remains in gui.Api.
 """
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import logging
@@ -24,21 +25,17 @@ from contextlib import asynccontextmanager
 import fastapi
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 import gui
+import server_auth
 import tg_video_dl as core
+from server_config import RuntimeConfig
+
 
 log = logging.getLogger("server_app")
 
-# RPC 方法白名单（45 个，逐字钉死；与 v1.2.6 window.pywebview.api 暴露面一致。
-# 其中 job_state/jobs_state/job_cancel 为 T45 新增（作业模型基座），
-# set_guest 为 T46 新增（游客/离线受限模式），
-# preview_cancel 为 T48 新增（流式搜索作业取消），
-# t45_demo_job 为 T45 测试挂点，仅在 TG_T45_TEST_HOOK=1 时加入有效白名单，
-# account_list/account_add_start/account_verify_code/account_verify_password/
-# account_remove 为 T51 新增（多账号池 5 个））
 RPC_METHODS = frozenset({
     "abort_task", "account_add_start", "account_list",
     "account_remove", "account_verify_code", "account_verify_password",
@@ -50,30 +47,27 @@ RPC_METHODS = frozenset({
     "login_state", "logout", "me", "open_editor", "open_folder",
     "open_item_file", "preview", "preview_cancel", "remove_items",
     "resume_task", "scan_append", "send_code", "set_appearance",
-    "set_download_root", "set_guest", "set_item", "start_download",
+    "set_api_credentials", "set_download_root", "set_guest", "set_item",
+    "start_download",
     "verify_code", "verify_password",
 })
 
-# T45 测试挂点方法（默认不在有效白名单内；生产路径不得设置门控变量）
 _T45_TEST_METHODS = frozenset({"t45_demo_job"})
 
-AUTH_TIMEOUT_SECS = 10.0       # WS 首条认证消息等待上限
+AUTH_TIMEOUT_SECS = 10.0
 STARTUP_TIMEOUT_SECS = 15.0
 SERVER_THREAD_JOIN_SECS = 15.0
 ENGINE_STOP_SECS = 5.0
+MAX_RPC_BODY_BYTES = 1024 * 1024
+EVENT_QUEUE_SIZE = 512
 
 
 class _ClientGone(Exception):
-    """WS 对端断开或服务端要求连接退出的内部信号。"""
+    pass
 
 
 class _EventHub:
-    """向全部已认证 WS 连接扇出事件；push() 可从任意线程调用。
-
-    每个连接在 ASGI 循环内持有一个 asyncio.Queue；跨线程推送经
-    loop.call_soon_threadsafe 入队，由连接自己的 writer 任务发出，
-    避免跨线程操作 WebSocket。
-    """
+    """Thread-safe event fan-out with a bounded queue per browser."""
 
     def __init__(self, loop):
         self._loop = loop
@@ -94,22 +88,24 @@ class _EventHub:
         if not queues:
             return
         message = {"event": name, "params": params}
-        self._loop.call_soon_threadsafe(self._fanout, queues, message)
+        with contextlib.suppress(RuntimeError):
+            self._loop.call_soon_threadsafe(self._fanout, queues, message)
 
     def close_all(self):
-        """让全部连接的 writer 立即退出（shutdown 时用，避免优雅关停等待）。"""
         with self._lock:
             queues = list(self._queues)
             self._queues.clear()
-        self._loop.call_soon_threadsafe(self._put_sentinels, queues)
+        with contextlib.suppress(RuntimeError):
+            self._loop.call_soon_threadsafe(self._put_sentinels, queues)
 
     @staticmethod
     def _fanout(queues, message):
         for queue in queues:
-            try:
+            if queue.full():
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    queue.get_nowait()
+            with contextlib.suppress(asyncio.QueueFull):
                 queue.put_nowait(message)
-            except Exception:  # noqa: BLE001 - 扇出失败不影响其它连接
-                pass
 
     @staticmethod
     def _put_sentinels(queues):
@@ -119,16 +115,17 @@ class _EventHub:
 
 
 class ServerHandle:
-    """服务句柄：只暴露协议所需只读属性与 shutdown。"""
-
-    def __init__(self, base_url, token, api, hub, server, thread, engine):
+    def __init__(self, base_url, token, api, auth, config, server, thread,
+                 engine, hub):
         self._base_url = base_url
         self._token = token
         self._api = api
-        self._hub = hub
+        self._auth = auth
+        self._config = config
         self._server = server
         self._thread = thread
         self._engine = engine
+        self._hub = hub
         self._closed = threading.Event()
 
     @property
@@ -143,35 +140,29 @@ class ServerHandle:
     def api(self):
         return self._api
 
+    @property
+    def config(self):
+        return self._config
+
     def push_event(self, name, params):
-        """线程安全地向全部已认证连接扇出 {"event": name, "params": params}。"""
-        if self._closed.is_set():
-            return
-        self._hub.push(name, params)
+        if not self._closed.is_set() and self._hub is not None:
+            self._hub.push(name, params)
 
     def shutdown(self):
-        """停止接收、断开全部连接、join 服务线程并关闭内核事件循环。幂等。"""
-        if not self._closed.wait(0):
-            self._closed.set()
-        else:
+        if self._closed.is_set():
             return
-
-        # 1) 先主动断开全部 WS 连接，否则 uvicorn 优雅关停会等待长连接
-        with contextlib.suppress(RuntimeError):
+        self._closed.set()
+        if self._hub is not None:
             self._hub.close_all()
-        # 2) 请求 uvicorn 退出（信号处理器在非主线程不会安装，这里直接置位，
-        #    uvicorn main_loop 每 0.1 秒读取该标志）
         self._server.should_exit = True
         self._thread.join(SERVER_THREAD_JOIN_SECS)
         if self._thread.is_alive():
             log.error("server thread did not exit within %ss",
                       SERVER_THREAD_JOIN_SECS)
-        # 3) 停止并关闭内核 EngineLoop 事件循环
         _stop_engine_loop(self._engine)
 
 
 def _stop_engine_loop(engine):
-    """停止 gui.EngineLoop 的 run_forever 并关闭其循环。"""
     loop = engine.loop
     if loop is None:
         return
@@ -186,117 +177,274 @@ def _stop_engine_loop(engine):
             loop.close()
 
 
-def start(data_dir=None):
-    """启动进程内 HTTP/WS 服务。
+def _json_error(message, status_code, retry_after=0):
+    headers = {"Cache-Control": "no-store"}
+    if retry_after:
+        headers["Retry-After"] = str(int(retry_after))
+    return JSONResponse(
+        {"ok": False, "error": message},
+        status_code=status_code,
+        headers=headers,
+    )
 
-    data_dir：v2.0 仅支持 None，即沿用 tg_video_dl 现有数据目录约定
-    （程序平级目录「TG视频下载器数据」）。传非 None 一律 ValueError。
-    """
-    if data_dir is not None:
-        raise ValueError(
-            "server_app v2.0 仅支持 data_dir=None（沿用 tg_video_dl 现有数据"
-            "目录约定：程序平级「TG视频下载器数据」）；显式数据目录尚未支持"
-        )
 
-    # 启动顺序与 gui.main 一致：先起 EngineLoop，再建 Api 并提前加载配置
-    engine = gui.EngineLoop()
-    engine.start()
-    api = gui.Api(engine)
-    api.cfg = core.load_config()
+def _request_bearer(request):
+    value = request.headers.get("authorization", "")
+    prefix = "Bearer "
+    if value.startswith(prefix):
+        return value[len(prefix):]
+    return ""
 
-    token = secrets.token_urlsafe(24)
 
-    # T45 测试挂点门控：仅当进程启动时 TG_T45_TEST_HOOK 精确等于 "1"
-    # 才把 t45_demo_job 加入有效白名单；默认（未设置/其他值）关闭。
-    # 有效集合只在启动时计算一次，与 /rpc 网关共用。
+def _is_rpc_authorized(request, config, token, auth):
+    bearer = _request_bearer(request)
+    if bearer and token and secrets.compare_digest(bearer, token):
+        return True
+    if auth is not None:
+        session = request.cookies.get(server_auth.COOKIE_NAME, "")
+        if auth.session_valid(session):
+            return server_auth.same_origin(request)
+    if config.loopback and not config.desktop_mode:
+        return True
+    return False
+
+
+def _set_session_cookie(response, auth, session_token):
+    response.set_cookie(
+        value=session_token,
+        **auth.cookie_kwargs(),
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def create_app(config, *, engine, api, token="", auth=None):
+    """Build the ASGI app without taking ownership of the process lifecycle."""
+    config = config.normalized()
+    core.configure_data_dir(config.data_dir)
+    api.runtime_mode = "desktop" if config.desktop_mode else "headless"
+    api.allowed_roots = tuple(config.allowed_roots)
+
     if os.environ.get("TG_T45_TEST_HOOK") == "1":
         effective_methods = RPC_METHODS | _T45_TEST_METHODS
     else:
         effective_methods = RPC_METHODS
 
-    # 预绑定 127.0.0.1:0 的监听套接字，实际端口由系统分配
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.bind(("127.0.0.1", 0))
-    port = listener.getsockname()[1]
-
     shared = {"hub": None}
 
     @asynccontextmanager
-    async def lifespan(_app):
-        # 服务在本线程内运行，事件循环即 ASGI 循环
-        shared["hub"] = _EventHub(asyncio.get_running_loop())
-        yield
+    async def lifespan(app):
+        hub = _EventHub(asyncio.get_running_loop())
+        shared["hub"] = hub
+        app.state.hub = hub
+        api.push_event = hub.push
+        try:
+            yield
+        finally:
+            hub.close_all()
+            api.push_event = None
+            shared["hub"] = None
+            app.state.hub = None
 
-    app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None,
-                  openapi_url=None)
+    app = FastAPI(
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
+    web_dir = gui.resource_dir()
+
+    @app.middleware("http")
+    async def security_headers(request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data:; "
+            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "connect-src 'self' ws: wss:; object-src 'none'; "
+            "base-uri 'none'; frame-ancestors 'none'",
+        )
+        if request.url.path in ("/rpc", "/auth/status", "/auth/setup",
+                                "/auth/login", "/auth/logout"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.get("/healthz")
+    async def healthz():
+        return JSONResponse(
+            {"ok": True, "service": "tg-video-downloader"},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/auth/status")
+    async def auth_status(request: Request):
+        authenticated = False
+        if auth is not None:
+            authenticated = auth.session_valid(
+                request.cookies.get(server_auth.COOKIE_NAME, "")
+            )
+        elif config.loopback and not config.desktop_mode:
+            authenticated = True
+        bearer = _request_bearer(request)
+        if bearer and token and secrets.compare_digest(bearer, token):
+            authenticated = True
+        return JSONResponse(
+            {
+                "ok": True,
+                "setup_required": bool(auth is not None and not auth.configured),
+                "configured": bool(auth is None or auth.configured),
+                "authenticated": authenticated,
+                "auth_required": bool(config.auth_required),
+                "desktop": bool(config.desktop_mode),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/auth/setup")
+    async def auth_setup(request: Request):
+        if auth is None:
+            return _json_error("当前运行模式不需要管理员密码", 409)
+        if not server_auth.same_origin(request):
+            return _json_error("请求来源无效", 403)
+        body = await _read_json_object(request)
+        if isinstance(body, JSONResponse):
+            return body
+        result = auth.setup(
+            body.get("bootstrap_token", ""),
+            body.get("password", ""),
+        )
+        if not result.ok:
+            return _json_error(result.error, 400, result.retry_after)
+        return _set_session_cookie(
+            JSONResponse({"ok": True}), auth, result.session_token
+        )
+
+    @app.post("/auth/login")
+    async def auth_login(request: Request):
+        if auth is None:
+            return _json_error("当前运行模式不需要管理员密码", 409)
+        if not server_auth.same_origin(request):
+            return _json_error("请求来源无效", 403)
+        body = await _read_json_object(request)
+        if isinstance(body, JSONResponse):
+            return body
+        result = auth.login(
+            body.get("password", ""),
+            server_auth.client_key(request, config.trust_proxy),
+        )
+        if not result.ok:
+            status = 429 if result.retry_after else 401
+            return _json_error(result.error, status, result.retry_after)
+        return _set_session_cookie(
+            JSONResponse({"ok": True}), auth, result.session_token
+        )
+
+    @app.post("/auth/logout")
+    async def auth_logout(request: Request):
+        if not server_auth.same_origin(request):
+            return _json_error("请求来源无效", 403)
+        if auth is not None:
+            auth.logout(request.cookies.get(server_auth.COOKIE_NAME, ""))
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(server_auth.COOKIE_NAME, path="/")
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.get("/")
+    async def root(request: Request):
+        if auth is not None:
+            if not auth.configured:
+                return RedirectResponse("/setup", status_code=303)
+            if not auth.session_valid(
+                    request.cookies.get(server_auth.COOKIE_NAME, "")):
+                return RedirectResponse("/login", status_code=303)
+        return FileResponse(os.path.join(web_dir, "index.html"))
+
+    @app.get("/setup")
+    async def setup_page():
+        if auth is None:
+            return RedirectResponse("/", status_code=303)
+        if auth.configured:
+            return RedirectResponse("/login", status_code=303)
+        return FileResponse(os.path.join(web_dir, "setup.html"))
+
+    @app.get("/login")
+    async def login_page(request: Request):
+        if auth is None:
+            return RedirectResponse("/", status_code=303)
+        if not auth.configured:
+            return RedirectResponse("/setup", status_code=303)
+        if auth.session_valid(request.cookies.get(server_auth.COOKIE_NAME, "")):
+            return RedirectResponse("/", status_code=303)
+        return FileResponse(os.path.join(web_dir, "setup.html"))
 
     @app.post("/rpc")
     async def rpc(request: Request):
-        # ---- 鉴权 ----
-        authorization = request.headers.get("authorization", "")
-        if not secrets.compare_digest(authorization, "Bearer " + token):
-            return JSONResponse(
-                {"ok": False, "error": "未授权或令牌无效"}, status_code=401)
-
-        # ---- 请求体解析 ----
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001
-            return JSONResponse(
-                {"ok": False, "error": "请求体不是合法 JSON"}, status_code=400)
-        if not isinstance(body, dict):
-            return JSONResponse(
-                {"ok": False, "error": "请求体必须是 JSON 对象"},
-                status_code=400)
+        if not _is_rpc_authorized(request, config, token, auth):
+            return _json_error("未授权或会话已过期", 401)
+        body = await _read_json_object(request)
+        if isinstance(body, JSONResponse):
+            return body
 
         method = body.get("method")
         params = body.get("params", [])
         if not isinstance(method, str) or not method:
-            return JSONResponse(
-                {"ok": False, "error": "method 缺失或不是字符串"},
-                status_code=400)
+            return _json_error("method 缺失或不是字符串", 400)
         if not isinstance(params, list):
-            return JSONResponse(
-                {"ok": False, "error": "params 必须是数组"}, status_code=400)
+            return _json_error("params 必须是数组", 400)
         if method.startswith("_") or method not in effective_methods:
-            return JSONResponse(
-                {"ok": False, "error": f"未知方法：{method}"}, status_code=400)
+            return _json_error(f"未知方法：{method}", 400)
 
-        # ---- 透明调用：在线程池执行，绝不阻塞事件循环 ----
         handler = getattr(api, method)
         try:
             result = await asyncio.to_thread(handler, *params)
-            # JSONResponse 构造时即完成序列化；序列化失败同样走 500
             return JSONResponse(result)
-        except Exception as exc:  # noqa: BLE001
-            # 只回异常类型与消息，禁止泄漏堆栈
-            return JSONResponse(
-                {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
-                status_code=500)
+        except Exception as exc:
+            # Do not log exception text: Telegram/config exceptions can contain
+            # user-entered identifiers. The authenticated caller still gets it.
+            log.error("RPC failed: %s (%s)", method, type(exc).__name__)
+            return _json_error(f"{type(exc).__name__}: {exc}", 500)
 
     @app.websocket("/events")
     async def events(ws: WebSocket):
+        if not server_auth.websocket_same_origin(ws):
+            await ws.close(code=1008)
+            return
         await ws.accept()
 
-        # 首条消息必须是 {"token": token}；无消息（超时）/错 token 均 4401
-        try:
-            first = await asyncio.wait_for(
-                ws.receive_json(), timeout=AUTH_TIMEOUT_SECS)
-        except Exception:  # noqa: BLE001
-            with contextlib.suppress(Exception):
-                await ws.close(code=4401)
-            return
-        if (not isinstance(first, dict)
-                or not secrets.compare_digest(str(first.get("token", "")),
-                                              token)):
+        authenticated = (
+            (config.loopback and not config.desktop_mode)
+            or (auth is not None and auth.session_valid(
+                ws.cookies.get(server_auth.COOKIE_NAME, "")))
+        )
+        if not authenticated:
+            try:
+                first = await asyncio.wait_for(
+                    ws.receive_json(), timeout=AUTH_TIMEOUT_SECS
+                )
+            except Exception:
+                with contextlib.suppress(Exception):
+                    await ws.close(code=4401)
+                return
+            supplied = str(first.get("token", "")) if isinstance(first, dict) else ""
+            authenticated = bool(
+                token and supplied and secrets.compare_digest(supplied, token)
+            )
+        if not authenticated:
             with contextlib.suppress(Exception):
                 await ws.close(code=4401)
             return
 
         await ws.send_json({"type": "auth_ok"})
-
-        queue = asyncio.Queue()
+        queue = asyncio.Queue(maxsize=EVENT_QUEUE_SIZE)
         hub = shared["hub"]
+        if hub is None:
+            await ws.close(code=1011)
+            return
         hub.bind(queue)
 
         async def read_loop():
@@ -316,7 +464,7 @@ def start(data_dir=None):
         writer = asyncio.create_task(write_loop())
         try:
             await asyncio.gather(reader, writer)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         finally:
             hub.unbind(queue)
@@ -325,49 +473,186 @@ def start(data_dir=None):
             with contextlib.suppress(Exception):
                 await ws.close()
 
-    # /rpc、/events 必须先于静态挂载注册
-    web_dir = gui.resource_dir()
     app.mount("/", StaticFiles(directory=web_dir, html=True), name="web")
+    app.state.runtime_config = config
+    app.state.auth = auth
+    app.state.api = api
+    app.state.engine = engine
+    app.state.rpc_methods = effective_methods
+    return app
 
-    config = uvicorn.Config(
+
+async def _read_json_object(request):
+    try:
+        raw = await request.body()
+    except Exception:
+        return _json_error("请求体读取失败", 400)
+    if len(raw) > MAX_RPC_BODY_BYTES:
+        return _json_error("请求体过大", 413)
+    try:
+        import json
+        body = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return _json_error("请求体不是合法 JSON", 400)
+    if not isinstance(body, dict):
+        return _json_error("请求体必须是 JSON 对象", 400)
+    return body
+
+
+def _prepare_runtime(config):
+    config = config.normalized()
+    core.configure_data_dir(config.data_dir)
+    core.ensure_dirs_and_migrate()
+    engine = gui.EngineLoop()
+    engine.start()
+    try:
+        api = gui.Api(engine)
+        api.cfg = core.load_config()
+        auth = None
+        if config.auth_required:
+            auth = server_auth.AuthManager(
+                config.data_dir,
+                session_hours=config.session_hours,
+                cookie_secure=config.cookie_secure,
+                bootstrap_token_file=config.bootstrap_token_file,
+            )
+        return config, engine, api, auth
+    except Exception:
+        _stop_engine_loop(engine)
+        raise
+
+
+def _make_listener(host, port):
+    infos = socket.getaddrinfo(
+        host, port, socket.AF_UNSPEC, socket.SOCK_STREAM,
+        socket.IPPROTO_TCP, socket.AI_PASSIVE,
+    )
+    if not infos:
+        raise OSError(f"无法解析监听地址：{host}")
+    family, socktype, proto, _, sockaddr = infos[0]
+    listener = socket.socket(family, socktype, proto)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(sockaddr)
+    return listener
+
+
+def start_in_thread(config):
+    """Start the service in a background thread for the Windows shell."""
+    config = config.normalized()
+    token = secrets.token_urlsafe(24)
+    config, engine, api, auth = _prepare_runtime(config)
+    try:
+        app = create_app(config, engine=engine, api=api, token=token, auth=auth)
+        listener = _make_listener(config.host, config.port)
+    except Exception:
+        _stop_engine_loop(engine)
+        raise
+    actual_port = listener.getsockname()[1]
+    base_url = config.base_url.rsplit(":", 1)[0] + f":{actual_port}"
+
+    uv_config = uvicorn.Config(
         app,
-        host="127.0.0.1",
-        port=port,
+        host=config.host,
+        port=actual_port,
         log_level="warning",
         access_log=False,
         timeout_graceful_shutdown=5,
     )
-    server = uvicorn.Server(config)
-    # 双保险：本就运行在非主线程（uvicorn 因此不安装信号处理器），
-    # 再显式禁用，确保后台线程绝不触碰进程信号。
+    server = uvicorn.Server(uv_config)
     server.install_signal_handlers = lambda: None
 
     def _serve():
         try:
             server.run(sockets=[listener])
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.exception("server thread failed")
 
     thread = threading.Thread(target=_serve, name="server_app-uvicorn")
     thread.start()
-
-    # 等待启动完成事件；server.started 在 startup() 末尾置 True
     deadline = time.monotonic() + STARTUP_TIMEOUT_SECS
     while not server.started:
         if not thread.is_alive():
+            with contextlib.suppress(Exception):
+                listener.close()
             _stop_engine_loop(engine)
             raise RuntimeError("服务线程在启动完成前退出")
         if time.monotonic() > deadline:
             server.should_exit = True
             thread.join(5)
+            with contextlib.suppress(Exception):
+                listener.close()
             _stop_engine_loop(engine)
             raise RuntimeError("服务启动超时")
         time.sleep(0.02)
 
-    base_url = f"http://127.0.0.1:{port}"
-    # 允许打印端口/版本，严禁打印 token
     print(f"[server_app] listening on {base_url} "
           f"(fastapi {fastapi.__version__}, uvicorn {uvicorn.__version__})")
+    return ServerHandle(
+        base_url, token, api, auth, config, server, thread, engine,
+        getattr(app.state, "hub", None),
+    )
 
-    return ServerHandle(base_url, token, api, shared["hub"], server, thread,
-                        engine)
+
+def start(data_dir=None):
+    """Compatibility entry used by the Windows desktop shell."""
+    path = data_dir if data_dir is not None else core.APP_DIR / core.DATA_DIR_NAME
+    config = RuntimeConfig(
+        data_dir=path,
+        host="127.0.0.1",
+        port=0,
+        desktop_mode=True,
+    ).normalized()
+    return start_in_thread(config)
+
+
+def run_blocking(config):
+    """Run the headless service in the main thread with normal signal handling."""
+    config = config.normalized()
+    if os.name != "nt":
+        os.umask(0o077)
+    config, engine, api, auth = _prepare_runtime(config)
+    try:
+        app = create_app(config, engine=engine, api=api, token="", auth=auth)
+        print(
+            f"[server_app] data={config.data_dir} "
+            f"listen={config.host}:{config.port} "
+            f"auth={'required' if config.auth_required else 'loopback'}"
+        )
+        if auth is not None and not auth.configured:
+            print(
+                "[server_app] 首次启动：请从 "
+                f"{config.bootstrap_token_file} 读取一次性初始化令牌"
+            )
+        if config.auth_required and not config.cookie_secure:
+            print(
+                "[server_app] 警告：远程访问当前使用 HTTP。跨不可信网络访问时"
+                "请置于 HTTPS 反向代理之后并设置 TGDL_COOKIE_SECURE=1"
+            )
+
+        uv_config = uvicorn.Config(
+            app,
+            host=config.host,
+            port=config.port,
+            log_level="info",
+            access_log=True,
+            timeout_graceful_shutdown=10,
+        )
+        server = uvicorn.Server(uv_config)
+        server.run()
+    finally:
+        _stop_engine_loop(engine)
+
+
+def main(argv=None):
+    from server_config import load_runtime_config
+    try:
+        config = load_runtime_config(argv)
+        run_blocking(config)
+    except (ValueError, OSError, RuntimeError) as exc:
+        print(f"[server_app] 启动失败：{exc}")
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

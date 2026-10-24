@@ -60,6 +60,24 @@ SESSION_PATH = str(DATA_DIR / "tg_session")
 DEFAULT_DOWNLOAD_ROOT = DATA_DIR / "downloads"
 TASK_ROOT = DATA_DIR / "tasks"          # 任务清单（断点续传）
 
+
+def configure_data_dir(path):
+    """覆盖进程级数据目录。
+
+    必须在 EngineLoop / Telethon client 启动前调用。桌面端不调用时保持
+    「程序平级 TG视频下载器数据」的便携语义；无头服务与容器传入卷路径。
+    """
+    global DATA_DIR, CONFIG_PATH, SESSION_PATH
+    global DEFAULT_DOWNLOAD_ROOT, TASK_ROOT
+
+    DATA_DIR = pathlib.Path(path).expanduser().resolve()
+    CONFIG_PATH = DATA_DIR / "tg_config.json"
+    SESSION_PATH = str(DATA_DIR / "tg_session")
+    DEFAULT_DOWNLOAD_ROOT = DATA_DIR / "downloads"
+    TASK_ROOT = DATA_DIR / "tasks"
+    return DATA_DIR
+
+
 PART = 8 * 1024 * 1024     # 分片大小
 CONCURRENT = 4             # 并行连接数
 RETRIES = 3                # 单视频重试次数
@@ -198,6 +216,8 @@ def save_config(cfg):
     tmp.write_text(
         json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    if os.name != "nt":
+        os.chmod(tmp, 0o600)
     os.replace(tmp, CONFIG_PATH)
 
 

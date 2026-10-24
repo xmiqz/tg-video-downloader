@@ -180,6 +180,7 @@ const state = {
   q: "",
   loading: false,
   error: "",
+  headless: false,
 };
 
 let refs = null;
@@ -424,6 +425,15 @@ async function load() {
   }
   state.task = r.task || null;
   state.items = r.items || [];
+  try {
+    const settings = await window.pywebview.api.get_settings();
+    if (settings && settings.mode === "headless") {
+      state.headless = true;
+      refs.folderInput.readOnly = false;
+      refs.btnBrowse.hidden = true;
+      refs.folderInput.placeholder = "输入服务器路径（受允许目录限制）";
+    }
+  } catch (e) { /* 能力探测失败时保留桌面原有控件 */ }
   fillTask();
   render();
   if (needEnrich(state.items)) startRefetch();   // editor.js:90
@@ -504,6 +514,7 @@ function render() {
         el("button", {
           class: "u-btn u-btn--ghost ev-sm", type: "button", text: "文件",
           title: "打开本地文件",
+          hidden: !!state.headless,
           onclick: function () { openFile(k); },
         }),
         el("button", {

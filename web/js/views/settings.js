@@ -510,6 +510,11 @@ function buildDom() {
     class: "u-btn u-btn--primary", type: "button", text: "保存",
     onclick: function () { saveRoot(rootInput, btnSave); },
   });
+  const pathHint = el("p", {
+    class: "st-hint",
+    // index.html:408 逐字
+    text: "账号会话、任务清单与下载内容都保存在程序平级的「TG视频下载器数据」目录，不会上传。",
+  });
   root.append(makeCard("下载根目录", [
     el("div", { class: "st-path-row" }, [
       el("label", { class: "st-sr-only", for: "st-root", text: "下载根目录" }),
@@ -518,12 +523,23 @@ function buildDom() {
       btnOpen,
     ]),
     btnSave,
+    pathHint,
+  ]));
+
+  const btnWebLogout = el("button", {
+    class: "u-btn u-btn--ghost", type: "button", text: "退出 Web 服务登录",
+    hidden: true,
+    onclick: logoutWeb,
+  });
+  const webCard = makeCard("Web 服务", [
+    btnWebLogout,
     el("p", {
       class: "st-hint",
-      // index.html:408 逐字
-      text: "账号会话、任务清单与下载内容都保存在程序平级的「TG视频下载器数据」目录，不会上传。",
+      text: "只结束浏览器管理员会话；Telegram 登录与下载任务保持不变。",
     }),
-  ]));
+  ]);
+  webCard.hidden = true;
+  root.append(webCard);
 
   refs = {
     root: root,
@@ -535,6 +551,11 @@ function buildDom() {
     add: addCard,
     credHint: credHint,
     rootInput: rootInput,
+    btnChoose: btnChoose,
+    btnOpen: btnOpen,
+    pathHint: pathHint,
+    btnWebLogout: btnWebLogout,
+    webCard: webCard,
   };
   return root;
 }
@@ -588,6 +609,17 @@ async function loadAll() {
     if (r && r.download_root != null && refs.rootInput) {
       refs.rootInput.value = String(r.download_root);
     }
+    if (r && r.mode === "headless") {
+      refs.rootInput.readOnly = false;
+      refs.btnChoose.hidden = true;
+      refs.btnOpen.hidden = true;
+      refs.btnWebLogout.hidden = false;
+      refs.webCard.hidden = false;
+      const roots = Array.isArray(r.allowed_roots) ? r.allowed_roots : [];
+      refs.pathHint.textContent = roots.length
+        ? "浏览器模式请直接输入服务器路径；允许范围：" + roots.join("、")
+        : "浏览器模式请直接输入服务器路径。";
+    }
   } catch (e) { /* 失败保留输入现值 */ }
   // 外观引导（app.js:2585-2593 bootAppearance）
   try {
@@ -597,6 +629,19 @@ async function loadAll() {
       applyAppearance(r.mode);
     }
   } catch (e) { /* 引导容错空 catch（app.js:2592 原状） */ }
+}
+
+async function logoutWeb() {
+  try {
+    await fetch("/auth/logout", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+  } finally {
+    location.replace("/login");
+  }
 }
 
 // ============================================================

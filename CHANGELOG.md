@@ -4,6 +4,33 @@
 
 ---
 
+## [2.4.0-beta.1] — 2026-10-24
+
+> 🏷️ **无头服务与容器 Beta**：同一套 HTTP/WebSocket 应用新增 Linux 前台入口、单用户管理员鉴权、浏览器首跑向导、只读根文件系统 Docker 与 amd64/arm64 GHCR 流水线。Windows 桌面一次性 Bearer 路径保持兼容。
+
+### ✨ 新功能
+
+- `python -m server_app` 无头入口，支持命令行、环境变量与 `server.json` 配置。
+- `/healthz`、SIGTERM 优雅退出、数据目录/监听地址/允许目录显式配置。
+- 远程 Web 单用户密码、PBKDF2 哈希、HttpOnly + SameSite=Strict 会话 Cookie、失败限速。
+- 浏览器首跑向导：管理员密码 → API 凭证（可留空用内置）→ 手机号 → 验证码 → 2FA。
+- 多阶段 Dockerfile、Compose 模板、非 root 入口、只读根文件系统、amd64/arm64 buildx 与 GHCR 发布。
+
+### 🔒 安全与边界
+
+- RPC 与 WebSocket 统一鉴权；非 loopback 未登录请求返回 401。
+- 首次密码设置使用 `/data/.setup-token` 一次性令牌，避免首访者抢占实例。
+- 浏览器模式禁止服务器侧打开文件/目录，目录写操作限制在 `TGDL_ALLOWED_ROOTS`。
+- 密码、验证码、Bearer、session token 与 `api_hash` 不写入应用日志。
+
+### 📋 兼容性
+
+- 数据目录、Telegram session 与任务 JSON 格式不变；v2.4 新增 `auth.json`、`server.json` 与 `.setup-token`。
+- RPC 方法增加 `set_api_credentials` 供首跑向导使用，其余既有方法名称与参数不变。
+- Windows 桌面壳仍使用随机端口与 URL hash 一次性 Bearer。
+
+---
+
 ## [2.3.0-beta.1] — 2026-10-20
 
 > 🏷️ **智能重命名与稳定性 Beta**：按搜索上下文的智能命名全链（新建拟命名可编辑 / 下载完成即命名 / 编辑任务命名工作台 / 多选还原原始名 / 宽窄两档上下文），下载内核稳定批次（错误分类重试 / 任务级重试次数 / 断网感知 / 启动对账 / 慢任务让路 / 账号健康巡检 / 保存防抖与备份轮转），搜索体验批次（深度扫描突破 5000 条上限 / 结果即时显示 / 高级详情）。数据目录与 v1.2.6 / v2.0 / v2.1 / v2.2 完全兼容，内部本地协议方法集固定 45 个不变。

@@ -1,8 +1,11 @@
 # 登录会话与配置（含账号信息，绝不入库）
 TG视频下载器数据/
+data/
 tg_config.json
 tg_session.session
 tg_session.session-journal
+auth.json
+.setup-token
 
 # 下载内容与任务
 downloads/
@@ -32,3 +35,5 @@ tg_video_dl_noapi.py
 # Python
 __pycache__/
 *.pyc
+.venv*/
+.pytest_cache/
