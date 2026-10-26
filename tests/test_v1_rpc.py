@@ -369,13 +369,23 @@ def test_tr10_content_length_is_checked_before_reading_body(
         with socket.create_connection(("127.0.0.1", port), timeout=2) as conn:
             conn.sendall(request)
             conn.settimeout(2)
+            # A single recv() is racy: TCP may split the response, so read
+            # until the peer closes (Connection: close) and only give up if
+            # nothing arrives at all - which is what a hang looks like.
+            chunks = []
             try:
-                data = conn.recv(65536)
+                while True:
+                    part = conn.recv(65536)
+                    if not part:
+                        break
+                    chunks.append(part)
             except socket.timeout:
-                pytest.fail(
-                    "server waited for an oversized body instead of rejecting "
-                    "on Content-Length"
-                )
+                if not chunks:
+                    pytest.fail(
+                        "server waited for an oversized body instead of rejecting "
+                        "on Content-Length"
+                    )
+            data = b"".join(chunks)
 
     head, _, rest = data.partition(b"\r\n\r\n")
     status = int(head.split(b" ", 2)[1])
