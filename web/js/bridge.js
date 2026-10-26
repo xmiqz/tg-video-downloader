@@ -126,7 +126,12 @@ function boot() {
 
   function dispatchEvent(msg) {
     if (!msg || typeof msg.event !== "string") return;
-    const handler = EVENT_WHITELIST[msg.event];
+    // hasOwnProperty guard: a plain object lookup would otherwise resolve
+    // Object.prototype members, so an event named "toString" would be called
+    // as if it were a whitelisted handler.
+    const handler = Object.prototype.hasOwnProperty.call(EVENT_WHITELIST, msg.event)
+      ? EVENT_WHITELIST[msg.event]
+      : null;
     if (handler) {
       try {
         handler(Array.isArray(msg.params) ? msg.params : []);

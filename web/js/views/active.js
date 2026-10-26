@@ -71,7 +71,9 @@ export function activeBadgeClass(status) {
     "完成": "done", "已存在": "done", "失败": "fail",
     "已暂停": "paused", "等待中": "wait", "下载中": "run",
   };
-  return M[status] || "wait";
+  // hasOwnProperty guard: "toString"/"constructor" must fall back to wait
+  // instead of returning an Object.prototype member.
+  return Object.prototype.hasOwnProperty.call(M, status) ? M[status] : "wait";
 }
 
 // S2 跨任务聚合总览（app.js:1124-1153）
@@ -158,7 +160,11 @@ export function bulkGroupKeys(selKeys) {
   for (let i = 0; i < list.length; i++) {
     const r = parseCardKey(list[i]);
     if (!r) continue;
-    (out[r.tid] || (out[r.tid] = [])).push({ src: r.src, mid: r.mid });
+    // Own-property guard: a plain "out[tid] ||" read would pick up
+    // Object.prototype members for tid="constructor"/"__proto__" and then
+    // call .push on a function/object.
+    if (!Object.prototype.hasOwnProperty.call(out, r.tid)) out[r.tid] = [];
+    out[r.tid].push({ src: r.src, mid: r.mid });
   }
   return out;
 }
@@ -169,8 +175,12 @@ export function pendReleaseRule(pendKey, byCk) {
   const ix = String(pendKey).lastIndexOf(":");
   if (ix < 0) return false;
   const action = String(pendKey).slice(ix + 1);
-  const it = typeof byCk.get === "function" ? byCk.get(String(pendKey).slice(0, ix))
-    : byCk[String(pendKey).slice(0, ix)];
+  const ck = String(pendKey).slice(0, ix);
+  // Own-property guard: plain-object lookups would otherwise hit
+  // Object.prototype ("constructor", "__proto__"), diverging from the Map path.
+  const it = typeof byCk.get === "function"
+    ? byCk.get(ck)
+    : (byCk != null && Object.prototype.hasOwnProperty.call(byCk, ck) ? byCk[ck] : undefined);
   switch (action) {
     case "pause": return it == null || it.status === "已暂停";
     case "skip": return it == null || it.status === "已跳过";
