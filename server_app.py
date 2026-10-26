@@ -522,6 +522,23 @@ def _prepare_runtime(config):
     try:
         api = gui.Api(engine)
         api.cfg = core.load_config()
+        # Restore an existing Telegram session at boot. Without this, a
+        # container restart leaves api.client = None even though the session
+        # file is present, so every RPC answers need_login and the UI spins
+        # forever on the first search. Failure here must not block startup:
+        # the operator can still reach the wizard and log in again.
+        try:
+            restored = api.connect()
+        except Exception as exc:  # noqa: BLE001 - boot must not abort
+            log.warning("启动时恢复 Telegram 会话失败：%s", exc)
+        else:
+            stage = restored.get("stage") if isinstance(restored, dict) else None
+            if stage == "ready":
+                log.info("已从本地会话恢复 Telegram 登录")
+            elif stage == "need_phone":
+                log.info("本地会话未授权，等待浏览器完成登录")
+            else:
+                log.warning("启动时恢复 Telegram 会话未就绪：%s", restored)
         auth = None
         if config.auth_required:
             auth = server_auth.AuthManager(
