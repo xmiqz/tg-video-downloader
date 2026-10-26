@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - v2.4-dev
+      - v2.4.1-integration
   pull_request:
     branches:
       - "v2.*"
@@ -28,11 +29,20 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install
         run: python -m pip install -r requirements-dev.txt
 
       - name: Compile
-        run: python -m py_compile server_app.py server_auth.py server_config.py gui.py tg_video_dl.py
+        run: python -m py_compile server_app.py server_auth.py server_config.py gui.py tg_video_dl.py docker-entrypoint.py
 
-      - name: Test
+      - name: Test (backend)
         run: python -m pytest -q
+
+      # The UI layer had no automated coverage before v2.4 hardening. Keep this
+      # step so the 39-case node:test suite actually gates merges.
+      - name: Test (frontend)
+        run: node --test "tests/js/*.test.mjs"
