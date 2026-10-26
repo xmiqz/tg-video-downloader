@@ -483,6 +483,20 @@ def create_app(config, *, engine, api, token="", auth=None):
 
 
 async def _read_json_object(request):
+    # Check the declared size before touching the body: awaiting request.body()
+    # on an oversized Content-Length would buffer/block until the client stops
+    # sending, which is a cheap DoS. Reject up front, then keep the post-read
+    # length check for clients that lie about Content-Length.
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            declared_len = int(declared)
+        except (TypeError, ValueError):
+            return _json_error("Content-Length 非法", 400)
+        if declared_len < 0:
+            return _json_error("Content-Length 非法", 400)
+        if declared_len > MAX_RPC_BODY_BYTES:
+            return _json_error("请求体过大", 413)
     try:
         raw = await request.body()
     except Exception:
