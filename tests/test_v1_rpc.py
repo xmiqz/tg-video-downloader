@@ -351,14 +351,6 @@ def test_tr10_exact_limit_body_is_accepted(tmp_path, monkeypatch):
     assert response.status_code == 200
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known v2.4 gap: _read_json_object awaits request.body() before "
-        "checking MAX_RPC_BODY_BYTES, so an oversized declared Content-Length "
-        "is still read into memory. Expected 413 without touching the body."
-    ),
-)
 def test_tr10_content_length_is_checked_before_reading_body(
     tmp_path, monkeypatch
 ):
@@ -385,7 +377,12 @@ def test_tr10_content_length_is_checked_before_reading_body(
                     "on Content-Length"
                 )
 
-    status = int(data.split(b" ", 2)[1])
-    body = data.partition(b"\r\n\r\n")[2]
+    head, _, rest = data.partition(b"\r\n\r\n")
+    status = int(head.split(b" ", 2)[1])
     assert status == 413
+    # The raw socket sees the HTTP framing, not a bare JSON body: strip the
+    # chunk-size line and any trailing chunk terminator before parsing.
+    body = rest
+    if b"\r\n" in body:
+        body = body.split(b"\r\n", 1)[1].rsplit(b"\r\n0\r\n", 1)[0]
     assert json.loads(body) == {"ok": False, "error": "请求体过大"}
