@@ -5,6 +5,10 @@ import pytest
 from server_auth import AuthManager
 
 
+NON_ASCII_TOKEN = "初始化令牌-é中文"
+NON_ASCII_PASSWORD = "管理员密码-é中文"
+
+
 def test_setup_and_session_lifecycle(tmp_path):
     manager = AuthManager(tmp_path, iterations=1000)
     assert not manager.configured
@@ -48,3 +52,30 @@ def test_corrupt_auth_file_fails_closed(tmp_path):
     (tmp_path / "auth.json").write_text("{broken", encoding="utf-8")
     with pytest.raises(RuntimeError):
         AuthManager(tmp_path)
+
+
+def test_setup_rejects_non_ascii_bootstrap_token(tmp_path):
+    manager = AuthManager(tmp_path, iterations=1000)
+    assert manager.bootstrap_token().isascii()
+
+    result = manager.setup(NON_ASCII_TOKEN, "a-strong-password")
+
+    assert not result.ok
+    assert result.error == "初始化令牌无效"
+    assert not manager.configured
+
+
+def test_setup_and_login_accept_non_ascii_password(tmp_path):
+    manager = AuthManager(tmp_path, iterations=1000)
+    token = manager.bootstrap_token()
+
+    setup = manager.setup(token, NON_ASCII_PASSWORD)
+    assert setup.ok
+    assert manager.configured
+
+    accepted = manager.login(NON_ASCII_PASSWORD, "127.0.0.1|/auth/login")
+    assert accepted.ok
+
+    rejected = manager.login("错的密码-é中文", "127.0.0.1|/auth/login")
+    assert not rejected.ok
+    assert rejected.error == "密码错误"

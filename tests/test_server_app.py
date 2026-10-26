@@ -1,9 +1,134 @@
 from fastapi.testclient import TestClient
+import pytest
+from starlette.websockets import WebSocketDisconnect
 
 import server_app
 import tg_video_dl as core
 from server_auth import AuthManager
 from server_config import RuntimeConfig
+
+
+# Non-ASCII credentials used to crash secrets.compare_digest with a TypeError,
+# which surfaced as HTTP 500 / a crashed WebSocket handler instead of a clean
+# 401 / 4401 rejection.
+NON_ASCII_TOKEN = "初始化令牌-é中文"
+NON_ASCII_PASSWORD = "管理员密码-é中文"
+NON_ASCII_BEARER_HEADER = [
+    ("authorization", ("Bearer " + NON_ASCII_TOKEN).encode("utf-8"))
+]
+
+
+def _desktop_app(tmp_path, token):
+    config = RuntimeConfig(
+        data_dir=tmp_path,
+        host="127.0.0.1",
+        port=0,
+        desktop_mode=True,
+    ).normalized()
+    return server_app.create_app(
+        config, engine=object(), api=FakeApi(), token=token, auth=None
+    )
+
+
+def _remote_app(tmp_path):
+    config = RuntimeConfig(
+        data_dir=tmp_path,
+        host="0.0.0.0",
+        port=8787,
+        allowed_roots=(tmp_path,),
+    ).normalized()
+    auth = AuthManager(tmp_path, iterations=1000)
+    return server_app.create_app(
+        config, engine=object(), api=FakeApi(), token="", auth=auth
+    ), auth
+
+
+def test_rpc_rejects_non_ascii_bearer_without_500(tmp_path):
+    app = _desktop_app(tmp_path, token="desk-token-ascii")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/rpc",
+            json={"method": "login_state", "params": []},
+            headers=NON_ASCII_BEARER_HEADER,
+        )
+
+    assert response.status_code == 401
+    assert response.json()["error"] == "未授权或会话已过期"
+
+
+def test_auth_status_rejects_non_ascii_bearer_without_500(tmp_path):
+    app = _desktop_app(tmp_path, token="desk-token-ascii")
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/auth/status", headers=NON_ASCII_BEARER_HEADER
+        )
+
+    assert response.status_code == 200
+    assert response.json()["authenticated"] is False
+
+
+def test_setup_rejects_non_ascii_bootstrap_token(tmp_path):
+    app, auth = _remote_app(tmp_path)
+
+    with TestClient(app) as client:
+        response = client.post("/auth/setup", json={
+            "bootstrap_token": NON_ASCII_TOKEN,
+            "password": "a-strong-password",
+        })
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "初始化令牌无效"
+    assert not auth.configured
+
+
+def test_websocket_first_frame_non_ascii_token_closes_4401(tmp_path):
+    app = _desktop_app(tmp_path, token="desk-token-ascii")
+
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            with client.websocket_connect(
+                    "/events", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({"token": NON_ASCII_TOKEN})
+                ws.receive_json()
+
+    assert excinfo.value.code == 4401
+
+
+def test_websocket_first_frame_ascii_token_still_authenticates(tmp_path):
+    # Guards the rejection above: a valid ASCII token must still reach
+    # auth_ok, so 4401 cannot pass vacuously.
+    app = _desktop_app(tmp_path, token="desk-token-ascii")
+
+    with TestClient(app) as client:
+        with client.websocket_connect(
+                "/events", headers={"origin": "http://testserver"}) as ws:
+            ws.send_json({"token": "desk-token-ascii"})
+            assert ws.receive_json() == {"type": "auth_ok"}
+
+
+def test_login_accepts_non_ascii_password(tmp_path):
+    app, auth = _remote_app(tmp_path)
+
+    with TestClient(app) as client:
+        setup = client.post("/auth/setup", json={
+            "bootstrap_token": auth.bootstrap_token(),
+            "password": NON_ASCII_PASSWORD,
+        })
+        assert setup.status_code == 200
+
+        good = client.post(
+            "/auth/login", json={"password": NON_ASCII_PASSWORD}
+        )
+        assert good.status_code == 200
+
+        assert client.post("/auth/logout", json={}).status_code == 200
+        bad = client.post(
+            "/auth/login", json={"password": "错的密码-é中文"}
+        )
+        assert bad.status_code == 401
+        assert bad.json()["error"] == "密码错误"
 
 
 class FakeApi:

@@ -198,7 +198,7 @@ def _request_bearer(request):
 
 def _is_rpc_authorized(request, config, token, auth):
     bearer = _request_bearer(request)
-    if bearer and token and secrets.compare_digest(bearer, token):
+    if bearer and token and server_auth.tokens_equal(bearer, token):
         return True
     if auth is not None:
         session = request.cookies.get(server_auth.COOKIE_NAME, "")
@@ -290,7 +290,7 @@ def create_app(config, *, engine, api, token="", auth=None):
         elif config.loopback and not config.desktop_mode:
             authenticated = True
         bearer = _request_bearer(request)
-        if bearer and token and secrets.compare_digest(bearer, token):
+        if bearer and token and server_auth.tokens_equal(bearer, token):
             authenticated = True
         return JSONResponse(
             {
@@ -432,7 +432,7 @@ def create_app(config, *, engine, api, token="", auth=None):
                 return
             supplied = str(first.get("token", "")) if isinstance(first, dict) else ""
             authenticated = bool(
-                token and supplied and secrets.compare_digest(supplied, token)
+                token and supplied and server_auth.tokens_equal(supplied, token)
             )
         if not authenticated:
             with contextlib.suppress(Exception):

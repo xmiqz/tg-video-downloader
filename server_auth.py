@@ -149,7 +149,7 @@ class AuthManager:
                 return LoginResult(False, "管理员密码已经设置")
             expected = self.bootstrap_token()
             supplied = str(bootstrap_token or "")
-            if not expected or not hmac.compare_digest(expected, supplied):
+            if not tokens_equal(supplied, expected):
                 return LoginResult(False, "初始化令牌无效")
             error = self._password_error(password)
             if error:
@@ -210,7 +210,7 @@ class AuthManager:
             )
         except Exception:
             return False
-        return hmac.compare_digest(actual, expected)
+        return tokens_equal(actual, expected)
 
     def _record_failure(self, client_key):
         now = self._clock()
@@ -284,6 +284,27 @@ def same_origin(request):
     return bool(parsed.scheme in ("http", "https")
                 and parsed.netloc
                 and parsed.netloc.lower() == host.lower())
+
+
+def tokens_equal(actual, expected):
+    """Constant-time secret comparison that tolerates any text.
+
+    ``secrets.compare_digest`` / ``hmac.compare_digest`` raise ``TypeError``
+    when either argument is a non-ASCII ``str`` (a client can always put
+    non-ASCII bytes in a bearer header or a JSON field), which would turn a
+    plain authentication failure into a 500 or a crashed WebSocket handler.
+    Encoding both sides to UTF-8 first keeps the comparison constant-time and
+    makes an empty/None side simply fail to match.
+    """
+    if not actual or not expected:
+        return False
+    if not isinstance(actual, (str, bytes)):
+        return False
+    if not isinstance(expected, (str, bytes)):
+        return False
+    left = actual.encode("utf-8") if isinstance(actual, str) else actual
+    right = expected.encode("utf-8") if isinstance(expected, str) else expected
+    return hmac.compare_digest(left, right)
 
 
 def websocket_same_origin(ws):
