@@ -13,6 +13,8 @@ tasks/
 
 # 本地匹配/诊断输出（可能含频道文字）
 *.txt
+!requirements-dev.txt
+!requirements-server.txt
 
 # 本地启动器（含本机绝对路径）
 *.bat
