@@ -18,6 +18,7 @@ import logging
 import os
 import secrets
 import socket
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -674,8 +675,25 @@ def run_blocking(config):
         _stop_engine_loop(engine)
 
 
+def _configure_logging():
+    """Route warnings/errors to stdout so container logs show them.
+
+    Without this, log.warning() calls in gui.jobs and server_app are dropped
+    by the root handler-less logger, which hid a boot-time connect failure
+    behind an apparently silent service.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(name)s] %(levelname)s %(message)s",
+        stream=sys.stdout,
+    )
+    for name in ("server_app", "gui.jobs"):
+        logging.getLogger(name).setLevel(logging.INFO)
+
+
 def main(argv=None):
     from server_config import load_runtime_config
+    _configure_logging()
     try:
         config = load_runtime_config(argv)
         run_blocking(config)
