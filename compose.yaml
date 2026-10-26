@@ -3,6 +3,9 @@ services:
     image: ${TGVD_IMAGE:-ghcr.io/xmiqz/tg-video-downloader:dev}
     container_name: tg-video-downloader
     restart: unless-stopped
+    # Run as the unprivileged uid directly: no CAP_SETUID/CAP_SETGID is needed,
+    # so the container stays fully cap-drop'ed (verified on arm64 fnOS).
+    user: "${PUID:-10001}:${PGID:-10001}"
     ports:
       - "${TGDL_PORT:-8787}:8787"
     environment:

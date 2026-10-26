@@ -42,7 +42,12 @@ jobs:
           set -euo pipefail
           data_dir="${RUNNER_TEMP}/tgvd-data"
           mkdir -p "${data_dir}"
+          # --user is what keeps this hardened: cap-drop ALL removes
+          # CAP_SETUID/CAP_SETGID, so the entrypoint cannot drop privileges
+          # itself and would previously exit rc 1 here (the workflow never
+          # actually ran before, because requirements-server.txt was missing).
           cid=$(docker run -d --name tgvd-test \
+            --user 10001:10001 \
             --read-only --tmpfs /tmp:rw,size=64m \
             --cap-drop ALL --security-opt no-new-privileges \
             -e PUID=10001 -e PGID=10001 \

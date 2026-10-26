@@ -18,6 +18,30 @@ def _id(name, default):
     return value
 
 
+def _drop_privileges(uid, gid):
+    """Best-effort switch to the runtime uid/gid.
+
+    Hardened deployments run with ``--cap-drop ALL``, which removes
+    CAP_SETUID/CAP_SETGID. ``setgroups``/``setgid``/``setuid`` then raise
+    PermissionError even for uid 0. Dropping privileges is defence in depth,
+    not a prerequisite: with those capabilities absent the container is
+    already confined by the runtime, so warn once and keep going instead of
+    failing the boot (this used to exit the container with rc 1).
+    """
+    if os.geteuid() != 0:
+        return
+    try:
+        os.setgroups([])
+        os.setgid(gid)
+        os.setuid(uid)
+    except PermissionError as exc:
+        print(
+            f"docker-entrypoint: cannot drop to {uid}:{gid} ({exc}); "
+            "continuing as uid 0 - run with cap_add SETUID/SETGID to drop",
+            file=sys.stderr,
+        )
+
+
 def main():
     os.umask(0o077)
     data_dir = pathlib.Path(os.environ.get("TGDL_DATA_DIR", "/data")).resolve()
@@ -30,9 +54,7 @@ def main():
         except PermissionError:
             pass
         os.environ["HOME"] = str(data_dir)
-        os.setgroups([])
-        os.setgid(gid)
-        os.setuid(uid)
+        _drop_privileges(uid, gid)
 
     command = sys.argv[1:] or [
         sys.executable,
