@@ -1362,6 +1362,15 @@ function openSheetEditor(taskId) {
     if (!p || typeof p.then !== "function") return fallback();
     p.then(function (r) {
       if (r && r.ok) return;
+      // Headless (browser / container): there is no native window host, but
+      // taskedit.html is a self-contained page. Open it in a new tab rather
+      // than falling back to the in-shell edit route, which renders unusable
+      // at browser widths.
+      if (r && r.headless && r.url) {
+        const w = window.open(r.url, "_blank", "noopener");
+        if (!w) fallback();          // popup blocked -> keep the deep link
+        return;
+      }
       fallback();
     }).catch(fallback);
   } catch (e) {

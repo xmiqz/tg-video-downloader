@@ -2390,7 +2390,20 @@ class Api:
         加载 web/taskedit.html（2.1 editor.html 布局/样式/行为原样承载，
         文件名避开 WC-4d 旧壳四资源断言），create_aux_window 与主窗同壳。"""
         if not self.host:
-            return {"ok": False, "error": "窗口宿主未就绪"}
+            # Headless: there is no window host, but taskedit.html is a plain
+            # browser page. Hand the URL back so the caller can open a tab
+            # instead of falling back to the in-shell /task/:id/edit route,
+            # whose layout is not usable at browser widths.
+            from urllib.parse import quote
+            if self._load_one(task_id) is None:
+                return {"ok": False, "error": "任务不存在"}
+            return {
+                "ok": False,
+                "headless": True,
+                "url": ("/taskedit.html?id=" + quote(str(task_id))
+                        + "#t=" + self.token),
+                "error": "窗口宿主未就绪",
+            }
         t = self._load_one(task_id)
         if t is None:
             return {"ok": False, "error": "任务不存在"}
