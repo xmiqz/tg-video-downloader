@@ -1,0 +1,14 @@
+{
+  "name": "tg-video-downloader-web",
+  "version": "2.4.0",
+  "private": true,
+  "description": "v2.4 frontend regression suite (zero-build ES modules, node:test only)",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test \"tests/js/*.test.mjs\"",
+    "test:defects": "node --test \"tests/js/defects.test.mjs\""
+  }
+}
