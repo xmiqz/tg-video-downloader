@@ -205,6 +205,26 @@ export function effectiveTheme(mode) {
 // page never talks to www.bing.com and the wallpaper still works offline.
 // ---------------------------------------------------------------
 
+// <img src> and CSS url() cannot send Authorization headers, so the desktop
+// shell's bearer token has to ride in the query string. The server accepts it
+// on asset routes only (see _asset_authorized). Browsers use the session
+// cookie instead and pass an empty token, so their URLs stay clean.
+export function assetToken() {
+  try {
+    const m = String(location.hash || "").match(/[#&]t=([^&]*)/);
+    return m ? decodeURIComponent(m[1]) : "";
+  } catch (e) {
+    return "";
+  }
+}
+
+export function assetUrl(path) {
+  const u = String(path || "");
+  const tok = assetToken();
+  if (!tok) return u;
+  return u + (u.indexOf("?") >= 0 ? "&" : "?") + "t=" + encodeURIComponent(tok);
+}
+
 export function bingBackdropCss(url) {
   const u = String(url || "").trim();
   if (!u) return "";
@@ -222,7 +242,7 @@ export async function applyBingBackdrop() {
   }
   const cur = st && st.ok ? st.current : null;
   if (cur && cur.file) {
-    back.style.backgroundImage = bingBackdropCss("/wallpaper/" + cur.file);
+    back.style.backgroundImage = bingBackdropCss(assetUrl("/wallpaper/" + cur.file));
     if (cur.copyright) back.title = cur.copyright;
     return;
   }
@@ -234,7 +254,7 @@ export async function applyBingBackdrop() {
   }
   const fresh = st && st.ok ? st.current : null;
   if (fresh && fresh.file) {
-    back.style.backgroundImage = bingBackdropCss("/wallpaper/" + fresh.file);
+    back.style.backgroundImage = bingBackdropCss(assetUrl("/wallpaper/" + fresh.file));
     if (fresh.copyright) back.title = fresh.copyright;
   }
 }
@@ -1062,7 +1082,7 @@ async function renderWallpaperHistory() {
   items.forEach(function (it) {
     const isUpload = String(it.date || "").startsWith("upload-");
     const thumb = el("img", {
-      class: "wp-thumb", src: "/wallpaper/" + it.file, alt: it.title || it.date || "",
+      class: "wp-thumb", src: assetUrl("/wallpaper/" + it.file), alt: it.title || it.date || "",
       loading: "lazy",
     });
     const dateLabel = el("span", {
@@ -1094,7 +1114,7 @@ async function renderWallpaperHistory() {
 
 function setWallpaperImage(file) {
   const back = document.getElementById("sh-backdrop");
-  if (back && file) back.style.backgroundImage = 'url("/wallpaper/' + file + '")';
+  if (back && file) back.style.backgroundImage = bingBackdropCss(assetUrl("/wallpaper/" + file));
 }
 
 async function selectWallpaper(date, btn) {
@@ -1136,10 +1156,13 @@ async function uploadWallpaper(file) {
   const name = encodeURIComponent(file.name || "upload.jpg");
   let resp = null;
   try {
+    const headers = { "content-type": file.type || "application/octet-stream" };
+    const tok = assetToken();
+    if (tok) headers.Authorization = "Bearer " + tok;
     resp = await fetch("/wallpaper/upload?name=" + name, {
       method: "POST",
       body: file,
-      headers: { "content-type": file.type || "application/octet-stream" },
+      headers: headers,
     });
   } catch (e) {
     toast("error", "上传失败", (e && e.message) || String(e));

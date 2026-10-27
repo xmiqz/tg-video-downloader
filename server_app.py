@@ -241,6 +241,29 @@ def _is_rpc_authorized(request, config, token, auth):
     return False
 
 
+def _asset_authorized(request, config, token, auth):
+    """Authorize a GET that a browser cannot attach headers to.
+
+    ``<img src>`` and CSS ``background-image: url(...)`` never carry an
+    Authorization header, and the desktop shell has no session cookie - its
+    only credential is the per-process bearer token embedded in the page URL
+    hash. Without the ``?t=`` fallback below, every wallpaper request from the
+    packaged desktop build returned 401 and the daily theme silently rendered
+    nothing.
+    """
+    if config.loopback and not config.desktop_mode:
+        return True
+    if auth is not None and auth.session_valid(
+            request.cookies.get(server_auth.COOKIE_NAME, "")):
+        return True
+    bearer = _request_bearer(request)
+    if bearer and token and server_auth.tokens_equal(bearer, token):
+        return True
+    query_token = request.query_params.get("t", "")
+    return bool(query_token and token
+                and server_auth.tokens_equal(query_token, token))
+
+
 def _set_session_cookie(response, auth, session_token):
     response.set_cookie(
         value=session_token,
@@ -522,13 +545,8 @@ def create_app(config, *, engine, api, token="", auth=None):
         same helpers the rest of the API uses, so TGDL_ALLOWED_ROOTS still
         applies.
         """
-        if not (config.loopback and not config.desktop_mode):
-            if auth is None or not auth.session_valid(
-                    request.cookies.get(server_auth.COOKIE_NAME, "")):
-                bearer = _request_bearer(request)
-                if not (bearer and token
-                        and server_auth.tokens_equal(bearer, token)):
-                    return _json_error("未授权或会话已过期", 401)
+        if not _asset_authorized(request, config, token, auth):
+            return _json_error("未授权或会话已过期", 401)
         info = api.item_file_info(str(task), str(src), str(mid))
         if not info.get("exists"):
             return _json_error("文件不存在", 404)
@@ -578,13 +596,8 @@ def create_app(config, *, engine, api, token="", auth=None):
         Kept out of /rpc on purpose: the 1 MiB RPC body cap is far below a
         photo. This endpoint has its own, larger limit.
         """
-        if not (config.loopback and not config.desktop_mode):
-            if auth is None or not auth.session_valid(
-                    request.cookies.get(server_auth.COOKIE_NAME, "")):
-                bearer = _request_bearer(request)
-                if not (bearer and token
-                        and server_auth.tokens_equal(bearer, token)):
-                    return _json_error("未授权或会话已过期", 401)
+        if not _asset_authorized(request, config, token, auth):
+            return _json_error("未授权或会话已过期", 401)
         # Raw body + ?name=... instead of multipart: python-multipart is not a
         # dependency of this image, and adding it just for one upload is not
         # worth the extra wheel. The browser sends the File via fetch(Blob).
@@ -616,13 +629,8 @@ def create_app(config, *, engine, api, token="", auth=None):
         so the wallpaper still renders offline and needs no cross-origin
         image exception once the file is cached.
         """
-        if not (config.loopback and not config.desktop_mode):
-            if auth is None or not auth.session_valid(
-                    request.cookies.get(server_auth.COOKIE_NAME, "")):
-                bearer = _request_bearer(request)
-                if not (bearer and token
-                        and server_auth.tokens_equal(bearer, token)):
-                    return _json_error("未授权或会话已过期", 401)
+        if not _asset_authorized(request, config, token, auth):
+            return _json_error("未授权或会话已过期", 401)
         wp = getattr(api, "_wallpaper_cache", None)
         if wp is None:
             wp = wallpaper.WallpaperCache(config.data_dir)

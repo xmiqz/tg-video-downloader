@@ -131,6 +131,48 @@ def test_login_accepts_non_ascii_password(tmp_path):
         assert bad.json()["error"] == "密码错误"
 
 
+# --- asset routes: desktop shell has no cookie, only the URL-hash token ------
+
+def test_desktop_wallpaper_image_accepts_query_token(tmp_path):
+    """<img src> and CSS url() cannot send Authorization headers.
+
+    The desktop shell authenticates with a per-process bearer token carried in
+    the page URL hash, so asset URLs must accept it as ?t= - otherwise the
+    daily wallpaper theme renders nothing and the thumbnails stay broken.
+    """
+    import wallpaper
+
+    cache = wallpaper.WallpaperCache(tmp_path)
+    (tmp_path / "cache").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "cache" / "bing-20260101.jpg").write_bytes(b"\xff\xd8fakejpeg")
+
+    app = _desktop_app(tmp_path, token="desk-token")
+    with TestClient(app) as client:
+        denied = client.get("/wallpaper/bing-20260101.jpg")
+        allowed = client.get("/wallpaper/bing-20260101.jpg?t=desk-token")
+        wrong = client.get("/wallpaper/bing-20260101.jpg?t=not-the-token")
+
+    assert denied.status_code == 401
+    assert wrong.status_code == 401
+    assert allowed.status_code == 200
+    assert allowed.content == b"\xff\xd8fakejpeg"
+
+
+def test_desktop_wallpaper_upload_accepts_bearer(tmp_path):
+    app = _desktop_app(tmp_path, token="desk-token")
+    with TestClient(app) as client:
+        denied = client.post("/wallpaper/upload?name=a.jpg", content=b"img")
+        allowed = client.post(
+            "/wallpaper/upload?name=a.jpg",
+            content=b"img",
+            headers={"authorization": "Bearer desk-token"},
+        )
+
+    assert denied.status_code == 401
+    assert allowed.status_code == 200
+    assert allowed.json()["ok"] is True
+
+
 class FakeApi:
     def __init__(self):
         self.runtime_mode = "desktop"
