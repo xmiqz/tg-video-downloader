@@ -40,8 +40,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          data_dir="${RUNNER_TEMP}/tgvd-data"
-          mkdir -p "${data_dir}"
+          # A host directory bind-mounted into /data is created root:root 0755
+          # by the runner, and this container runs as uid 10001 with
+          # cap-drop ALL - it cannot create /data/downloads there and exits
+          # with "Permission denied: '/data/downloads'". A named volume is
+          # created from the image's /data (already owned by 10001:10001),
+          # which is what compose.yaml now uses by default. Exercise that.
+          docker volume rm tgvd-smoke-data >/dev/null 2>&1 || true
           # --user is what keeps this hardened: cap-drop ALL removes
           # CAP_SETUID/CAP_SETGID, so the entrypoint cannot drop privileges
           # itself and would previously exit rc 1 here (the workflow never
@@ -51,13 +56,25 @@ jobs:
             --read-only --tmpfs /tmp:rw,size=64m \
             --cap-drop ALL --security-opt no-new-privileges \
             -e PUID=10001 -e PGID=10001 \
-            -v "${data_dir}:/data" -p 18787:8787 \
+            -v tgvd-smoke-data:/data -p 18787:8787 \
             tg-video-downloader:test)
-          trap 'docker rm -f tgvd-test >/dev/null 2>&1 || true' EXIT
-          for i in $(seq 1 30); do
+          trap 'docker rm -f tgvd-test >/dev/null 2>&1 || true; docker volume rm tgvd-smoke-data >/dev/null 2>&1 || true' EXIT
+          # Boot took 23s on an ARM NAS; leave headroom on a loaded runner.
+          ready=0
+          for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:18787/healthz >/dev/null; then break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' tgvd-test)" != "true" ]; then
+              echo "container exited before becoming ready; logs:" >&2
+              docker logs tgvd-test >&2 || true
+              exit 1
+            fi
             sleep 1
           done
+          if ! curl -fsS http://127.0.0.1:18787/healthz >/dev/null; then
+            echo "container did not become healthy in 60s; logs:" >&2
+            docker logs tgvd-test >&2 || true
+            exit 1
+          fi
           curl -fsS http://127.0.0.1:18787/healthz
           test "$(curl -sS -o /tmp/rpc.json -w '%{http_code}' \
             -H 'content-type: application/json' \
@@ -67,7 +84,7 @@ jobs:
           test "${pid_uid}" = "10001"
           docker exec --user 10001 tgvd-test python -c \
             "from pathlib import Path; Path('/data/write-probe').write_text('ok')"
-          test -f "${data_dir}/.setup-token"
+          docker exec tgvd-test test -f /data/.setup-token
 
   publish:
     if: github.event_name != 'pull_request'

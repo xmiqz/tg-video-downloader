@@ -148,9 +148,34 @@ test("nasCompose defaults are usable without any input", async () => {
   const mod = await import("../../web/js/views/settings.js");
   const yaml = mod.nasCompose();
   assert.match(yaml, /8787:8787/);
-  assert.match(yaml, /: \/data$/m);
   assert.match(yaml, /read_only: true/);
   assert.match(yaml, /- ALL/);
+});
+
+// A host-created bind mount is root:root 0755 while the container runs as
+// uid 10001 with cap_drop ALL: it cannot create /data/downloads there and
+// dies at boot with "Permission denied: '/data/downloads'". The default must
+// therefore be a named volume, which inherits /data's owner from the image.
+test("nasCompose defaults to a named volume, not a host bind mount", async () => {
+  installDom();
+  const mod = await import("../../web/js/views/settings.js");
+  const yaml = mod.nasCompose();
+
+  assert.match(yaml, /^ {6}- tgvd-data:\/data$/m, "默认应为命名卷");
+  assert.ok(!/^ {6}- \.\/data:\/data$/m.test(yaml), "默认不应生成绑定挂载");
+  assert.match(yaml, /^volumes:$/m, "缺少顶层 volumes 声明");
+  assert.match(yaml, /^ {2}tgvd-data:$/m);
+  assert.match(yaml, /^ {4}name: tg-video-downloader-data$/m);
+});
+
+test("nasCompose still honours an explicit host path as a bind mount", async () => {
+  installDom();
+  const mod = await import("../../web/js/views/settings.js");
+  const yaml = mod.nasCompose("8787", "", "/vol1/1000/docker/tvg");
+
+  assert.match(yaml, /^ {6}- \/vol1\/1000\/docker\/tvg:\/data$/m,
+    "显式路径应生成绑定挂载");
+  assert.ok(!/tgvd-data:\/data/.test(yaml), "显式路径时不应再用命名卷");
 });
 
 // WebView2 refuses navigator.clipboard.writeText, so the copy buttons must go

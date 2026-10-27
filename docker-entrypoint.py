@@ -56,6 +56,25 @@ def main():
         os.environ["HOME"] = str(data_dir)
         _drop_privileges(uid, gid)
 
+    # A bind mount (./data:/data) is created by the *host* as root:root 0755,
+    # and with --user 10001:10001 the container has neither the ownership nor
+    # the permission to create /data/downloads. The service then dies at boot
+    # with "Permission denied: '/data/downloads'" and, because the container
+    # restarts silently, the user only sees an unreachable page. Check it here
+    # and fail with an actionable message instead of a bare traceback.
+    probe = data_dir / ".write-probe"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        uid, gid = os.geteuid(), os.getegid()
+        raise SystemExit(
+            f"docker-entrypoint: 数据目录 {data_dir} 对 uid={uid} gid={gid} 不可写"
+            f"（{exc}）。请在宿主机执行：\n"
+            f"  sudo chown -R {uid}:{gid} <宿主机数据目录>\n"
+            "或在 compose.yaml 中改用命名卷（volumes: tgvd-data:/data）。"
+        ) from exc
+
     command = sys.argv[1:] or [
         sys.executable,
         "-m",

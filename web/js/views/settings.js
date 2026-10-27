@@ -813,7 +813,15 @@ const NAS_IMAGE_DEFAULT = "ghcr.io/xmiqz/tg-video-downloader:v2.4.0-beta.1";
 export function nasCompose(port, image, dataDir) {
   const p = String(port || "8787");
   const img = String(image || NAS_IMAGE_DEFAULT);
-  const data = String(dataDir || "./data");
+  // Empty means "use the named volume". A bind mount is only emitted when the
+  // user names a host path, because a host-created ./data is root:root 0755
+  // and this container runs as uid 10001 with cap_drop ALL - it cannot create
+  // /data/downloads there and dies at boot. A named volume inherits /data's
+  // ownership from the image, so the default path needs no manual chown.
+  const data = String(dataDir || "").trim();
+  const volumeLines = data
+    ? ["    volumes:", "      - " + data + ":/data"]
+    : ["    volumes:", "      - tgvd-data:/data"];
   return [
     "services:",
     "  tg-video-downloader:",
@@ -828,8 +836,7 @@ export function nasCompose(port, image, dataDir) {
     "      TGDL_DATA_DIR: /data",
     "      TGDL_ALLOWED_ROOTS: /data",
     "      TGDL_COOKIE_SECURE: \"0\"",
-    "    volumes:",
-    "      - " + data + ":/data",
+    ...volumeLines,
     "    read_only: true",
     "    tmpfs:",
     "      - /tmp:size=64m,mode=1777",
@@ -848,6 +855,12 @@ export function nasCompose(port, image, dataDir) {
     "      timeout: 5s",
     "      retries: 3",
     "      start_period: 25s",
+    "",
+    // Top-level declaration for the named volume. Harmless when a bind mount
+    // was chosen instead, and keeps the emitted file self-consistent.
+    "volumes:",
+    "  tgvd-data:",
+    "    name: tg-video-downloader-data",
     "",
   ].join("\n");
 }
@@ -884,7 +897,7 @@ function buildNasDeployPanel() {
   });
   const dataInput = el("input", {
     class: "st-input", id: "nas-data", type: "text",
-    value: "./data", spellcheck: "false",
+    value: "", placeholder: "留空 = 使用命名卷（推荐）", spellcheck: "false",
   });
 
   const yamlBox = el("textarea", {
@@ -992,7 +1005,9 @@ function buildNasDeployPanel() {
   const root = el("div", { class: "st-nas" }, [
     field("对外端口", portInput, "宿主机端口，容器内固定 8787。"),
     field("镜像", imageInput, "默认取当前 beta 标签；正式版发布后可改成 :latest。"),
-    field("数据目录", dataInput, "相对路径以 compose.yaml 所在目录为基准。"),
+    field("数据目录（可选）", dataInput,
+          "留空则使用命名卷 tg-video-downloader-data，无需手动改属主；"
+          + "填宿主机路径则改用绑定挂载，需先 chown 10001:10001。"),
     el("div", { class: "st-nas-actions" }, [btnYaml, btnCmd]),
     el("label", { class: "st-field-label", for: "nas-yaml", text: "compose.yaml" }),
     yamlBox,

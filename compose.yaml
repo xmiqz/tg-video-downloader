@@ -18,7 +18,16 @@ services:
       PUID: "${PUID:-10001}"
       PGID: "${PGID:-10001}"
     volumes:
-      - ./data:/data
+      # A bind mount (./data:/data) is created by the host as root:root 0755,
+      # and this container runs as uid 10001 with cap_drop ALL, so it cannot
+      # create /data/downloads and dies at boot with
+      # "Permission denied: '/data/downloads'". A named volume is created from
+      # the image's /data (already owned by 10001:10001), so the default path
+      # needs no manual chown.
+      # To keep data on a specific host path instead, use:
+      #   - /vol1/1000/docker/tg-video-downloader:/data
+      # and chown it to 10001:10001 first.
+      - tgvd-data:/data
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -37,3 +46,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 25s
+
+volumes:
+  tgvd-data:
+    name: tg-video-downloader-data
