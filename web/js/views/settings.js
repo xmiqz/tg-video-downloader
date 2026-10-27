@@ -792,6 +792,10 @@ function buildTaskPortPanel() {
     importInput.value = "";
     if (f) importTaskBundle(f);
   });
+  // The rows live in `list`; it must be a child of the collapsible wrapper or
+  // toggling listWrap.hidden reveals an empty box (rows rendered into a
+  // detached node).
+  listWrap.append(list);
   return {
     el: el("div", { class: "tp-panel" }, [
       el("div", { class: "tp-actions" }, [
