@@ -21,9 +21,22 @@ function mkNode(tag) {
     setAttribute(k, v) { this._attrs[k] = v; if (k === "hidden") this.hidden = true; },
     getAttribute(k) { return this._attrs[k]; },
     removeAttribute(k) { delete this._attrs[k]; if (k === "hidden") this.hidden = false; },
-    addEventListener() {},
-    removeEventListener() {},
-    appendChild(c) { this.children.push(c); return c; },
+    _listeners: {},
+    addEventListener(type, fn) {
+      (this._listeners[type] = this._listeners[type] || []).push(fn);
+    },
+    removeEventListener(type, fn) {
+      const list = this._listeners[type] || [];
+      const i = list.indexOf(fn);
+      if (i >= 0) list.splice(i, 1);
+    },
+    appendChild(c) { c.parentNode = this; this.children.push(c); return c; },
+    removeChild(c) {
+      const i = this.children.indexOf(c);
+      if (i >= 0) this.children.splice(i, 1);
+      c.parentNode = null;
+      return c;
+    },
     append(...cs) { cs.forEach((c) => this.children.push(c)); },
     insertBefore(c) { this.children.push(c); return c; },
     remove() {},
@@ -138,5 +151,78 @@ test("nasCompose defaults are usable without any input", async () => {
   assert.match(yaml, /: \/data$/m);
   assert.match(yaml, /read_only: true/);
   assert.match(yaml, /- ALL/);
+});
+
+// WebView2 refuses navigator.clipboard.writeText, so the copy buttons must go
+// through execCommand on a scratch textarea first. If that path regresses the
+// NAS card silently copies nothing, which is exactly what shipped once.
+test("nas copy buttons use execCommand before the clipboard API", async () => {
+  installDom();
+  const mod = await import("../../web/js/views/settings.js");
+
+  let execCalls = 0;
+  let clipboardCalls = 0;
+  let execResult = true;
+  const scratchLog = [];
+
+  const realCreate = globalThis.document.createElement;
+  globalThis.document.createElement = function (tag) {
+    const n = realCreate(tag);
+    if (String(tag).toLowerCase() === "textarea") {
+      n.select = () => scratchLog.push("select");
+      n.setSelectionRange = () => scratchLog.push("range");
+    }
+    return n;
+  };
+  globalThis.document.body.appendChild = function (n) {
+    n.parentNode = globalThis.document.body;
+    return n;
+  };
+  globalThis.document.body.removeChild = function (n) { n.parentNode = null; };
+  globalThis.document.execCommand = function (cmd) {
+    if (cmd !== "copy") return false;
+    execCalls += 1;
+    return execResult;
+  };
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { clipboard: { writeText: async () => { clipboardCalls += 1; } } },
+  });
+
+  const root = mod.mount();
+  const nodes = collect(root && root.el ? root.el : root, []);
+  const byText = (label) => nodes.find((n) => n.node.textContent === label);
+  const copyYaml = byText("复制 compose.yaml");
+  assert.ok(copyYaml, "缺少「复制 compose.yaml」按钮");
+
+  const handlers = copyYaml.node._listeners && copyYaml.node._listeners.click;
+  assert.ok(Array.isArray(handlers) && handlers.length, "复制按钮未绑定 click");
+
+  await handlers[0]();
+
+  assert.equal(execCalls, 1, "应优先走 execCommand");
+  assert.equal(clipboardCalls, 0, "execCommand 成功时不应再调 clipboard API");
+  assert.deepEqual(scratchLog, ["select", "range"], "应选中临时 textarea");
+});
+
+test("nas copy falls back to clipboard API when execCommand refuses", async () => {
+  installDom();
+  const mod = await import("../../web/js/views/settings.js");
+
+  let clipboardCalls = 0;
+  globalThis.document.execCommand = () => false;
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { clipboard: { writeText: async () => { clipboardCalls += 1; } } },
+  });
+
+  const root = mod.mount();
+  const nodes = collect(root && root.el ? root.el : root, []);
+  const copyCmd = nodes.find((n) => n.node.textContent === "复制启动命令");
+  assert.ok(copyCmd, "缺少「复制启动命令」按钮");
+  const handlers = copyCmd.node._listeners.click;
+  await handlers[0]();
+
+  assert.equal(clipboardCalls, 1, "execCommand 失败时应回落 clipboard API");
 });
 

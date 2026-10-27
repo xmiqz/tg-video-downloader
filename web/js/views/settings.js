@@ -901,24 +901,66 @@ function buildNasDeployPanel() {
     cmdBox.value = nasInitCommands(portInput.value);
   }
 
+  // WebView2 (and Chromium without a secure context) refuses
+  // navigator.clipboard.writeText even inside a click handler. execCommand on a
+  // selected <textarea> is the one path that works in both the desktop shell
+  // and the browser, so it is tried first and clipboard.writeText is only a
+  // fallback for environments that blocked execCommand.
+  function legacyCopy(text) {
+    const scratch = document.createElement("textarea");
+    scratch.value = text;
+    scratch.setAttribute("readonly", "");
+    scratch.style.position = "fixed";
+    scratch.style.top = "-9999px";
+    scratch.style.opacity = "0";
+    document.body.appendChild(scratch);
+    const prev = document.activeElement;
+    let ok = false;
+    try {
+      scratch.select();
+      scratch.setSelectionRange(0, text.length);
+      ok = document.execCommand("copy");
+    } catch (e) {
+      ok = false;
+    }
+    // Detaching the scratch node must never mask a successful copy.
+    try {
+      document.body.removeChild(scratch);
+    } catch (e) {
+      if (scratch.parentNode) {
+        try { scratch.parentNode.removeChild(scratch); } catch (e2) {}
+      }
+    }
+    if (prev && typeof prev.focus === "function") {
+      try { prev.focus(); } catch (e) {}
+    }
+    return ok;
+  }
+
   async function copyFrom(box, label, btn) {
     const restore = busyOn(btn, null);
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(box.value);
-      } else {
-        box.focus();
-        box.select();
-        if (!document.execCommand("copy")) throw new Error("浏览器不允许复制");
+    const text = box.value;
+    let ok = legacyCopy(text);
+    if (!ok) {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        }
+      } catch (e) {
+        ok = false;
       }
-      restore();
-      toast("ok", label + "已复制", null);
-    } catch (e) {
-      restore();
-      box.focus();
-      box.select();
-      toast("error", "复制失败，已为你全选", (e && e.message) || String(e));
     }
+    restore();
+    if (ok) {
+      toast("ok", label + "已复制到剪贴板", "可直接粘贴到 NAS 的终端里");
+      return;
+    }
+    // Copy is unavailable: leave the text selected so Ctrl+C works.
+    box.focus();
+    box.select();
+    toast("error", "无法自动复制，已为你全选",
+          "按 Ctrl+C 复制，或手动全选这段文本");
   }
 
   const btnYaml = el("button", {
