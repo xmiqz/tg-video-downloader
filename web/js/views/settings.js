@@ -889,15 +889,28 @@ async function importTaskBundle(file) {
 // ---------------------------------------------------------------
 // Wallpaper panel: history picker / per-item delete / upload
 // ---------------------------------------------------------------
+// Rebuild the appearance segment once the host mode is known.
+//
+// loadSettings() can run more than once per mount (mount + onEnter), so this
+// must be idempotent: drop every stray .u-seg already in the card, then insert
+// the fresh one at the old position. Relying on replaceChild alone left
+// duplicates behind when the old node had already been detached.
 function rebuildAppearanceSeg() {
   if (!refs || !refs.appearanceSeg) return;
   const cur = refs.appearanceSeg.get();
+  const oldEl = refs.appearanceSeg.el;
   const fresh = createSegmented(appearanceSegs(HOST_MODE), {
     value: cur, ariaLabel: "界面外观",
     onChange: function (v) { onAppearanceSeg(v); },
   });
-  const oldEl = refs.appearanceSeg.el;
-  if (oldEl && oldEl.parentNode) oldEl.parentNode.replaceChild(fresh.el, oldEl);
+  const parent = oldEl && oldEl.parentNode;
+  if (parent) {
+    // Remove any other segment already sitting in the same card.
+    parent.querySelectorAll(".u-seg").forEach(function (n) {
+      if (n !== oldEl) n.remove();
+    });
+    parent.replaceChild(fresh.el, oldEl);
+  }
   refs.appearanceSeg = fresh;
 }
 
