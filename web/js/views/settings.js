@@ -916,8 +916,17 @@ function rebuildAppearanceSeg() {
 
 function buildWallpaperPanel() {
   const statusLine = el("p", { class: "st-hint", text: "" });
+  // 历史默认折叠：只有一行摘要，点开才铺网格。攒到 60 张时否则会把设置页
+  // 拉成几万像素高。
   const histWrap = el("div", { class: "wp-hist", hidden: true });
   const histList = el("div", { class: "wp-hist-list" });
+  const histSummary = el("span", { class: "wp-hist-sum", text: "已保存的壁纸" });
+  const histCaret = el("span", { class: "wp-hist-caret", "aria-hidden": "true", text: "▸" });
+  const histToggle = el("button", {
+    class: "wp-hist-toggle", type: "button", "aria-expanded": "false",
+    onclick: function () { toggleWallpaperHistory(); },
+  }, [histCaret, histSummary]);
+  const histBox = el("div", { class: "wp-hist-box" }, [histToggle, histWrap]);
   const saveToggle = el("input", { type: "checkbox", id: "wp-save-hist" });
   const uploadInput = el("input", {
     type: "file", id: "wp-upload", accept: "image/*", hidden: true,
@@ -947,10 +956,24 @@ function buildWallpaperPanel() {
       saveToggle, document.createTextNode(" 保存历史壁纸（之后可随时切回）"),
     ]),
     row,
-    histWrap,
+    histBox,
   ]);
-  histWrap.append(el("p", { class: "st-hint", text: "已保存的壁纸" }), histList);
-  return { el: el_, statusLine, histList, histWrap, saveToggle };
+  histWrap.append(histList);
+  return {
+    el: el_, statusLine, histList, histWrap, saveToggle,
+    histSummary, histCaret, histToggle, expanded: false,
+  };
+}
+
+// 展开/收起历史网格。摘要行始终可见，折叠时只显示数量与最近一张日期。
+function toggleWallpaperHistory(force) {
+  const panel = refs && refs.wpPanel;
+  if (!panel || !panel.histWrap) return;
+  const next = typeof force === "boolean" ? force : !panel.expanded;
+  panel.expanded = next;
+  panel.histWrap.hidden = !next;
+  panel.histToggle.setAttribute("aria-expanded", next ? "true" : "false");
+  if (panel.histCaret) panel.histCaret.textContent = next ? "▾" : "▸";
 }
 
 function wpApi(name, args) {
@@ -996,23 +1019,46 @@ async function renderWallpaperHistory() {
   try { r = await wpApi("wallpaper_history", []); } catch (e) { return; }
   const items = (r && r.ok && Array.isArray(r.items)) ? r.items : [];
   panel.histList.textContent = "";
-  panel.histWrap.hidden = items.length === 0;
+  panel.histToggle.hidden = items.length === 0;
+  if (!items.length) {
+    toggleWallpaperHistory(false);
+  }
+  if (panel.histSummary) {
+    const latest = items.length ? (items[0].date || "") : "";
+    panel.histSummary.textContent = items.length
+      ? "已保存的壁纸 · " + items.length + " 张"
+        + (latest ? "（最近 " + latest + "）" : "")
+      : "已保存的壁纸";
+  }
   items.forEach(function (it) {
+    const isUpload = String(it.date || "").startsWith("upload-");
     const thumb = el("img", {
-      class: "wp-thumb", src: "/wallpaper/" + it.file, alt: it.date || "",
+      class: "wp-thumb", src: "/wallpaper/" + it.file, alt: it.title || it.date || "",
       loading: "lazy",
     });
-    const label = el("span", { class: "wp-date", text: it.date || "" });
+    const dateLabel = el("span", {
+      class: "wp-date", text: isUpload ? "自定义背景" : (it.date || ""),
+    });
+    const badge = isUpload
+      ? el("span", { class: "wp-badge", text: "自定义" })
+      : null;
+    const line1 = el("div", { class: "wp-line1" }, badge ? [dateLabel, badge] : [dateLabel]);
+    const titleText = String(it.title || it.copyright || "");
+    const titleEl = el("div", {
+      class: "wp-title", title: titleText, text: titleText || "（无标题）",
+    });
     const use = el("button", {
-      class: "u-btn u-btn--ghost u-btn--sm", type: "button", text: "使用",
+      class: "wp-use", type: "button", text: "使用",
+      title: "使用这张壁纸",
       onclick: function () { selectWallpaper(it.date, use); },
     });
+    const thumbWrap = el("div", { class: "wp-thumbwrap" }, [thumb, use]);
     const del = el("button", {
-      class: "u-btn u-btn--danger u-btn--sm", type: "button", text: "删除",
+      class: "wp-del", type: "button", text: "✕", title: "删除这张",
       onclick: function () { deleteWallpaper(it.date, del); },
     });
-    panel.histList.append(el("div", { class: "wp-item" }, [
-      thumb, label, use, del,
+    panel.histList.append(el("article", { class: "wp-item" }, [
+      thumbWrap, el("div", { class: "wp-meta" }, [line1, titleEl]), del,
     ]));
   });
 }

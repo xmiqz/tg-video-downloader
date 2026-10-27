@@ -289,22 +289,104 @@ html.liquid .st-card {
 /* ---------- 壁纸面板（每日壁纸主题） ---------- */
 .wp-panel { margin-top: var(--space-3); display: grid; gap: var(--space-2); }
 .wp-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
-.wp-hist { display: grid; gap: var(--space-2); }
+
+/* 历史区：标题行常驻，网格默认折叠 */
+.wp-hist-box { display: grid; gap: var(--space-2); margin-top: var(--space-2); }
+.wp-hist-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  align-self: start;
+  padding: 4px 2px; border: 0; background: none; cursor: pointer;
+  color: var(--color-text-muted); font: inherit;
+  font-size: var(--text-sm);
+}
+.wp-hist-toggle:hover { color: var(--color-text); }
+.wp-hist-caret { font-size: 10px; width: 10px; display: inline-block; }
+.wp-hist-sum { font-weight: 600; }
+.wp-hist { display: block; }
+
+/* 紧凑网格：一行 4 列（窄屏自适应），缩略图 64×48 */
 .wp-hist-list {
   display: grid; gap: var(--space-2);
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(208px, 1fr));
+  max-height: 520px; overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
 }
+.wp-hist-list::-webkit-scrollbar { width: 8px; }
+.wp-hist-list::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong); border-radius: var(--radius-pill);
+}
+
 .wp-item {
-  display: grid; gap: 6px; justify-items: center;
-  padding: var(--space-2); border-radius: var(--radius-sm);
+  position: relative;
+  display: grid; grid-template-columns: 64px minmax(0, 1fr);
+  gap: var(--space-2); align-items: center;
+  padding: 8px;
+  border-radius: var(--radius-sm);
   background: var(--glass-bg-soft, rgba(255,255,255,.06));
   border: 1px solid var(--color-border);
+  transition: background .16s, border-color .16s;
+}
+.wp-item:hover {
+  background: var(--glass-bg, rgba(255,255,255,.09));
+  border-color: var(--color-border-strong);
+}
+
+.wp-thumbwrap {
+  position: relative; width: 64px; height: 48px;
+  border-radius: var(--radius-xs); overflow: hidden;
 }
 .wp-thumb {
-  width: 100%; aspect-ratio: 16 / 9; object-fit: cover;
-  border-radius: var(--radius-xs); display: block;
+  width: 100%; height: 100%; object-fit: cover; display: block;
 }
-.wp-date { font-size: var(--text-xs); color: var(--color-text-muted); }
+.wp-use {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+  border: 0; cursor: pointer;
+  background: rgba(10, 14, 24, .72); color: #fff;
+  font: inherit; font-size: 12px;
+  opacity: 0; transition: opacity .14s;
+}
+.wp-item:hover .wp-use, .wp-item:focus-within .wp-use { opacity: 1; }
+
+.wp-meta { min-width: 0; }
+.wp-line1 { display: flex; align-items: center; gap: 6px; }
+.wp-date {
+  font-size: var(--text-xs); color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.wp-badge {
+  font-size: 10.5px; padding: 1px 6px; border-radius: var(--radius-pill);
+  background: var(--color-primary-soft); color: var(--color-primary);
+}
+.wp-title {
+  margin-top: 2px; font-size: var(--text-sm);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.wp-del {
+  position: absolute; top: 6px; right: 6px;
+  width: 20px; height: 20px; border-radius: 50%;
+  display: grid; place-items: center;
+  border: 0; cursor: pointer; font-size: 11px; line-height: 1;
+  background: var(--color-danger-soft); color: var(--color-danger);
+  opacity: 0; transition: opacity .14s, background .14s;
+}
+.wp-item:hover .wp-del { opacity: 1; }
+.wp-del:hover { background: var(--color-danger); color: #fff; }
+
+/* 触屏没有 hover：按钮常驻，避免「点不到」 */
+@media (hover: none) {
+  .wp-use { opacity: 1; background: rgba(10,14,24,.55); }
+  .wp-del { opacity: 1; }
+}
+
+/* 窄屏单列，缩略图放大一点更好认 */
+@media (max-width: 620px) {
+  .wp-hist-list { grid-template-columns: 1fr; }
+  .wp-item { grid-template-columns: 84px minmax(0, 1fr); }
+  .wp-thumbwrap { width: 84px; height: 63px; }
+}
 
 /* ---------- 任务导入 / 导出 ---------- */
 .tp-panel { margin-top: var(--space-3); display: grid; gap: var(--space-2); }
