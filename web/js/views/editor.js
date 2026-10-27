@@ -715,6 +715,17 @@ async function chooseFolder(btn) {
     const r = await window.pywebview.api.choose_folder();    // 同步直调
     choosing = false;
     restore();
+    // Headless has no server folder dialog: unlock the field for manual input
+    // instead of surfacing "选择目录失败".
+    if (r && r.unsupported_in_headless) {
+      const input = refs && refs.folderInput;
+      if (input) {
+        input.readOnly = false;
+        input.focus();
+        input.select();
+      }
+      return;
+    }
     if (!r || !r.ok)
       return toast("error", "选择目录失败：" + ((r && r.error) || ""));
     if (r.path) refs.folderInput.value = r.path;   // P1-5：以 path 为准

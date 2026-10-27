@@ -512,6 +512,18 @@ function edChooseFolder() {
   };
   api().choose_folder().then((r) => {
     settle();
+    // Browser / container mode has no server-side folder dialog. Rather than
+    // an alert that says "失败", make the field editable and put the caret in
+    // it so the user can type the server path directly.
+    if (r && r.unsupported_in_headless) {
+      const input = document.getElementById("ed2-folder");
+      if (input) {
+        input.readOnly = false;
+        input.focus();
+        input.select();
+      }
+      return;
+    }
     if (!r || !r.ok)
       return alert("选择目录失败：" + ((r && r.error) || ""));
     if (r.path) document.getElementById("ed2-folder").value = r.path;

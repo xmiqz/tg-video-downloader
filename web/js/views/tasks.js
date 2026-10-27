@@ -1363,24 +1363,45 @@ function extractFiles(r) {
 function openSheetEditor(taskId) {
   if (!taskId) return;
   const directUrl = "/taskedit.html?id=" + encodeURIComponent(taskId);
-  const openTab = function (url) {
-    const w = window.open(url || directUrl, "_blank", "noopener");
-    if (w) return true;
+
+  // Browsers only allow window.open() during the user-gesture tick. Awaiting
+  // the open_editor RPC first (a promise) moves us out of that tick and the
+  // popup gets blocked - which is exactly what "编辑页被浏览器拦截" was.
+  // So: open the tab synchronously right now, then let the RPC decide whether
+  // a native window should replace it.
+  let tab = null;
+  if (typeof window.open === "function") {
+    try { tab = window.open(directUrl, "_blank", "noopener"); } catch (e) { tab = null; }
+  }
+
+  const reportBlocked = function () {
     toast("error", "编辑页被浏览器拦截", "请允许本站弹出窗口后重试");
-    return false;
   };
+
   try {
     const p = window.pywebview && window.pywebview.api
       ? window.pywebview.api.open_editor(taskId) : null;
-    if (!p || typeof p.then !== "function") return openTab();
+    if (!p || typeof p.then !== "function") {
+      if (!tab) reportBlocked();
+      return;
+    }
     p.then(function (r) {
-      if (r && r.ok) return;                       // 原生辅助窗已开
-      if (r && r.headless) return openTab(r.url);  // 浏览器：新标签页
-      // 其它失败（任务不存在等）：把真实原因告诉用户，不要静默跳转
-      if (r && r.error) return toast("error", "无法打开编辑页", r.error);
-      openTab();
-    }).catch(function () { openTab(); });
+      if (r && r.ok) return;                  // 桌面壳：原生辅助窗已开
+      // Headless: the tab we already opened is the editor. If the browser
+      // blocked it, say so instead of silently doing nothing.
+      if (r && r.headless) {
+        if (!tab) reportBlocked();
+        return;
+      }
+      if (r && r.error) {
+        if (tab && tab.close) tab.close();     // 任务不存在等：别留空标签
+        return toast("error", "无法打开编辑页", r.error);
+      }
+      if (!tab) reportBlocked();
+    }).catch(function () {
+      if (!tab) reportBlocked();
+    });
   } catch (e) {
-    openTab();
+    if (!tab) reportBlocked();
   }
 }

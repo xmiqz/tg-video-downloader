@@ -905,10 +905,15 @@ function rebuildAppearanceSeg() {
   });
   const parent = oldEl && oldEl.parentNode;
   if (parent) {
-    // Remove any other segment already sitting in the same card.
-    parent.querySelectorAll(".u-seg").forEach(function (n) {
-      if (n !== oldEl) n.remove();
-    });
+    // Scope the cleanup to this card only. router.refreshLens() mirrors the
+    // whole view into #sh-lens-content as a refraction snapshot, so a global
+    // querySelectorAll(".u-seg") also sees the mirror and must not touch it.
+    const card = oldEl.closest ? oldEl.closest(".st-card") : null;
+    if (card && card !== oldEl) {
+      card.querySelectorAll(".u-seg").forEach(function (n) {
+        if (n !== oldEl) n.remove();
+      });
+    }
     parent.replaceChild(fresh.el, oldEl);
   }
   refs.appearanceSeg = fresh;
