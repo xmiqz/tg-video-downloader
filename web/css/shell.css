@@ -77,7 +77,7 @@ body { background: var(--color-surface); }
 }
 html.liquid #sh-backdrop { display: block; }
 /* Daily-wallpaper theme: same backdrop layer as liquid, but the image comes
-   from the Bing photo of the day instead of the sampled window behind.
+   from the Bing photo of the day instead of the sampled window behind. */
 html[data-theme="wallpaper"] #sh-backdrop { display: block; }
 html[data-theme="wallpaper"] .sh-ambient { display: none; }
 html[data-theme="wallpaper"] #sh-backdrop::after {
