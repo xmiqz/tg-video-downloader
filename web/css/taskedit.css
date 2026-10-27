@@ -45,6 +45,32 @@ body {
 button, input { font-family: inherit; }
 button { cursor: pointer; color: inherit; }
 
+/* ---------- 每日壁纸层（Bing 每日一图，与主壳同口径） ----------
+   #sh-backdrop 与主壳同名同职责：液态玻璃与每日壁纸共用这一层，
+   只是图片来源不同（采样帧 vs Bing 缓存图）。 */
+#sh-backdrop {
+  position: fixed; inset: 0; z-index: 0;
+  display: none;
+  background-color: #0a0c14;
+  background-size: cover;
+  background-position: center center;
+  background-repeat: no-repeat;
+}
+#sh-backdrop::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(155deg, rgba(8,10,18,.34), rgba(8,10,18,.58));
+}
+:root[data-theme="wallpaper"] #sh-backdrop { display: block; }
+:root[data-theme="wallpaper"] .ambient { display: none; }
+/* 壁纸态卡片需要更实的底色，否则照片会透进正文影响可读性 */
+:root[data-theme="wallpaper"] .glass,
+:root[data-theme="wallpaper"] .dl-card,
+:root[data-theme="wallpaper"] .task-card,
+:root[data-theme="wallpaper"] .bulk-bar,
+:root[data-theme="wallpaper"] .ed-table thead th {
+  background: rgba(18, 21, 32, .82);
+}
+
 /* ---------- 真实环境取光：仅液态玻璃(实时透明)模式显示 ---------- */
 #backdrop {
   position: fixed; inset: 0; z-index: 0;
@@ -173,17 +199,26 @@ body:not(.liquid) .btn.glass-btn {
 
 /* ---------- 玻璃基元 ---------- */
 .glass {
-  background: var(--glass-bg);
+  /* 与主壳 .u-card 同一套材质：3 停斜向渐变（不是平涂）+ 1px 顶部高光，
+     才是「玻璃」而不是「半透明色块」。数值取 tokens.css 静态暗
+     --gl-g-a/b/c = .14/.10/.05、--gl-e-a = .22、--gl-hi = .36，
+     外影取 --gl-shadow = 0 14px 36px rgba(4,6,18,.4)。 */
+  background: linear-gradient(155deg,
+    rgba(255,255,255,.14) 0%,
+    rgba(255,255,255,.10) 42%,
+    rgba(255,255,255,.05) 100%);
   backdrop-filter: blur(34px) saturate(185%);
   -webkit-backdrop-filter: blur(34px) saturate(185%);
-  border: 1px solid var(--glass-edge);
-  box-shadow: var(--depth-shadow);
+  border: 1px solid rgba(255,255,255,.22);
+  box-shadow: 0 14px 36px rgba(4,6,18,.4),
+              inset 0 1px 0 rgba(255,255,255,.36);
 }
 
 /* ---------- 按钮 ---------- */
 .btn {
-  border: 1px solid var(--glass-edge);
-  background: var(--glass-bg-soft);
+  border: 1px solid rgba(255,255,255,.26);
+  background: linear-gradient(160deg, rgba(255,255,255,.17), rgba(255,255,255,.06));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.4);
   padding: 10px 18px;
   border-radius: 999px;
   font-size: 13px;

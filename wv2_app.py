@@ -96,6 +96,8 @@ SLOT_SET_GET_AREDEVTOOLSENABLED = 11
 SLOT_SET_PUT_AREDEVTOOLSENABLED = 12
 SLOT_SET_GET_AREDEFAULTCONTEXTMENUSENABLED = 13
 SLOT_SET_PUT_AREDEFAULTCONTEXTMENUSENABLED = 14
+SLOT_SET_GET_ISSTATUSBARENABLED = 9
+SLOT_SET_PUT_ISSTATUSBARENABLED = 10
 SLOT_SET_GET_ISZOOMCONTROLENABLED = 17
 SLOT_SET_PUT_ISZOOMCONTROLENABLED = 18
 
@@ -366,6 +368,11 @@ class _WindowView:
                  SLOT_SET_GET_AREDEVTOOLSENABLED, want_devtools),
                 ("IsZoomControlEnabled", SLOT_SET_PUT_ISZOOMCONTROLENABLED,
                  SLOT_SET_GET_ISZOOMCONTROLENABLED, 0),
+                # WebView2 shows a hover URL strip along the bottom edge. In a
+                # native shell that reads as browser chrome ("像套壳应用"), so
+                # turn it off - there is no address bar for it to belong to.
+                ("IsStatusBarEnabled", SLOT_SET_PUT_ISSTATUSBARENABLED,
+                 SLOT_SET_GET_ISSTATUSBARENABLED, 0),
             ]
             readback = {}
             for name, put_slot, get_slot, want in plan:

@@ -121,6 +121,10 @@ def build_windows_gui(dist):
         # onefile 解包后 wv2_app 按相对路径找 lib/<arch>/WebView2Loader.dll，
         # 两个架构的 loader 都随包带上（每个约 0.2MB，壳按架构选用）
         "--add-data", os.path.join(lib_dir, "*") + os.pathsep + "lib",
+        # gui._choose_folder_win compiles folderpicker.cs at runtime with the
+        # system .NET compiler, so the shim has to sit beside gui.py inside the
+        # bundle. Without it, 浏览 dies with "缺少 folderpicker.cs".
+        "--add-data", os.path.join(HERE, "folderpicker.cs") + os.pathsep + ".",
         # 见 _write_stdio_runtime_hook：修复 windowed 态 stdout=None 崩溃
         "--runtime-hook", rthook,
         "--collect-submodules", "telethon",

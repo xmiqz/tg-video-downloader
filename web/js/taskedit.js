@@ -271,6 +271,24 @@ function edOneRemove(k) {
     .catch((e) => alert("移除失败：" + (e && e.message || e)));
 }
 
+// window.open(url, "_blank", "noopener") returns null BY SPEC, so using its
+// return value to detect a blocked popup reports "被浏览器拦截" even when the
+// tab opened fine. Open without the noopener feature (which keeps the returned
+// WindowProxy) and sever opener manually instead - same isolation, but the
+// return value is usable.
+function openExternal(url) {
+  let w = null;
+  try {
+    w = window.open(url, "_blank");
+  } catch (e) {
+    return null;
+  }
+  if (w) {
+    try { w.opener = null; } catch (e) {}
+  }
+  return w;
+}
+
 function edOpenFile(k) {
   const o = keyObj(k);
   // P1-2（QA 复核：此点为无 .then 的 fire-and-forget 形态）——补返回体
@@ -280,7 +298,7 @@ function edOpenFile(k) {
       // Headless: the server cannot open files locally, but it can serve
       // them. Let the browser play/save the item from a same-origin URL.
       if (r && r.headless && r.url) {
-        const w = window.open(r.url, "_blank", "noopener");
+        const w = openExternal(r.url);
         if (!w) alert("播放页被浏览器拦截，请允许本站弹出窗口后重试");
         return;
       }
@@ -683,10 +701,53 @@ function edSetFilter(f) {
 function edApplyAppearance() {
   try {
     api().get_appearance().then(function (r) {
-      if (r && r.mode === "light")
+      const mode = r && r.mode;
+      if (mode === "light") {
         document.documentElement.setAttribute("data-theme", "light");
+        return;
+      }
+      // 每日壁纸：与主壳同一套 data-theme="wallpaper" + #sh-backdrop，
+      // 图片走后端缓存（Bing 每日一图），独立窗也要跟随，否则编辑页
+      // 停在深色而主窗是壁纸。
+      if (mode === "bing" || mode === "wallpaper") {
+        document.documentElement.setAttribute("data-theme", "wallpaper");
+        edApplyBackdrop();
+      }
     }).catch(function () {});
   } catch (e) {}
+}
+
+// Token for asset URLs: <img>/CSS cannot send Authorization headers, and the
+// desktop shell's only credential is the token in the page URL hash.
+function edAssetToken() {
+  try {
+    const m = String(location.hash || "").match(/[#&]t=([^&]*)/);
+    return m ? decodeURIComponent(m[1]) : "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function edApplyBackdrop() {
+  const back = document.getElementById("sh-backdrop");
+  if (!back) return;
+  const tok = edAssetToken();
+  const q = tok ? "?t=" + encodeURIComponent(tok) : "";
+  api().wallpaper_status().then(function (st) {
+    const cur = st && st.ok ? st.current : null;
+    if (cur && cur.file) {
+      back.style.backgroundImage = 'url("/wallpaper/' + cur.file + q + '")';
+      if (cur.copyright) back.title = cur.copyright;
+      return null;
+    }
+    return api().wallpaper_refresh([false]).then(function (fresh) {
+      const c2 = fresh && fresh.ok ? fresh.current : null;
+      if (c2 && c2.file) {
+        back.style.backgroundImage = 'url("/wallpaper/' + c2.file + q + '")';
+        if (c2.copyright) back.title = c2.copyright;
+      }
+    });
+  }).catch(function () {});
 }
 window.addEventListener("pywebviewready", function () {
   edApplyAppearance();

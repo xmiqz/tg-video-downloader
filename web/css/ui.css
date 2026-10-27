@@ -169,8 +169,10 @@
    下层内容穿透文字不可读（shell.css 同款块覆盖底栏/侧栏/下载卡）。 */
 html.liquid .u-overlay-panel,
 html.liquid .u-toast {
-  backdrop-filter: blur(20px) saturate(160%);
-  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  /* 20px over a full-height sliding panel re-blurs every frame; 12px keeps
+     the frosted look at a fraction of the cost. */
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
 }
 
 .u-overlay-mask {
@@ -183,6 +185,11 @@ html.liquid .u-toast {
   -webkit-backdrop-filter: blur(6px) saturate(140%);
   opacity: 0;
   transition: opacity var(--dur-sm) var(--ease-standard);
+  /* A full-viewport backdrop-filter is the most expensive thing on screen.
+     translateZ(0) makes it a composited layer so the opacity ramp is a
+     compositor alpha blend instead of a per-frame re-blur of the page. */
+  transform: translateZ(0);
+  will-change: opacity;
 }
 
 .u-overlay-panel {
@@ -198,17 +205,26 @@ html.liquid .u-toast {
   background: var(--sheet-bg);
   border: 1px solid var(--sheet-border);
   box-shadow: var(--sheet-shadow);
-  transform: translateY(100%); /* sheet 全高滑入（自身高度位移语义；时长经 --sheet-transition 归零于 reduce） */
+  /* translate3d keeps the slide on the compositor; translateY() alone lets
+     the browser fall back to main-thread repaints on large panels, which is
+     what made open/close feel uneven regardless of display refresh rate. */
+  transform: translate3d(0, 100%, 0); /* sheet 全高滑入（自身高度位移语义；时长经 --sheet-transition 归零于 reduce） */
   transition: var(--sheet-transition);
+  will-change: transform;
+  backface-visibility: hidden;
+  contain: paint;
 }
 /* 模态形态：居中 + 四角圆 + pop 进入（对齐旧壳 .modal 语义 style.css:712-716） */
 .u-overlay[data-form="modal"] .u-overlay-panel {
   align-self: center;
   border-radius: var(--sheet-radius);
-  transform: translateY(16px) scale(.97); /* modal pop 进入（对齐旧壳 .modal pop 语义 style.css:715；16px=4px 栅格 4 倍，.97 缩放比视觉常量） */
+  transform: translate3d(0, 16px, 0) scale(.97); /* modal pop 进入（对齐旧壳 .modal pop 语义 style.css:715；16px=4px 栅格 4 倍，.97 缩放比视觉常量） */
 }
 .u-overlay.is-open .u-overlay-mask { opacity: 1; }
-.u-overlay.is-open .u-overlay-panel { transform: none; }
+.u-overlay.is-open .u-overlay-panel { transform: translate3d(0, 0, 0); }
+.u-overlay[data-form="modal"].is-open .u-overlay-panel {
+  transform: translate3d(0, 0, 0) scale(1);
+}
 
 .u-overlay-head {
   display: flex;

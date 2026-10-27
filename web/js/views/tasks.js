@@ -1203,6 +1203,24 @@ function toggleDetailExpand(k) {
 // 条目动作（app.js:2035-2091：忙态 + 失败可见；confirm 逐字承接）
 // ============================================================
 
+// window.open(url, "_blank", "noopener") returns null BY SPEC, so using its
+// return value to detect a blocked popup reports "被浏览器拦截" even when the
+// tab opened fine. Open without the noopener feature (which keeps the returned
+// WindowProxy) and sever opener manually instead - same isolation, but the
+// return value is usable.
+function openExternal(url) {
+  let w = null;
+  try {
+    w = window.open(url, "_blank");
+  } catch (e) {
+    return null;
+  }
+  if (w) {
+    try { w.opener = null; } catch (e) {}
+  }
+  return w;
+}
+
 // app.js:2035-2050 dPlay（open_item_file；失败 toast）
 async function dPlay(src, mid, btn) {
   const restore = busyOn(btn, null);
@@ -1220,7 +1238,7 @@ async function dPlay(src, mid, btn) {
   // Headless: no server-side desktop to open on, but the file is reachable
   // over HTTP. Hand the URL to the browser so it streams/plays natively.
   if (r && r.headless && r.url) {
-    const w = window.open(r.url, "_blank", "noopener");
+    const w = openExternal(r.url);
     if (!w) toast("error", "播放页被浏览器拦截", "请允许本站弹出窗口后重试");
     return;
   }
@@ -1363,15 +1381,17 @@ function extractFiles(r) {
 function openSheetEditor(taskId) {
   if (!taskId) return;
   const directUrl = "/taskedit.html?id=" + encodeURIComponent(taskId);
+  const hostMode = sheet.headless ? "headless" : "desktop";
 
   // Browsers only allow window.open() during the user-gesture tick. Awaiting
   // the open_editor RPC first (a promise) moves us out of that tick and the
   // popup gets blocked - which is exactly what "编辑页被浏览器拦截" was.
-  // So: open the tab synchronously right now, then let the RPC decide whether
-  // a native window should replace it.
+  // So open the tab synchronously - but ONLY in headless mode. The desktop
+  // shell opens its own native aux window, and pre-opening a tab there left
+  // the user with two editor windows for one task.
   let tab = null;
-  if (typeof window.open === "function") {
-    try { tab = window.open(directUrl, "_blank", "noopener"); } catch (e) { tab = null; }
+  if (hostMode === "headless" && typeof window.open === "function") {
+    tab = openExternal(directUrl);
   }
 
   const reportBlocked = function () {
@@ -1386,7 +1406,11 @@ function openSheetEditor(taskId) {
       return;
     }
     p.then(function (r) {
-      if (r && r.ok) return;                  // 桌面壳：原生辅助窗已开
+      if (r && r.ok) {
+        // Desktop native window opened; a tab must not linger beside it.
+        if (tab && tab.close) { try { tab.close(); } catch (e) {} }
+        return;
+      }
       // Headless: the tab we already opened is the editor. If the browser
       // blocked it, say so instead of silently doing nothing.
       if (r && r.headless) {
