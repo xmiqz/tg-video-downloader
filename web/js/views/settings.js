@@ -652,6 +652,9 @@ async function loadAll() {
     renderAccounts();
     return;
   }
+  // Bridge is up. Everything below (appearance, wallpaper, task export)
+  // works without a Telegram login, so it must not be gated behind
+  // loginMode === "connected". Only the account/warm-up section is.
   // 登录态三态（TgAccounts.refresh 的游客分支前置条件）
   try {
     const st = await window.pywebview.api.login_state();
@@ -808,11 +811,26 @@ async function toggleTaskPicker() {
     return;
   }
   let r = null;
-  try { r = await tpApi("tasks_exportable", []); } catch (e) {}
-  const tasks = (r && r.ok && Array.isArray(r.tasks)) ? r.tasks : [];
+  let failure = "";
+  try {
+    r = await tpApi("tasks_exportable", []);
+  } catch (e) {
+    failure = (e && e.message) || String(e);
+  }
+  if (!r) {
+    panel.statusLine.textContent = failure
+      ? "读取任务列表失败：" + failure
+      : "读取任务列表失败：桥接未就绪（请刷新页面）";
+    return;
+  }
+  if (!r.ok) {
+    panel.statusLine.textContent = "读取任务列表失败：" + (r.error || "未知错误");
+    return;
+  }
+  const tasks = Array.isArray(r.tasks) ? r.tasks : [];
   panel.list.textContent = "";
   if (!tasks.length) {
-    panel.statusLine.textContent = "没有可导出的任务。";
+    panel.statusLine.textContent = "任务库为空，没有可导出的任务。";
     return;
   }
   tasks.forEach(function (t) {
@@ -854,7 +872,9 @@ async function exportSelectedTasks() {
   const ids = Array.from(panel.list.querySelectorAll("input:checked"))
     .map(function (c) { return c.value; });
   if (!ids.length) {
-    toast("error", "没有选择任务", "请先勾选要导出的任务");
+    const empty = !panel.list.children.length;
+    toast("error", empty ? "没有可导出的任务" : "没有选择任务",
+          empty ? "任务库为空，或尚未加载完成" : "请先勾选要导出的任务");
     return;
   }
   let r = null;
