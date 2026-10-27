@@ -265,7 +265,7 @@ class WallpaperCache:
                 except Exception as exc:  # noqa: BLE001 - degrade, never raise
                     stale = self.status()
                     stale["ok"] = False
-                    stale["error"] = f"壁纸下载失败：{type(exc).__name__}"
+                    stale["error"] = f"壁纸下载失败：{type(exc).__name__}: {exc}"
                     return stale
                 self._adopt(index, merged)
                 self._save()
@@ -273,7 +273,17 @@ class WallpaperCache:
         except Exception as exc:  # noqa: BLE001 - network/parse failures degrade
             stale = self.status()
             stale["ok"] = False
-            stale["error"] = f"壁纸同步失败：{type(exc).__name__}"
+            # Include the message and the failing call site: "FileNotFoundError"
+            # on its own gave no hint that the cache directory could not be
+            # created under data_dir.
+            import traceback as _tb
+            where = ""
+            frames = _tb.extract_tb(exc.__traceback__)
+            if frames:
+                last = frames[-1]
+                where = f"（{last.filename.rsplit(chr(47), 1)[-1]}:{last.lineno}）"
+            stale["error"] = (f"壁纸同步失败：{type(exc).__name__}: {exc}{where}"
+                              f" [data_dir={self.data_dir}]")
             return stale
 
     def select(self, date):

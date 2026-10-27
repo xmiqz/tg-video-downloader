@@ -326,6 +326,9 @@ class Api:
         # 上的本地打开/文件选择动作，并把目录写操作限制在允许根目录内。
         self.runtime_mode = "desktop"
         self.allowed_roots = ()
+        # Explicit data directory for on-disk caches (wallpaper). Falls back to
+        # core.DATA_DIR only when nothing injected it, e.g. in unit tests.
+        self.data_dir = None
         # 事件推送句柄（main 注入；签名 push_event(name:str, params:list)）
         self.push_event = None
         # 实时取光相关（仅 Windows 液态玻璃模式使用）

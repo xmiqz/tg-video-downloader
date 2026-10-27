@@ -684,6 +684,7 @@ def _prepare_runtime(config):
     engine.start()
     try:
         api = gui.Api(engine)
+        api.data_dir = config.data_dir
         api.cfg = core.load_config()
         # Restore an existing Telegram session at boot. Without this, a
         # container restart leaves api.client = None even though the session
