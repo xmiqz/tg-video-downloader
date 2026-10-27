@@ -28,6 +28,11 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          # setup-python's pip cache only auto-detects requirements.txt /
+          # pyproject.toml. This repo has neither, so without an explicit path
+          # the action fails before any test runs with
+          # "No file in ... matched to [**/requirements.txt or **/pyproject.toml]".
+          cache-dependency-path: requirements-dev.txt
 
       - uses: actions/setup-node@v4
         with:
