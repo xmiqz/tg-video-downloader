@@ -542,7 +542,7 @@ function buildDom() {
     appearanceSeg.el,
     el("p", {
       class: "st-hint",
-      text: IS_WINDOWS_HOST
+      text: HOST_MODE !== "headless"
         ? "静态暗（默认）：经典深色玻璃；静态亮：浅色玻璃；每日壁纸：Bing 每日一图，每天 00:00 自动更新；液态玻璃：实时采样窗口正后方的真实画面（仅 Windows），更耗性能。"
         : "静态暗（默认）：经典深色玻璃；静态亮：浅色玻璃；每日壁纸：Bing 每日一图，每天 00:00 自动更新。",
     }),
