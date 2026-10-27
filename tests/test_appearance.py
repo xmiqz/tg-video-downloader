@@ -16,11 +16,20 @@ SETTINGS_JS = ROOT / "web" / "js" / "views" / "settings.js"
 
 
 def _ui_values():
-    """Every `value: "<mode>"` listed in the appearance segment array."""
+    """Every `value: "<mode>"` in the appearance segment builder.
+
+    The list moved into appearanceSegs(hostMode) so "liquid" can be dropped
+    on non-desktop hosts; parse the whole function body rather than one array.
+    """
     text = SETTINGS_JS.read_text(encoding="utf-8")
-    start = text.index("const APPEARANCE_SEGS")
-    end = text.index("];", start)
-    return set(re.findall(r'value:\s*"([a-z]+)"', text[start:end]))
+    start = text.index("function appearanceSegs(hostMode)")
+    end = text.index("\n}", start)
+    body = text[start:end]
+    values = set(re.findall(r'value:\s*"([a-z]+)"', body))
+    # "liquid" is pushed conditionally, so it appears as a bare string there.
+    if '"liquid"' in body or "'liquid'" in body:
+        values.add("liquid")
+    return values
 
 
 def test_ui_values_are_all_accepted_by_backend():

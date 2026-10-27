@@ -588,8 +588,9 @@ export async function boot() {
   // 壁纸主题的图片依赖 #sh-backdrop，必须在壳 DOM 之后才拉取
   if (wallpaperPending) {
     wallpaperPending = false;
-    import("./views/settings.js")
-      .then(function (m) { if (m.applyBingBackdrop) m.applyBingBackdrop(); })
+    // settings.js is already imported statically above; no need to re-import.
+    Promise.resolve()
+      .then(function () { return settingsView.applyBingBackdrop(); })
       .catch(function () { /* 拉不到就保持暗色遮罩 */ });
   }
   // T19f-B 全局下载悬浮卡（右下角通用作业进度浮层）随壳挂载

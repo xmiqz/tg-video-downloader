@@ -100,14 +100,22 @@ export const RPC_STATE_MAP = {
 // 外观分段（index.html:393-397 data-mode/label 逐字）
 // 液态玻璃依赖 Windows 原生窗口后方取光，非 Windows 宿主（浏览器 / 容器 /
 // 其它平台）根本没有这个能力，展示出来只会误导，故按平台裁剪。
-const IS_WINDOWS_HOST = /windows/i.test(
-  (typeof navigator !== "undefined" && navigator.userAgent) || ""
-);
-const APPEARANCE_SEGS = [
-  { value: "dark", label: "静态暗" },
-  { value: "light", label: "静态亮" },
-  { value: "bing", label: "每日壁纸" },
-].concat(IS_WINDOWS_HOST ? [{ value: "liquid", label: "液态玻璃" }] : []);
+// Liquid glass samples the pixels behind a NATIVE window, which only exists in
+// the desktop shell. A browser on Windows hitting the container is still a
+// browser, so UA sniffing is wrong here: the host tells us its runtime_mode
+// via get_settings(). Until that arrives we assume "not available" (the
+// conservative choice: no broken option is shown).
+let HOST_MODE = "headless";
+
+function appearanceSegs(hostMode) {
+  const segs = [
+    { value: "dark", label: "静态暗" },
+    { value: "light", label: "静态亮" },
+    { value: "bing", label: "每日壁纸" },
+  ];
+  if (hostMode !== "headless") segs.push({ value: "liquid", label: "液态玻璃" });
+  return segs;
+}
 
 // 暖机补刷节拍（app.js:3205-3206：3s × 6 次，对齐后端 warm_alt 暖机）
 const WARM_TICK_MS = 3000;
@@ -190,78 +198,47 @@ export function effectiveTheme(mode) {
 // ---------------------------------------------------------------
 // Daily wallpaper theme (Bing photo of the day)
 //
-// The image list comes from bing.biturl.top, which is the only endpoint
-// found that serves Access-Control-Allow-Origin: * (www.bing.com's
-// HPImageArchive does not, so a direct browser fetch is blocked by CORS).
-// The photo itself is then rendered as a plain background-image, which is
-// not subject to CORS at all. CSP in server_app.py allows both hosts.
+// The image is fetched and cached by the BACKEND (wallpaper.py), because the
+// desktop shell starts the server on port 0: the page origin changes every
+// launch, so a localStorage cache would be wiped on each restart. The backend
+// also serves the bytes same-origin at /wallpaper/<file>, which means the
+// page never talks to www.bing.com and the wallpaper still works offline.
 // ---------------------------------------------------------------
-const BING_ENDPOINT =
-  "https://bing.biturl.top/?resolution=1920&format=json&index=0&mkt=zh-CN";
-const BING_CACHE_KEY = "bingWallpaper.v1";
-const BING_CACHE_MS = 6 * 60 * 60 * 1000;   // 6h：一天一张，无需频繁拉
 
 export function bingBackdropCss(url) {
   const u = String(url || "").trim();
   if (!u) return "";
-  // url() in CSS needs quotes + escaping for parentheses/spaces.
   return "url(\"" + u.replace(/["\\]/g, "\\$&") + "\")";
 }
 
-export function isBingCacheFresh(entry, now) {
-  if (!entry || typeof entry !== "object") return false;
-  if (!entry.url) return false;
-  const t = Number(entry.ts) || 0;
-  return (Number(now) || 0) - t < BING_CACHE_MS;
-}
-
-async function loadBingWallpaper(force) {
-  if (!force) {
-    try {
-      const raw = localStorage.getItem(BING_CACHE_KEY);
-      if (raw) {
-        const entry = JSON.parse(raw);
-        if (isBingCacheFresh(entry, Date.now())) return entry;
-      }
-    } catch (e) { /* 缓存损坏则重新拉 */ }
-  }
-  const resp = await fetch(BING_ENDPOINT, { cache: "no-store" });
-  if (!resp.ok) throw new Error("HTTP " + resp.status);
-  const data = await resp.json();
-  if (!data || typeof data.url !== "string" || !data.url) {
-    throw new Error("壁纸接口返回异常");
-  }
-  const entry = {
-    url: data.url,
-    copyright: String(data.copyright || ""),
-    copyright_link: String(data.copyright_link || ""),
-    ts: Date.now(),
-  };
-  try { localStorage.setItem(BING_CACHE_KEY, JSON.stringify(entry)); } catch (e) {}
-  return entry;
-}
-
-async function applyBingBackdrop() {
+export async function applyBingBackdrop() {
   const back = document.getElementById("sh-backdrop");
   if (!back) return;
+  let st = null;
   try {
-    const entry = await loadBingWallpaper(false);
-    back.style.backgroundImage = bingBackdropCss(entry.url);
-    if (entry.copyright) back.title = entry.copyright;
+    st = await wpApi("wallpaper_status", []);
   } catch (e) {
-    // 拉不到就退回静态暗，绝不让界面空着
-    console.debug("[settings] Bing 壁纸加载失败：", e);
-    document.documentElement.removeAttribute("data-theme");
-    document.documentElement.setAttribute("data-theme", "dark");
-    syncSeg("dark");
+    st = null;
+  }
+  const cur = st && st.ok ? st.current : null;
+  if (cur && cur.file) {
+    back.style.backgroundImage = bingBackdropCss("/wallpaper/" + cur.file);
+    if (cur.copyright) back.title = cur.copyright;
+    return;
+  }
+  // Nothing cached yet: ask the backend to sync once, then render.
+  try {
+    st = await wpApi("wallpaper_refresh", [false]);
+  } catch (e) {
+    st = null;
+  }
+  const fresh = st && st.ok ? st.current : null;
+  if (fresh && fresh.file) {
+    back.style.backgroundImage = bingBackdropCss("/wallpaper/" + fresh.file);
+    if (fresh.copyright) back.title = fresh.copyright;
   }
 }
 
-// ============================================================
-// S7 classifyLogin —— login_state 三态（login.js S1 同口径）
-// logged_in===true 且 guest!==true → connected；guest===true → guest；
-// 其余 → anonymous。
-// ============================================================
 export function classifyLogin(st) {
   if (st && st.logged_in === true && st.guest !== true) return "connected";
   if (st && st.guest === true) return "guest";
@@ -554,7 +531,7 @@ function buildDom() {
   // createSegmented 构造 set(初值) 会触发 onChange（segmented.js:149→129）：
   // 静默构造，杜绝 mount 期 set_appearance 副作用覆盖已存外观。
   segSilent = true;
-  const appearanceSeg = createSegmented(APPEARANCE_SEGS, {
+  const appearanceSeg = createSegmented(appearanceSegs(HOST_MODE), {
     value: "dark", ariaLabel: "界面外观",
     onChange: function (v) { onAppearanceSeg(v); },
   });
@@ -700,6 +677,10 @@ async function loadAll() {
     const r = await window.pywebview.api.get_settings();
     if (r && r.download_root != null && refs.rootInput) {
       refs.rootInput.value = String(r.download_root);
+    }
+    if (r && typeof r.mode === "string" && r.mode !== HOST_MODE) {
+      HOST_MODE = r.mode;
+      rebuildAppearanceSeg();
     }
     if (r && r.mode === "headless") {
       refs.rootInput.readOnly = false;
@@ -906,6 +887,18 @@ async function importTaskBundle(file) {
 // ---------------------------------------------------------------
 // Wallpaper panel: history picker / per-item delete / upload
 // ---------------------------------------------------------------
+function rebuildAppearanceSeg() {
+  if (!refs || !refs.appearanceSeg) return;
+  const cur = refs.appearanceSeg.get();
+  const fresh = createSegmented(appearanceSegs(HOST_MODE), {
+    value: cur, ariaLabel: "界面外观",
+    onChange: function (v) { onAppearanceSeg(v); },
+  });
+  const oldEl = refs.appearanceSeg.el;
+  if (oldEl && oldEl.parentNode) oldEl.parentNode.replaceChild(fresh.el, oldEl);
+  refs.appearanceSeg = fresh;
+}
+
 function buildWallpaperPanel() {
   const statusLine = el("p", { class: "st-hint", text: "" });
   const histWrap = el("div", { class: "wp-hist", hidden: true });
