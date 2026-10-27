@@ -52,12 +52,17 @@ def _write_stdio_runtime_hook():
 
     失效条件：uvicorn 上游对 None stdout 加防护，或 PyInstaller windowed 模式
     提供默认 stdout 后，可连同 --runtime-hook 一并移除。
+
+    同一 hook 还负责把 SSL_CERT_FILE 指向随包 cacert.pem。冻结态的 OpenSSL
+    找不到构建机的默认证书路径，ssl.create_default_context() 直接抛
+    FileNotFoundError——桌面端「每日壁纸」同步就是这样失败的（源码态正常，
+    只有打包后才复现）。
     """
     os.makedirs(WORK, exist_ok=True)
     hook = os.path.join(WORK, "rthook_stdio.py")
     with open(hook, "w", encoding="utf-8") as f:
         f.write(
-            "# PyInstaller runtime hook: windowed mode has no console streams\n"
+            "# PyInstaller runtime hook: console streams + CA bundle\n"
             "import os\n"
             "import sys\n"
             "for _name in ('stdout', 'stderr'):\n"
@@ -65,8 +70,41 @@ def _write_stdio_runtime_hook():
             "        setattr(sys, _name,\n"
             "                open(os.devnull, 'w', encoding='utf-8'))\n"
             "del _name\n"
+            "_base = getattr(sys, '_MEIPASS', None)\n"
+            "if _base:\n"
+            "    _ca = os.path.join(_base, 'certifi', 'cacert.pem')\n"
+            "    if os.path.isfile(_ca):\n"
+            "        os.environ['SSL_CERT_FILE'] = _ca\n"
+            "        os.environ.setdefault('REQUESTS_CA_BUNDLE', _ca)\n"
+            "del _base\n"
         )
     return hook
+
+
+def _ssl_reject_pem():
+    """Return the ``codex-rejected-cas.pem`` shipped beside this ssl.py, if any.
+
+    The Codex runtime patches ssl.SSLContext.__new__ to unconditionally
+    ``load_verify_locations(cafile=os.path.join(os.path.dirname(ssl.__file__),
+    'codex-rejected-cas.pem'))``. Once frozen, ssl.__file__ lives inside
+    _MEIPASS and that file is absent, so *every* SSLContext construction raises
+    FileNotFoundError - which is exactly why the packaged desktop build could
+    not fetch the daily wallpaper while the source tree could.
+
+    Stock CPython has no such file, so this returns None there and the build is
+    unchanged.
+    """
+    try:
+        import ssl
+    except Exception:
+        return None
+    cand = os.path.join(os.path.dirname(ssl.__file__ or ""), "codex-rejected-cas.pem")
+    return cand if os.path.isfile(cand) else None
+
+
+def _ssl_data_args():
+    pem = _ssl_reject_pem()
+    return ["--add-data", pem + os.pathsep + "."] if pem else []
 
 
 def build_windows_gui(dist):
@@ -86,6 +124,9 @@ def build_windows_gui(dist):
         # 见 _write_stdio_runtime_hook：修复 windowed 态 stdout=None 崩溃
         "--runtime-hook", rthook,
         "--collect-submodules", "telethon",
+        # 冻结态的 OpenSSL 找不到系统证书路径，cacert.pem 必须随包（见 hook）
+        "--collect-data", "certifi",
+    ] + _ssl_data_args() + [
         "--hidden-import", "PIL",
         "--distpath", dist,
         "--workpath", WORK,
@@ -112,6 +153,9 @@ def build_windows_tui(dist):
         "--noconfirm", "--onefile", "--console",
         "--name", name,
         "--collect-submodules", "telethon",
+        "--collect-data", "certifi",
+        "--runtime-hook", _write_stdio_runtime_hook(),
+    ] + _ssl_data_args() + [
         "--distpath", dist,
         "--workpath", WORK,
         "--specpath", WORK,
@@ -136,6 +180,9 @@ def build_cli(dist):
         "--noconfirm", "--onefile", "--console",
         "--name", name,
         "--collect-submodules", "telethon",
+        "--collect-data", "certifi",
+        "--runtime-hook", _write_stdio_runtime_hook(),
+    ] + _ssl_data_args() + [
         "--distpath", dist,
         "--workpath", WORK,
         "--specpath", WORK,
