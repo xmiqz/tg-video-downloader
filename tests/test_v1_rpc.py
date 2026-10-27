@@ -39,9 +39,14 @@ def test_tr1_rpc_method_set_is_locked(tmp_path, monkeypatch):
         "set_api_credentials", "set_download_root", "set_guest", "set_item",
         "start_download",
         "verify_code", "verify_password",
+        # v2.4 hardening: Bing photo-of-the-day wallpaper
+        "wallpaper_status", "wallpaper_refresh", "wallpaper_history",
+        "wallpaper_select", "wallpaper_delete", "set_wallpaper_history",
+        # v2.4 hardening: task export/import (metadata only)
+        "tasks_exportable", "export_tasks", "import_tasks",
     })
     assert isinstance(server_app.RPC_METHODS, frozenset)
-    assert len(server_app.RPC_METHODS) == 46
+    assert len(server_app.RPC_METHODS) == 55
     assert server_app.RPC_METHODS == expected
 
 

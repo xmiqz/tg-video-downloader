@@ -9,6 +9,7 @@ HTTP/JSON-RPC 桥接，把引擎的异步能力暴露给 web/ 下的界面。引
 """
 import asyncio
 import base64
+import contextlib
 import ctypes
 import io
 import json
@@ -24,7 +25,9 @@ import uuid
 
 import host
 
+import taskport
 import tg_video_dl as core
+import wallpaper
 from telethon import TelegramClient
 from telethon.errors import (
     SessionPasswordNeededError,
@@ -2362,10 +2365,21 @@ class Api:
 
     def open_item_file(self, task_id, src, mid):
         if self.runtime_mode == "headless":
+            # No server-side desktop exists to open files on, but the file is
+            # reachable over HTTP. Return a same-origin URL so the browser can
+            # stream/play it (and still save it locally).
+            info = self.item_file_info(task_id, src, mid)
+            if not info.get("exists"):
+                return {"ok": False, "error": "文件不存在"}
+            from urllib.parse import quote
+            rel = ("/media/file?task=" + quote(str(task_id))
+                   + "&src=" + quote(str(src))
+                   + "&mid=" + quote(str(mid)))
             return {
                 "ok": False,
+                "headless": True,
+                "url": rel,
                 "error": "浏览器模式不能在服务器本机打开文件",
-                "unsupported_in_headless": True,
             }
         r = self.item_file_info(task_id, src, mid)
         if r.get("exists"):
@@ -2450,6 +2464,8 @@ class Api:
                 "error": "浏览器模式请直接输入服务器路径",
                 "unsupported_in_headless": True,
             }
+        if sys.platform == "win32":
+            return self._choose_folder_win()
         try:
             import tkinter as tk
             from tkinter import filedialog
@@ -2487,6 +2503,124 @@ class Api:
                 return {"ok": False, "error": str(e2)}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    @staticmethod
+    def _choose_folder_win():
+        """Windows folder picker via IFileOpenDialog.
+
+        The legacy FolderBrowserDialog (and tkinter's askdirectory) has no
+        address bar, so the user can only click down through the tree and
+        cannot paste a path. IFileOpenDialog is the Vista+ dialog Explorer
+        itself uses: editable address bar, breadcrumbs and a search box.
+
+        The COM shim lives in folderpicker.cs beside this file and is
+        compiled in-memory by Add-Type, so there is no build step.
+        """
+        try:
+            import base64
+            import subprocess
+
+            shim = pathlib.Path(__file__).with_name("folderpicker.cs")
+            try:
+                cs = shim.read_text(encoding="utf-8")
+            except OSError as exc:
+                return {"ok": False, "error": f"缺少 {shim.name}：{exc}"}
+            payload = base64.b64encode(cs.encode("utf-8")).decode("ascii")
+            ps = (
+                "$c = [Text.Encoding]::UTF8.GetString("
+                "[Convert]::FromBase64String('" + payload + "')); "
+                "Add-Type -TypeDefinition $c -Language CSharp; "
+                "$p = [TgvdFolderPicker]::Pick("
+                "'选择保存目录（可直接粘贴路径）'); "
+                "if ($p) { [Console]::Out.Write($p) }"
+            )
+            enc = base64.b64encode(ps.encode("utf-16le")).decode("ascii")
+            argv = ["powershell.exe", "-NoProfile", "-STA",
+                    "-EncodedCommand", enc]
+            kw = {"capture_output": True, "timeout": 600}
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            out = subprocess.run(argv, **kw)
+            p = (out.stdout or b"").decode("utf-8", "ignore").strip()
+            return {"ok": True, "path": p}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # ---------- 任务导入 / 导出（仅元数据，绝不含视频本体）----------
+    def tasks_exportable(self):
+        """List tasks the user can pick for export."""
+        out = []
+        for t in core.load_tasks():
+            items = t.get("items") or []
+            out.append({
+                "id": str(t.get("id") or ""),
+                "title": str(t.get("channel_title") or ""),
+                "channel": str(t.get("channel") or ""),
+                "created": str(t.get("created") or ""),
+                "count": len(items),
+                "done": sum(1 for i in items
+                            if str(i.get("status")) == "done"),
+            })
+        return {"ok": True, "tasks": out}
+
+    def export_tasks(self, ids, keep_status=True):
+        """Build a portable bundle for the selected task ids."""
+        wanted = [str(x) for x in (ids or [])]
+        if not wanted:
+            return {"ok": False, "error": "没有选择任务"}
+        root = core.get_download_root(self.cfg)
+        picked = [t for t in core.load_tasks()
+                  if str(t.get("id")) in wanted]
+        if not picked:
+            return {"ok": False, "error": "所选任务不存在"}
+        bundle = taskport.build_bundle(picked, root,
+                                       keep_status=bool(keep_status))
+        return {"ok": True, "bundle": bundle,
+                "filename": taskport.safe_bundle_filename(),
+                "count": len(bundle["tasks"])}
+
+    def import_tasks(self, bundle):
+        """Recreate tasks from a bundle, re-anchoring folders to this root."""
+        try:
+            parsed = taskport.parse_bundle(bundle)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        root = core.get_download_root(self.cfg)
+        tasks = taskport.materialize(parsed, root,
+                                     new_task_id=core.new_task_id)
+        saved = []
+        for t in tasks:
+            with contextlib.suppress(OSError):
+                pathlib.Path(t["folder"]).mkdir(parents=True, exist_ok=True)
+            core.save_task(t, force=True)
+            saved.append({"id": t["id"], "title": t["channel_title"]})
+        return {"ok": True, "count": len(saved), "tasks": saved}
+
+    # ---------- 每日壁纸（Bing 图片，缓存到 data_dir/cache）----------
+    def _wallpaper(self):
+        wp = getattr(self, "_wallpaper_cache", None)
+        if wp is None:
+            data_dir = getattr(self, "data_dir", None) or core.DATA_DIR
+            wp = wallpaper.WallpaperCache(data_dir)
+            self._wallpaper_cache = wp
+        return wp
+
+    def wallpaper_status(self):
+        return self._wallpaper().status()
+
+    def wallpaper_refresh(self, force=False):
+        return self._wallpaper().refresh(force=bool(force))
+
+    def wallpaper_history(self):
+        return self._wallpaper().history()
+
+    def wallpaper_select(self, date):
+        return self._wallpaper().select(date)
+
+    def wallpaper_delete(self, date):
+        return self._wallpaper().delete(date)
+
+    def set_wallpaper_history(self, enabled):
+        return self._wallpaper().set_save_history(enabled)
 
     def get_settings(self):
         roots = [str(pathlib.Path(root).resolve())

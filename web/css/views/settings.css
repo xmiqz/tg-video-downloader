@@ -285,3 +285,39 @@ html.liquid .st-card {
 }
 #sh-root[data-v22-rm="on"] .st-guest-row { transition: none; }
 #sh-root[data-v22-rm="on"] .st-input { transition: none; }
+
+/* ---------- 壁纸面板（每日壁纸主题） ---------- */
+.wp-panel { margin-top: var(--space-3); display: grid; gap: var(--space-2); }
+.wp-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.wp-hist { display: grid; gap: var(--space-2); }
+.wp-hist-list {
+  display: grid; gap: var(--space-2);
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+.wp-item {
+  display: grid; gap: 6px; justify-items: center;
+  padding: var(--space-2); border-radius: var(--radius-sm);
+  background: var(--glass-bg-soft, rgba(255,255,255,.06));
+  border: 1px solid var(--color-border);
+}
+.wp-thumb {
+  width: 100%; aspect-ratio: 16 / 9; object-fit: cover;
+  border-radius: var(--radius-xs); display: block;
+}
+.wp-date { font-size: var(--text-xs); color: var(--color-text-muted); }
+
+/* ---------- 任务导入 / 导出 ---------- */
+.tp-panel { margin-top: var(--space-3); display: grid; gap: var(--space-2); }
+.tp-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.tp-list { max-height: 320px; overflow: auto; }
+.tp-items { display: grid; gap: 2px; }
+.tp-row {
+  display: grid; grid-template-columns: auto 1fr auto;
+  align-items: center; gap: var(--space-2);
+  padding: 6px var(--space-2); border-radius: var(--radius-xs);
+}
+.tp-row:hover { background: var(--color-primary-soft); }
+.tp-title {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tp-meta { font-size: var(--text-xs); color: var(--color-text-faint); }

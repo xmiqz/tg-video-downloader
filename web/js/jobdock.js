@@ -103,10 +103,11 @@ function collapseHost(on) {
   refreshMiniText();
 }
 
-function buildCard(id) {
+function buildCard(id, taskId) {
   const card = document.createElement("div");
   card.className = "job-card";
   card.dataset.jobId = id;
+  if (taskId) card.dataset.taskId = taskId;
   card.innerHTML =
     '<div class="job-head">' +
     '<span class="job-kind"></span>' +
@@ -148,8 +149,24 @@ function renderJob(job) {
   if (job.kind === "move_folder") return false;
   // download/scan_append/t45_demo 等落通用卡（2.1 T53b-E 口径）
 
+  // Cancel -> resume creates a fresh job_id for the same task, which used to
+  // leave both states in the dock. Retire any older card that carries the
+  // same task_id and is already terminal, so only the live one remains.
+  const tid = typeof job.task_id === "string" ? job.task_id : "";
+  if (tid) {
+    host.querySelectorAll('[data-job-id]').forEach(function (old) {
+      if (old.getAttribute("data-job-id") === id) return;
+      if (old.getAttribute("data-task-id") !== tid) return;
+      const oldState = old.querySelector(".job-state");
+      const st = oldState && oldState.dataset.state;
+      if (st === "done" || st === "error" || st === "cancelled") {
+        old.remove();
+      }
+    });
+  }
+
   let card = host.querySelector('[data-job-id="' + qAttr(id) + '"]');
-  if (!card) card = buildCard(id);
+  if (!card) card = buildCard(id, tid);
   refreshMiniText();               // 折叠态胶囊文案随卡片数更新
 
   // download 卡根挂 data-phase（英文枚举仅作 CSS 键）；.ph 留空，中文

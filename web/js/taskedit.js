@@ -1,4 +1,4 @@
-﻿/* ============================================================
+/* ============================================================
    独立任务编辑窗口：任务设置 + 全条目专业表格管理
    文件名 / TG 消息原文 / 时长 / 日期 / 大小 / 状态
    ============================================================ */
@@ -277,6 +277,13 @@ function edOpenFile(k) {
   // 检查 + rejection 兜底：{ok:false, error:"文件不存在"} 不再静默。
   api().open_item_file(TASK_ID, o.src, o.mid)
     .then((r) => {
+      // Headless: the server cannot open files locally, but it can serve
+      // them. Let the browser play/save the item from a same-origin URL.
+      if (r && r.headless && r.url) {
+        const w = window.open(r.url, "_blank", "noopener");
+        if (!w) alert("播放页被浏览器拦截，请允许本站弹出窗口后重试");
+        return;
+      }
       if (!r || !r.ok) alert("打开失败：" + ((r && r.error) || ""));
     })
     .catch((e) => alert("打开失败：" + (e && e.message || e)));

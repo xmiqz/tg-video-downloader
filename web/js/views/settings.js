@@ -97,12 +97,17 @@ export const RPC_STATE_MAP = {
   error: "absent",
 };
 
-// 外观三分段（index.html:393-397 data-mode/label 逐字）
+// 外观分段（index.html:393-397 data-mode/label 逐字）
+// 液态玻璃依赖 Windows 原生窗口后方取光，非 Windows 宿主（浏览器 / 容器 /
+// 其它平台）根本没有这个能力，展示出来只会误导，故按平台裁剪。
+const IS_WINDOWS_HOST = /windows/i.test(
+  (typeof navigator !== "undefined" && navigator.userAgent) || ""
+);
 const APPEARANCE_SEGS = [
   { value: "dark", label: "静态暗" },
   { value: "light", label: "静态亮" },
-  { value: "liquid", label: "液态玻璃" },
-];
+  { value: "bing", label: "每日壁纸" },
+].concat(IS_WINDOWS_HOST ? [{ value: "liquid", label: "液态玻璃" }] : []);
 
 // 暖机补刷节拍（app.js:3205-3206：3s × 6 次，对齐后端 warm_alt 暖机）
 const WARM_TICK_MS = 3000;
@@ -180,6 +185,76 @@ export function nextAltId(ids) {
 // ============================================================
 export function effectiveTheme(mode) {
   return String(mode || "") === "light" ? "light" : "dark";
+}
+
+// ---------------------------------------------------------------
+// Daily wallpaper theme (Bing photo of the day)
+//
+// The image list comes from bing.biturl.top, which is the only endpoint
+// found that serves Access-Control-Allow-Origin: * (www.bing.com's
+// HPImageArchive does not, so a direct browser fetch is blocked by CORS).
+// The photo itself is then rendered as a plain background-image, which is
+// not subject to CORS at all. CSP in server_app.py allows both hosts.
+// ---------------------------------------------------------------
+const BING_ENDPOINT =
+  "https://bing.biturl.top/?resolution=1920&format=json&index=0&mkt=zh-CN";
+const BING_CACHE_KEY = "bingWallpaper.v1";
+const BING_CACHE_MS = 6 * 60 * 60 * 1000;   // 6h：一天一张，无需频繁拉
+
+export function bingBackdropCss(url) {
+  const u = String(url || "").trim();
+  if (!u) return "";
+  // url() in CSS needs quotes + escaping for parentheses/spaces.
+  return "url(\"" + u.replace(/["\\]/g, "\\$&") + "\")";
+}
+
+export function isBingCacheFresh(entry, now) {
+  if (!entry || typeof entry !== "object") return false;
+  if (!entry.url) return false;
+  const t = Number(entry.ts) || 0;
+  return (Number(now) || 0) - t < BING_CACHE_MS;
+}
+
+async function loadBingWallpaper(force) {
+  if (!force) {
+    try {
+      const raw = localStorage.getItem(BING_CACHE_KEY);
+      if (raw) {
+        const entry = JSON.parse(raw);
+        if (isBingCacheFresh(entry, Date.now())) return entry;
+      }
+    } catch (e) { /* 缓存损坏则重新拉 */ }
+  }
+  const resp = await fetch(BING_ENDPOINT, { cache: "no-store" });
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
+  const data = await resp.json();
+  if (!data || typeof data.url !== "string" || !data.url) {
+    throw new Error("壁纸接口返回异常");
+  }
+  const entry = {
+    url: data.url,
+    copyright: String(data.copyright || ""),
+    copyright_link: String(data.copyright_link || ""),
+    ts: Date.now(),
+  };
+  try { localStorage.setItem(BING_CACHE_KEY, JSON.stringify(entry)); } catch (e) {}
+  return entry;
+}
+
+async function applyBingBackdrop() {
+  const back = document.getElementById("sh-backdrop");
+  if (!back) return;
+  try {
+    const entry = await loadBingWallpaper(false);
+    back.style.backgroundImage = bingBackdropCss(entry.url);
+    if (entry.copyright) back.title = entry.copyright;
+  } catch (e) {
+    // 拉不到就退回静态暗，绝不让界面空着
+    console.debug("[settings] Bing 壁纸加载失败：", e);
+    document.documentElement.removeAttribute("data-theme");
+    document.documentElement.setAttribute("data-theme", "dark");
+    syncSeg("dark");
+  }
 }
 
 // ============================================================
@@ -484,13 +559,28 @@ function buildDom() {
     onChange: function (v) { onAppearanceSeg(v); },
   });
   segSilent = false;
+  // 壁纸面板：仅在选中「每日壁纸」时展开
+  const wpPanel = buildWallpaperPanel();
   root.append(makeCard("界面外观", [
     appearanceSeg.el,
     el("p", {
       class: "st-hint",
-      // index.html:398 逐字
-      text: "静态暗（默认）：经典深色玻璃；静态亮：浅色玻璃。二者不做屏幕采样。液态玻璃：实时采样窗口正后方的真实画面（仅 Windows），更耗性能。",
+      text: IS_WINDOWS_HOST
+        ? "静态暗（默认）：经典深色玻璃；静态亮：浅色玻璃；每日壁纸：Bing 每日一图，每天 00:00 自动更新；液态玻璃：实时采样窗口正后方的真实画面（仅 Windows），更耗性能。"
+        : "静态暗（默认）：经典深色玻璃；静态亮：浅色玻璃；每日壁纸：Bing 每日一图，每天 00:00 自动更新。",
     }),
+    wpPanel.el,
+  ]));
+
+  // —— 卡：任务导入 / 导出（仅元数据，绝不含视频本体）——
+  const taskPanel = buildTaskPortPanel();
+  root.append(makeCard("任务导入 / 导出", [
+    el("p", {
+      class: "st-hint",
+      text: "导出的任务包只含条目元数据（名称/大小/日期/状态），不含任何视频文件；"
+          + "导入时会按本机下载根目录重新落位，条目一律回到待下载状态。",
+    }),
+    taskPanel.el,
   ]));
 
   // —— 卡三：下载根目录（index.html:400-409）——
@@ -544,6 +634,8 @@ function buildDom() {
   refs = {
     root: root,
     appearanceSeg: appearanceSeg,
+    wpPanel: wpPanel,
+    tpPanel: taskPanel,
     acctRegion: acctRegion,
     acctErr: acctErr,
     btnAdd: btnAdd,
@@ -653,11 +745,25 @@ function applyAppearance(mode) {
   // 其余平台按静态暗降级（app.js:2555-2556）。非 liquid 清 backdrop 图。
   const IS_WIN = /windows/i.test((typeof navigator !== "undefined" && navigator.userAgent) || "");
   const eff = (String(mode || "") === "liquid" && !IS_WIN) ? "dark" : mode;
-  document.documentElement.setAttribute("data-theme", effectiveTheme(eff));
+  const isBing = eff === "bing";
+  // wallpaper 主题沿用暗色令牌（照片上压深色遮罩），data-theme 只用于选层
+  document.documentElement.setAttribute(
+    "data-theme", isBing ? "wallpaper" : effectiveTheme(eff));
   document.documentElement.classList.toggle("liquid", eff === "liquid");
   if (eff !== "liquid" && typeof window !== "undefined" &&
       typeof window._setBackdrop === "function") {
     window._setBackdrop("");
+  }
+  const wp = refs && refs.wpPanel;
+  if (wp) {
+    wp.el.hidden = !isBing;
+    if (isBing) refreshWallpaper(false);
+  }
+  if (isBing) {
+    applyBingBackdrop();
+  } else {
+    const back = document.getElementById("sh-backdrop");
+    if (back) { back.style.backgroundImage = ""; back.removeAttribute("title"); }
   }
   syncSeg(mode);
 }
@@ -671,6 +777,299 @@ function syncSeg(mode) {
   } finally {
     segSilent = false;
   }
+}
+
+// ---------------------------------------------------------------
+// Task export / import panel
+// ---------------------------------------------------------------
+function buildTaskPortPanel() {
+  const listWrap = el("div", { class: "tp-list", hidden: true });
+  const list = el("div", { class: "tp-items" });
+  const statusLine = el("p", { class: "st-hint", text: "" });
+  const openPickerBtn = el("button", {
+    class: "u-btn u-btn--ghost u-btn--sm", type: "button", text: "选择要导出的任务",
+    onclick: function () { toggleTaskPicker(); },
+  });
+  const exportBtn = el("button", {
+    class: "u-btn u-btn--primary u-btn--sm", type: "button", text: "导出所选",
+    onclick: function () { exportSelectedTasks(); },
+  });
+  const importInput = el("input", {
+    type: "file", accept: "application/json,.json", hidden: true,
+  });
+  const importBtn = el("button", {
+    class: "u-btn u-btn--ghost u-btn--sm", type: "button", text: "导入任务包",
+    onclick: function () { importInput.click(); },
+  });
+  importInput.addEventListener("change", function () {
+    const f = importInput.files && importInput.files[0];
+    importInput.value = "";
+    if (f) importTaskBundle(f);
+  });
+  return {
+    el: el("div", { class: "tp-panel" }, [
+      el("div", { class: "tp-actions" }, [
+        openPickerBtn, exportBtn, importBtn, importInput,
+      ]),
+      statusLine, listWrap,
+    ]),
+    list, listWrap, statusLine, openPickerBtn,
+  };
+}
+
+async function toggleTaskPicker() {
+  const panel = refs && refs.tpPanel;
+  if (!panel) return;
+  if (!panel.listWrap.hidden) {
+    panel.listWrap.hidden = true;
+    return;
+  }
+  let r = null;
+  try { r = await tpApi("tasks_exportable", []); } catch (e) {}
+  const tasks = (r && r.ok && Array.isArray(r.tasks)) ? r.tasks : [];
+  panel.list.textContent = "";
+  if (!tasks.length) {
+    panel.statusLine.textContent = "没有可导出的任务。";
+    return;
+  }
+  tasks.forEach(function (t) {
+    const cb = el("input", { type: "checkbox", value: t.id });
+    panel.list.append(el("label", { class: "tp-row" }, [
+      cb,
+      el("span", { class: "tp-title", text: t.title || t.id }),
+      el("span", { class: "tp-meta",
+        text: t.count + " 条 · 已完成 " + t.done + " · " + (t.created || "") }),
+    ]));
+  });
+  panel.listWrap.hidden = false;
+  panel.statusLine.textContent = "勾选后点「导出所选」。";
+}
+
+function tpApi(name, args) {
+  if (!(window.pywebview && window.pywebview.api)) return null;
+  const fn = window.pywebview.api[name];
+  if (typeof fn !== "function") return null;
+  return fn.apply(window.pywebview.api, args || []);
+}
+
+function downloadJson(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 1)],
+                        { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+}
+
+async function exportSelectedTasks() {
+  const panel = refs && refs.tpPanel;
+  if (!panel) return;
+  const ids = Array.from(panel.list.querySelectorAll("input:checked"))
+    .map(function (c) { return c.value; });
+  if (!ids.length) {
+    toast("error", "没有选择任务", "请先勾选要导出的任务");
+    return;
+  }
+  let r = null;
+  try { r = await tpApi("export_tasks", [ids]); } catch (e) {}
+  if (!r || !r.ok) {
+    toast("error", "导出失败", (r && r.error) || "未知错误");
+    return;
+  }
+  downloadJson(r.filename, r.bundle);
+  panel.statusLine.textContent = "已导出 " + r.count + " 个任务。";
+}
+
+async function importTaskBundle(file) {
+  const panel = refs && refs.tpPanel;
+  let bundle = null;
+  try {
+    bundle = JSON.parse(await file.text());
+  } catch (e) {
+    toast("error", "任务包无法解析", "不是有效的 JSON 文件");
+    return;
+  }
+  let r = null;
+  try { r = await tpApi("import_tasks", [bundle]); } catch (e) {}
+  if (!r || !r.ok) {
+    toast("error", "导入失败", (r && r.error) || "未知错误");
+    return;
+  }
+  if (panel) panel.statusLine.textContent = "已导入 " + r.count + " 个任务。";
+  toast("success", "导入完成", r.count + " 个任务已加入任务库");
+}
+
+// ---------------------------------------------------------------
+// Wallpaper panel: history picker / per-item delete / upload
+// ---------------------------------------------------------------
+function buildWallpaperPanel() {
+  const statusLine = el("p", { class: "st-hint", text: "" });
+  const histWrap = el("div", { class: "wp-hist", hidden: true });
+  const histList = el("div", { class: "wp-hist-list" });
+  const saveToggle = el("input", { type: "checkbox", id: "wp-save-hist" });
+  const uploadInput = el("input", {
+    type: "file", id: "wp-upload", accept: "image/*", hidden: true,
+  });
+  const uploadBtn = el("button", {
+    class: "u-btn u-btn--ghost u-btn--sm", type: "button", text: "上传背景",
+    onclick: function () { uploadInput.click(); },
+  });
+  const refreshBtn = el("button", {
+    class: "u-btn u-btn--ghost u-btn--sm", type: "button", text: "立即同步",
+    onclick: function () { refreshWallpaper(true); },
+  });
+  const row = el("div", { class: "wp-actions" }, [refreshBtn, uploadBtn, uploadInput]);
+
+  uploadInput.addEventListener("change", function () {
+    const f = uploadInput.files && uploadInput.files[0];
+    uploadInput.value = "";
+    if (f) uploadWallpaper(f);
+  });
+  saveToggle.addEventListener("change", function () {
+    setWallpaperHistory(!!saveToggle.checked);
+  });
+
+  const el_ = el("div", { class: "wp-panel", hidden: true }, [
+    statusLine,
+    el("label", { class: "check-line" }, [
+      saveToggle, document.createTextNode(" 保存历史壁纸（之后可随时切回）"),
+    ]),
+    row,
+    histWrap,
+  ]);
+  histWrap.append(el("p", { class: "st-hint", text: "已保存的壁纸" }), histList);
+  return { el: el_, statusLine, histList, histWrap, saveToggle };
+}
+
+function wpApi(name, args) {
+  if (!(window.pywebview && window.pywebview.api)) return null;
+  const fn = window.pywebview.api[name];
+  if (typeof fn !== "function") return null;
+  return fn.apply(window.pywebview.api, args || []);
+}
+
+async function refreshWallpaper(force) {
+  const panel = refs && refs.wpPanel;
+  if (!panel) return;
+  let st = null;
+  try {
+    st = await (force ? wpApi("wallpaper_refresh", [true])
+                      : wpApi("wallpaper_status", []));
+  } catch (e) {
+    panel.statusLine.textContent = "壁纸状态读取失败";
+    return;
+  }
+  if (!st || !st.ok) {
+    panel.statusLine.textContent = (st && st.error) || "壁纸同步失败";
+    return;
+  }
+  panel.saveToggle.checked = !!st.save_history;
+  const cur = st.current;
+  if (!cur) {
+    panel.statusLine.textContent = "尚未缓存壁纸，点「立即同步」获取今天的图。";
+  } else {
+    const stale = st.outdated && st.latest_date
+      ? "（Bing 已更新为 " + st.latest_date + "，点「立即同步」换新）" : "";
+    panel.statusLine.textContent = "当前：" + (cur.date || "—")
+      + (cur.copyright ? " · " + cur.copyright : "") + stale;
+    if (cur.file) setWallpaperImage(cur.file);
+  }
+  renderWallpaperHistory();
+}
+
+async function renderWallpaperHistory() {
+  const panel = refs && refs.wpPanel;
+  if (!panel) return;
+  let r = null;
+  try { r = await wpApi("wallpaper_history", []); } catch (e) { return; }
+  const items = (r && r.ok && Array.isArray(r.items)) ? r.items : [];
+  panel.histList.textContent = "";
+  panel.histWrap.hidden = items.length === 0;
+  items.forEach(function (it) {
+    const thumb = el("img", {
+      class: "wp-thumb", src: "/wallpaper/" + it.file, alt: it.date || "",
+      loading: "lazy",
+    });
+    const label = el("span", { class: "wp-date", text: it.date || "" });
+    const use = el("button", {
+      class: "u-btn u-btn--ghost u-btn--sm", type: "button", text: "使用",
+      onclick: function () { selectWallpaper(it.date, use); },
+    });
+    const del = el("button", {
+      class: "u-btn u-btn--danger u-btn--sm", type: "button", text: "删除",
+      onclick: function () { deleteWallpaper(it.date, del); },
+    });
+    panel.histList.append(el("div", { class: "wp-item" }, [
+      thumb, label, use, del,
+    ]));
+  });
+}
+
+function setWallpaperImage(file) {
+  const back = document.getElementById("sh-backdrop");
+  if (back && file) back.style.backgroundImage = 'url("/wallpaper/' + file + '")';
+}
+
+async function selectWallpaper(date, btn) {
+  btn.disabled = true;
+  let r = null;
+  try { r = await wpApi("wallpaper_select", [date]); } catch (e) {}
+  btn.disabled = false;
+  if (!r || !r.ok) {
+    toast("error", "切换壁纸失败", (r && r.error) || "未知错误");
+    return;
+  }
+  if (r.current && r.current.file) setWallpaperImage(r.current.file);
+  refreshWallpaper(false);
+}
+
+async function deleteWallpaper(date, btn) {
+  btn.disabled = true;
+  let r = null;
+  try { r = await wpApi("wallpaper_delete", [date]); } catch (e) {}
+  btn.disabled = false;
+  if (!r || !r.ok) {
+    toast("error", "删除失败", (r && r.error) || "未知错误");
+    return;
+  }
+  refreshWallpaper(false);
+}
+
+async function setWallpaperHistory(enabled) {
+  let r = null;
+  try { r = await wpApi("set_wallpaper_history", [enabled]); } catch (e) {}
+  if (!r || !r.ok) {
+    toast("error", "保存设置失败", (r && r.error) || "未知错误");
+    return;
+  }
+  refreshWallpaper(false);
+}
+
+async function uploadWallpaper(file) {
+  const name = encodeURIComponent(file.name || "upload.jpg");
+  let resp = null;
+  try {
+    resp = await fetch("/wallpaper/upload?name=" + name, {
+      method: "POST",
+      body: file,
+      headers: { "content-type": file.type || "application/octet-stream" },
+    });
+  } catch (e) {
+    toast("error", "上传失败", (e && e.message) || String(e));
+    return;
+  }
+  let body = null;
+  try { body = await resp.json(); } catch (e) {}
+  if (!resp.ok || !body || !body.ok) {
+    toast("error", "上传失败", (body && body.error) || ("HTTP " + resp.status));
+    return;
+  }
+  if (body.current && body.current.file) setWallpaperImage(body.current.file);
+  refreshWallpaper(false);
 }
 
 function onAppearanceSeg(mode) {

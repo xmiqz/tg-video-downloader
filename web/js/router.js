@@ -568,11 +568,16 @@ export async function boot() {
   // 其余平台按静态暗降级（app.js:2555-2556）。html.liquid 切换与 data-theme
   // 只作用于 html 令牌层；非 liquid 清 backdrop 图。
   const IS_WIN = /windows/i.test((win.navigator && win.navigator.userAgent) || "");
+  let wallpaperPending = false;
   function applyAppearance(mode) {
     const eff = (mode === "liquid" && !IS_WIN) ? "dark" : mode;
-    doc.documentElement.setAttribute("data-theme", eff === "light" ? "light" : "dark");
+    const isBing = eff === "bing";
+    // wallpaper 主题沿用暗色令牌，data-theme 只用来选中壁纸图层
+    doc.documentElement.setAttribute(
+      "data-theme", isBing ? "wallpaper" : (eff === "light" ? "light" : "dark"));
     doc.documentElement.classList.toggle("liquid", eff === "liquid");
     if (eff !== "liquid") win._setBackdrop("");
+    if (isBing) wallpaperPending = true;   // 图层尚未建，稍后再拉图
   }
   try {
     applyAppearance((win.localStorage.getItem("appearance") || "dark").toLowerCase());
@@ -580,6 +585,13 @@ export async function boot() {
 
   const root = buildShellDom();
   doc.body.appendChild(root);
+  // 壁纸主题的图片依赖 #sh-backdrop，必须在壳 DOM 之后才拉取
+  if (wallpaperPending) {
+    wallpaperPending = false;
+    import("./views/settings.js")
+      .then(function (m) { if (m.applyBingBackdrop) m.applyBingBackdrop(); })
+      .catch(function () { /* 拉不到就保持暗色遮罩 */ });
+  }
   // T19f-B 全局下载悬浮卡（右下角通用作业进度浮层）随壳挂载
   mountJobDock();
 

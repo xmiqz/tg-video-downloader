@@ -76,6 +76,13 @@ body { background: var(--color-surface); }
   transition: background-color .4s;        /* style.css:56 */
 }
 html.liquid #sh-backdrop { display: block; }
+/* Daily-wallpaper theme: same backdrop layer as liquid, but the image comes
+   from the Bing photo of the day instead of the sampled window behind.
+html[data-theme="wallpaper"] #sh-backdrop { display: block; }
+html[data-theme="wallpaper"] .sh-ambient { display: none; }
+html[data-theme="wallpaper"] #sh-backdrop::after {
+  background: linear-gradient(155deg, rgba(8, 10, 18, .34), rgba(8, 10, 18, .58));
+}
 #sh-backdrop::after {
   content: "";
   position: absolute;

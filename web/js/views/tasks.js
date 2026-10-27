@@ -1217,6 +1217,13 @@ async function dPlay(src, mid, btn) {
     return;
   }
   restore();
+  // Headless: no server-side desktop to open on, but the file is reachable
+  // over HTTP. Hand the URL to the browser so it streams/plays natively.
+  if (r && r.headless && r.url) {
+    const w = window.open(r.url, "_blank", "noopener");
+    if (!w) toast("error", "播放页被浏览器拦截", "请允许本站弹出窗口后重试");
+    return;
+  }
   if (!r || !r.ok) toast("error", "打开文件失败", (r && r.error) || "文件不存在或无法打开");
 }
 
@@ -1347,33 +1354,33 @@ function extractFiles(r) {
   return n ? out : null;
 }
 
-// app.js:1898-1900 openSheetEditor —— T19h 用户裁决恢复 2.1 双窗：
-// 编辑入口开独立编辑窗（open_editor 辅助窗 + taskedit.html 2.1 布局；
-// T16「禁调 open_editor」口径随用户指令废止），/task/:id/edit 深链视图
-// 保留作兜底：开窗失败（含桩返回非 ok）静默回落深链。
+// app.js:1898-1900 openSheetEditor —— T19h 用户裁决恢复 2.1 双窗。
+// The in-shell /task/:id/edit route is NOT a usable fallback (its layout was
+// built for the native shell and collapses at browser widths), so it is no
+// longer used. Desktop opens the native aux window; headless opens
+// taskedit.html in a tab. If the tab is blocked we surface the reason instead
+// of navigating somewhere broken.
 function openSheetEditor(taskId) {
   if (!taskId) return;
-  const fallback = function () {
-    navigate("/task/" + encodeURIComponent(taskId) + "/edit");
+  const directUrl = "/taskedit.html?id=" + encodeURIComponent(taskId);
+  const openTab = function (url) {
+    const w = window.open(url || directUrl, "_blank", "noopener");
+    if (w) return true;
+    toast("error", "编辑页被浏览器拦截", "请允许本站弹出窗口后重试");
+    return false;
   };
   try {
     const p = window.pywebview && window.pywebview.api
       ? window.pywebview.api.open_editor(taskId) : null;
-    if (!p || typeof p.then !== "function") return fallback();
+    if (!p || typeof p.then !== "function") return openTab();
     p.then(function (r) {
-      if (r && r.ok) return;
-      // Headless (browser / container): there is no native window host, but
-      // taskedit.html is a self-contained page. Open it in a new tab rather
-      // than falling back to the in-shell edit route, which renders unusable
-      // at browser widths.
-      if (r && r.headless && r.url) {
-        const w = window.open(r.url, "_blank", "noopener");
-        if (!w) fallback();          // popup blocked -> keep the deep link
-        return;
-      }
-      fallback();
-    }).catch(fallback);
+      if (r && r.ok) return;                       // 原生辅助窗已开
+      if (r && r.headless) return openTab(r.url);  // 浏览器：新标签页
+      // 其它失败（任务不存在等）：把真实原因告诉用户，不要静默跳转
+      if (r && r.error) return toast("error", "无法打开编辑页", r.error);
+      openTab();
+    }).catch(function () { openTab(); });
   } catch (e) {
-    fallback();
+    openTab();
   }
 }

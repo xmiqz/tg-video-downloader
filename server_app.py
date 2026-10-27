@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import pathlib
 import secrets
 import socket
 import sys
@@ -25,13 +26,15 @@ from contextlib import asynccontextmanager
 
 import fastapi
 import uvicorn
-from fastapi import FastAPI, Request, WebSocket
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, Request, Response, WebSocket
+from fastapi.responses import (FileResponse, JSONResponse,
+                             RedirectResponse)
 from fastapi.staticfiles import StaticFiles
 
 import gui
 import server_auth
 import tg_video_dl as core
+import wallpaper
 from server_config import RuntimeConfig
 
 
@@ -51,6 +54,11 @@ RPC_METHODS = frozenset({
     "set_api_credentials", "set_download_root", "set_guest", "set_item",
     "start_download",
     "verify_code", "verify_password",
+    # Bing photo-of-the-day wallpaper (cached under data_dir/cache)
+    "wallpaper_status", "wallpaper_refresh", "wallpaper_history",
+    "wallpaper_select", "wallpaper_delete", "set_wallpaper_history",
+    # Task export/import (metadata only, never media)
+    "tasks_exportable", "export_tasks", "import_tasks",
 })
 
 _T45_TEST_METHODS = frozenset({"t45_demo_job"})
@@ -178,6 +186,29 @@ def _stop_engine_loop(engine):
             loop.close()
 
 
+_MEDIA_TYPES = {
+    ".mp4": "video/mp4",
+    ".mkv": "video/x-matroska",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".m4v": "video/mp4",
+    ".avi": "video/x-msvideo",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+
+def _guess_media_type(name):
+    """Pick a Content-Type from the file suffix (octet-stream otherwise)."""
+    suffix = pathlib.Path(str(name)).suffix.lower()
+    return _MEDIA_TYPES.get(suffix, "application/octet-stream")
+
+
 def _json_error(message, status_code, retry_after=0):
     headers = {"Cache-Control": "no-store"}
     if retry_after:
@@ -263,10 +294,16 @@ def create_app(config, *, engine, api, token="", auth=None):
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault(
             "Content-Security-Policy",
-            "default-src 'self'; img-src 'self' data:; "
+            # The optional "daily wallpaper" theme fetches the Bing image list
+            # from bing.biturl.top (it serves Access-Control-Allow-Origin: *)
+            # and renders the photo from www.bing.com. Both are read-only,
+            # image/JSON only, and the theme is opt-in.
+            "default-src 'self'; "
+            "img-src 'self' data: https://www.bing.com; "
             "style-src 'self' 'unsafe-inline'; "
             "script-src 'self' 'unsafe-inline'; "
-            "connect-src 'self' ws: wss:; object-src 'none'; "
+            "connect-src 'self' ws: wss: https://bing.biturl.top; "
+            "object-src 'none'; "
             "base-uri 'none'; frame-ancestors 'none'",
         )
         if request.url.path in ("/rpc", "/auth/status", "/auth/setup",
@@ -473,6 +510,131 @@ def create_app(config, *, engine, api, token="", auth=None):
             writer.cancel()
             with contextlib.suppress(Exception):
                 await ws.close()
+
+    @app.get("/media/file")
+    async def media_file(request: Request, task: str = "", src: str = "",
+                         mid: str = ""):
+        """Stream a downloaded item to the browser (same-origin).
+
+        Headless mode cannot open files on the server desktop, so the UI gets
+        this URL instead and lets the browser play/save it. Range is honoured
+        because video scrubbing needs it. Path resolution goes through the
+        same helpers the rest of the API uses, so TGDL_ALLOWED_ROOTS still
+        applies.
+        """
+        if not (config.loopback and not config.desktop_mode):
+            if auth is None or not auth.session_valid(
+                    request.cookies.get(server_auth.COOKIE_NAME, "")):
+                bearer = _request_bearer(request)
+                if not (bearer and token
+                        and server_auth.tokens_equal(bearer, token)):
+                    return _json_error("未授权或会话已过期", 401)
+        info = api.item_file_info(str(task), str(src), str(mid))
+        if not info.get("exists"):
+            return _json_error("文件不存在", 404)
+        path = pathlib.Path(str(info["path"]))
+        size = path.stat().st_size
+        ctype = _guess_media_type(path.name)
+        range_header = request.headers.get("range", "")
+        if range_header.startswith("bytes="):
+            spec = range_header[6:].split(",", 1)[0].strip()
+            try:
+                start_s, _, end_s = spec.partition("-")
+                if start_s:
+                    start = max(0, int(start_s))
+                    end = int(end_s) if end_s else size - 1
+                else:
+                    length = int(end_s or 0)
+                    start = max(0, size - length)
+                    end = size - 1
+            except (TypeError, ValueError):
+                return _json_error("Range 非法", 416)
+            end = min(end, size - 1)
+            if start > end:
+                return _json_error("Range 非法", 416)
+            body = path.read_bytes()[start:end + 1]
+            return Response(
+                content=body,
+                status_code=206,
+                media_type=ctype,
+                headers={
+                    "Content-Range": f"bytes {start}-{end}/{size}",
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": str(len(body)),
+                    "Cache-Control": "private, max-age=3600",
+                },
+            )
+        return FileResponse(
+            path,
+            media_type=ctype,
+            headers={"Accept-Ranges": "bytes",
+                     "Cache-Control": "private, max-age=3600"},
+        )
+
+    @app.post("/wallpaper/upload")
+    async def wallpaper_upload(request: Request):
+        """Accept a user background image (multipart or raw body).
+
+        Kept out of /rpc on purpose: the 1 MiB RPC body cap is far below a
+        photo. This endpoint has its own, larger limit.
+        """
+        if not (config.loopback and not config.desktop_mode):
+            if auth is None or not auth.session_valid(
+                    request.cookies.get(server_auth.COOKIE_NAME, "")):
+                bearer = _request_bearer(request)
+                if not (bearer and token
+                        and server_auth.tokens_equal(bearer, token)):
+                    return _json_error("未授权或会话已过期", 401)
+        # Raw body + ?name=... instead of multipart: python-multipart is not a
+        # dependency of this image, and adding it just for one upload is not
+        # worth the extra wheel. The browser sends the File via fetch(Blob).
+        filename = str(request.query_params.get("name", "") or "")
+        declared = request.headers.get("content-length")
+        if declared is not None:
+            try:
+                if int(declared) > wallpaper.MAX_BYTES:
+                    return _json_error("图片超过 8 MB", 413)
+            except (TypeError, ValueError):
+                return _json_error("Content-Length 非法", 400)
+        blob = await request.body()
+        if not blob:
+            return _json_error("没有收到图片", 400)
+        if len(blob) > wallpaper.MAX_BYTES:
+            return _json_error("图片超过 8 MB", 413)
+        wp = getattr(api, "_wallpaper_cache", None)
+        if wp is None:
+            wp = wallpaper.WallpaperCache(config.data_dir)
+            api._wallpaper_cache = wp
+        result = wp.import_image(blob, filename=filename)
+        return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+    @app.get("/wallpaper/{name}")
+    async def wallpaper_image(name: str, request: Request):
+        """Serve a cached Bing image from the data dir (same-origin).
+
+        Serving it ourselves means the page never has to reach www.bing.com,
+        so the wallpaper still renders offline and needs no cross-origin
+        image exception once the file is cached.
+        """
+        if not (config.loopback and not config.desktop_mode):
+            if auth is None or not auth.session_valid(
+                    request.cookies.get(server_auth.COOKIE_NAME, "")):
+                bearer = _request_bearer(request)
+                if not (bearer and token
+                        and server_auth.tokens_equal(bearer, token)):
+                    return _json_error("未授权或会话已过期", 401)
+        wp = getattr(api, "_wallpaper_cache", None)
+        if wp is None:
+            wp = wallpaper.WallpaperCache(config.data_dir)
+            api._wallpaper_cache = wp
+        path = wp.image_path(name)
+        if path is None:
+            return _json_error("壁纸不存在", 404)
+        return FileResponse(
+            path,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
 
     app.mount("/", StaticFiles(directory=web_dir, html=True), name="web")
     app.state.runtime_config = config
