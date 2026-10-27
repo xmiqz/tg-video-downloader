@@ -724,8 +724,10 @@ function applyAppearance(mode) {
   // 即时生效（对齐 2.1 app.js:2551-2562）：data-theme 令牌层（T7 契约）+
   // html.liquid 态（shell.css §0b 预烘焙玻璃材质）；liquid 仅 Windows 生效，
   // 其余平台按静态暗降级（app.js:2555-2556）。非 liquid 清 backdrop 图。
-  const IS_WIN = /windows/i.test((typeof navigator !== "undefined" && navigator.userAgent) || "");
-  const eff = (String(mode || "") === "liquid" && !IS_WIN) ? "dark" : mode;
+  // Liquid glass only exists in the desktop shell; any other host (browser,
+  // container) falls back to the static dark theme.
+  const canLiquid = HOST_MODE !== "headless";
+  const eff = (String(mode || "") === "liquid" && !canLiquid) ? "dark" : mode;
   const isBing = eff === "bing";
   // wallpaper 主题沿用暗色令牌（照片上压深色遮罩），data-theme 只用于选层
   document.documentElement.setAttribute(
