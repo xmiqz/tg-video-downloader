@@ -628,6 +628,17 @@ function buildDom() {
   webCard.hidden = true;
   root.append(webCard);
 
+  const nasPanel = buildNasDeployPanel();
+  root.append(makeCard("NAS 一键部署（Docker）", [
+    el("p", {
+      class: "st-hint",
+      text: "在群晖 / 飞牛 fnOS / Unraid 等支持 Docker 的 NAS 上，用下面的"
+          + " compose.yaml 即可跑起同一套服务；数据只落在宿主机 ./data 目录，"
+          + "不会写容器层。",
+    }),
+    nasPanel.el,
+  ]));
+
   refs = {
     root: root,
     appearanceSeg: appearanceSeg,
@@ -645,6 +656,7 @@ function buildDom() {
     pathHint: pathHint,
     btnWebLogout: btnWebLogout,
     webCard: webCard,
+    nasPanel: nasPanel,
   };
   return root;
 }
@@ -788,6 +800,173 @@ function syncSeg(mode) {
 // ---------------------------------------------------------------
 // Task export / import panel
 // ---------------------------------------------------------------
+// ============================================================
+// NAS 一键部署（Docker / Compose）
+//
+// 目标：不用让用户去翻仓库找 compose 文件，也不用记 buildx/ghcr 的细节。
+// 面板给出可直接粘贴的 compose.yaml 与三条启动命令，端口和镜像 tag 都能
+// 在页面上改。生成的 YAML 只依赖官方镜像，不含任何本地路径假设。
+// ============================================================
+
+const NAS_IMAGE_DEFAULT = "ghcr.io/xmiqz/tg-video-downloader:v2.4.0-beta.1";
+
+export function nasCompose(port, image, dataDir) {
+  const p = String(port || "8787");
+  const img = String(image || NAS_IMAGE_DEFAULT);
+  const data = String(dataDir || "./data");
+  return [
+    "services:",
+    "  tg-video-downloader:",
+    "    image: " + img,
+    "    container_name: tg-video-downloader",
+    "    restart: unless-stopped",
+    "    ports:",
+    "      - \"" + p + ":8787\"",
+    "    environment:",
+    "      TGDL_HOST: 0.0.0.0",
+    "      TGDL_PORT: \"8787\"",
+    "      TGDL_DATA_DIR: /data",
+    "      TGDL_ALLOWED_ROOTS: /data",
+    "      TGDL_COOKIE_SECURE: \"0\"",
+    "    volumes:",
+    "      - " + data + ":/data",
+    "    read_only: true",
+    "    tmpfs:",
+    "      - /tmp:size=64m,mode=1777",
+    "    cap_drop:",
+    "      - ALL",
+    "    security_opt:",
+    "      - no-new-privileges:true",
+    "    stop_grace_period: 20s",
+    "    healthcheck:",
+    "      test:",
+    "        - CMD",
+    "        - python",
+    "        - -c",
+    "        - \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=3).read()\"",
+    "      interval: 30s",
+    "      timeout: 5s",
+    "      retries: 3",
+    "      start_period: 25s",
+    "",
+  ].join("\n");
+}
+
+function nasInitCommands(port) {
+  const p = String(port || "8787");
+  return [
+    "# 1) 建目录并写入 compose.yaml",
+    "mkdir -p /vol1/1000/docker/tg-video-downloader && \\",
+    "  cd /vol1/1000/docker/tg-video-downloader",
+    "# 把上面生成的 compose.yaml 保存为本目录的 compose.yaml",
+    "",
+    "# 2) 拉取镜像并后台启动",
+    "docker compose up -d",
+    "",
+    "# 3) 看日志与健康状态",
+    "docker compose ps",
+    "docker compose logs -f --tail=100",
+    "",
+    "# 4) 浏览器打开 http://<NAS-IP>:" + p,
+    "#    首次进入会要求设置管理员密码；初始化令牌在容器内：",
+    "docker compose exec tg-video-downloader cat /data/.setup-token",
+  ].join("\n");
+}
+
+function buildNasDeployPanel() {
+  const portInput = el("input", {
+    class: "st-input", id: "nas-port", type: "text",
+    value: "8787", spellcheck: "false",
+  });
+  const imageInput = el("input", {
+    class: "st-input", id: "nas-image", type: "text",
+    value: NAS_IMAGE_DEFAULT, spellcheck: "false",
+  });
+  const dataInput = el("input", {
+    class: "st-input", id: "nas-data", type: "text",
+    value: "./data", spellcheck: "false",
+  });
+
+  const yamlBox = el("textarea", {
+    class: "st-code", id: "nas-yaml", rows: "18", spellcheck: "false",
+    readonly: "",
+  });
+  const cmdBox = el("textarea", {
+    class: "st-code", id: "nas-cmd", rows: "12", spellcheck: "false",
+    readonly: "",
+  });
+
+  function regen() {
+    yamlBox.value = nasCompose(portInput.value, imageInput.value, dataInput.value);
+    cmdBox.value = nasInitCommands(portInput.value);
+  }
+
+  async function copyFrom(box, label, btn) {
+    const restore = busyOn(btn, null);
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(box.value);
+      } else {
+        box.focus();
+        box.select();
+        if (!document.execCommand("copy")) throw new Error("浏览器不允许复制");
+      }
+      restore();
+      toast("ok", label + "已复制", null);
+    } catch (e) {
+      restore();
+      box.focus();
+      box.select();
+      toast("error", "复制失败，已为你全选", (e && e.message) || String(e));
+    }
+  }
+
+  const btnYaml = el("button", {
+    class: "u-btn u-btn--primary", type: "button", text: "复制 compose.yaml",
+  });
+  const btnCmd = el("button", {
+    class: "u-btn u-btn--ghost", type: "button", text: "复制启动命令",
+  });
+  btnYaml.addEventListener("click", function () {
+    copyFrom(yamlBox, "compose.yaml", btnYaml);
+  });
+  btnCmd.addEventListener("click", function () {
+    copyFrom(cmdBox, "启动命令", btnCmd);
+  });
+
+  [portInput, imageInput, dataInput].forEach(function (i) {
+    i.addEventListener("input", regen);
+  });
+  regen();
+
+  const field = function (label, input, hint) {
+    return el("div", { class: "st-field" }, [
+      el("label", { class: "st-field-label", for: input.id, text: label }),
+      input,
+      hint ? el("p", { class: "st-hint", text: hint }) : null,
+    ].filter(Boolean));
+  };
+
+  const root = el("div", { class: "st-nas" }, [
+    field("对外端口", portInput, "宿主机端口，容器内固定 8787。"),
+    field("镜像", imageInput, "默认取当前 beta 标签；正式版发布后可改成 :latest。"),
+    field("数据目录", dataInput, "相对路径以 compose.yaml 所在目录为基准。"),
+    el("div", { class: "st-nas-actions" }, [btnYaml, btnCmd]),
+    el("label", { class: "st-field-label", for: "nas-yaml", text: "compose.yaml" }),
+    yamlBox,
+    el("label", { class: "st-field-label", for: "nas-cmd", text: "启动命令" }),
+    cmdBox,
+    el("p", {
+      class: "st-hint",
+      text: "NAS 上通常没有浏览器可直连的 GitHub；若拉取镜像失败，"
+          + "先在能联网的机器上 docker pull 再 docker save / load，"
+          + "或给 NAS 配置可用的镜像加速器。",
+    }),
+  ]);
+
+  return { el: root, yamlBox: yamlBox, cmdBox: cmdBox, portInput: portInput };
+}
+
 function buildTaskPortPanel() {
   const listWrap = el("div", { class: "tp-list", hidden: true });
   const list = el("div", { class: "tp-items" });

@@ -61,6 +61,36 @@
   margin: 16px 0 7px;
 }
 
+/* ---------- NAS 一键部署面板（compose.yaml 生成器） ---------- */
+.st-nas { display: flex; flex-direction: column; gap: var(--space-3); }
+.st-field { display: flex; flex-direction: column; gap: var(--space-1); }
+.st-field-label {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+.st-nas-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+/* 代码框必须可横向滚动且保留换行：compose 的缩进是语义的一部分 */
+.st-code {
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-3);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text);
+  background: var(--input-bg);
+  border: var(--line-1) solid var(--input-border);
+  border-radius: var(--input-radius);
+  resize: vertical;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+}
+.st-code:focus {
+  outline: none;
+  border-color: var(--input-border-focus);
+}
+
 /* ---------- 1. 通用小件：hint / 错误行 / 视觉隐藏 label ---------- */
 .st-hint {
   margin: 18px 0 0;             /* 旧壳 .hint margin-top 18px 逐值（style.css:603） */

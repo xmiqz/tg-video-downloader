@@ -97,3 +97,46 @@ test("wallpaper panel wires .wp-hist-list into .wp-hist", async () => {
   assert.ok(hasHist, "缺少 .wp-hist");
   assert.ok(hasList, ".wp-hist-list 不在 DOM 树里（历史会是空的）");
 });
+
+// The NAS deploy card hands the user a compose.yaml to paste verbatim, so the
+// generator's indentation IS the contract: a stray space yields
+// "yaml: line N: did not find expected key" on their NAS.
+test("nasCompose emits valid, parseable compose structure", async () => {
+  installDom();
+  const mod = await import("../../web/js/views/settings.js");
+  const yaml = mod.nasCompose("9911", "ghcr.io/xmiqz/tg-video-downloader:v2.4.0-beta.1", "/vol1/tvg");
+  const lines = yaml.split("\n");
+
+  assert.equal(lines[0], "services:");
+  // Two-space nesting under services:, four under the service key.
+  assert.match(yaml, /^ {2}tg-video-downloader:$/m);
+  assert.match(yaml, /^ {4}image: ghcr\.io\/xmiqz\/tg-video-downloader:v2\.4\.0-beta\.1$/m);
+  // The port the user typed must reach the published mapping, not a default.
+  assert.match(yaml, /^ {6}- "9911:8787"$/m);
+  // Data dir override must land in the volumes list.
+  assert.match(yaml, /^ {6}- \/vol1\/tvg:\/data$/m);
+
+  // No tabs anywhere, no trailing whitespace, exactly one document start.
+  assert.ok(!yaml.includes("\t"), "compose yaml must not contain tabs");
+  assert.equal(lines.filter((l) => l.trimEnd() !== l).length, 0,
+    "compose yaml must not carry trailing whitespace");
+  assert.equal(lines.filter((l) => l === "services:").length, 1);
+
+  // Indentation must only ever step by two spaces.
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const indent = line.length - line.trimStart().length;
+    assert.equal(indent % 2, 0, "indent not a multiple of 2: " + JSON.stringify(line));
+  }
+});
+
+test("nasCompose defaults are usable without any input", async () => {
+  installDom();
+  const mod = await import("../../web/js/views/settings.js");
+  const yaml = mod.nasCompose();
+  assert.match(yaml, /8787:8787/);
+  assert.match(yaml, /: \/data$/m);
+  assert.match(yaml, /read_only: true/);
+  assert.match(yaml, /- ALL/);
+});
+
