@@ -413,7 +413,10 @@ class Api:
         return {"ok": True, "mode": self.cfg.get("appearance", "dark")}
 
     def set_appearance(self, mode):
-        if mode not in ("dark", "light", "liquid"):
+        # "bing" is the daily-wallpaper theme. Its image is fetched by the
+        # wallpaper cache, not by the Windows backdrop sampler, so it is valid
+        # on every host (desktop, browser, container).
+        if mode not in ("dark", "light", "liquid", "bing"):
             return {"ok": False, "error": "未知外观模式"}
         self.cfg["appearance"] = mode
         core.save_config(self.cfg)
