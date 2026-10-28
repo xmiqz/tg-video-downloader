@@ -574,8 +574,11 @@ export async function boot() {
     // A native liquid capture can arrive after the user has switched to the
     // daily-wallpaper theme. Never let that stale event replace the static
     // Bing image or its brightness classification.
+    const isWallpaperAsset = typeof url === "string"
+      && /\/wallpaper\//.test(url);
     if (doc.documentElement.getAttribute("data-theme") === "wallpaper"
-        && !doc.documentElement.classList.contains("liquid")) {
+        && !doc.documentElement.classList.contains("liquid")
+        && !isWallpaperAsset) {
       return;
     }
     backdropEl.style.backgroundImage = url ? 'url("' + url + '")' : "";

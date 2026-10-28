@@ -236,8 +236,10 @@ test("stale liquid capture events cannot overwrite the daily wallpaper", async (
   const block = router.slice(start, router.indexOf("\n  };", start) + 5);
   assert.ok(start > 0, "缺少 _setBackdrop 消费方");
   assert.match(block,
-    /data-theme[^\n]+wallpaper[\s\S]{0,140}return;/,
+    /isWallpaperAsset[\s\S]{0,240}return;/,
     "每日壁纸模式下必须丢弃延迟到达的液态采样帧");
+  assert.match(block, /isWallpaperAsset/,
+    "防串图保护必须放行正常的 Bing 壁纸资源");
 });
 
 test("standalone editor consumes the shared backdrop hook and syncs tabs", async () => {

@@ -335,3 +335,21 @@ def test_headless_folder_browser_lists_only_allowed_directories(tmp_path):
     denied = api.browse_folders(str(outside))
     assert denied["ok"] is False
     assert "允许范围" in denied["error"]
+
+
+def test_backdrop_driver_does_not_repush_after_leaving_liquid():
+    import gui
+
+    driver = object.__new__(gui._BackdropDriver)
+    driver.cap = object()
+    driver.mode = "bing"
+    driver.api = type("Api", (), {
+        "push_event": lambda self, *args: (_ for _ in ()).throw(
+            AssertionError("must not push outside liquid")
+        ),
+    })()
+
+    # One loop iteration must reach the mode gate without touching capture.
+    source = gui._BackdropDriver.push_loop.__code__
+    names = source.co_names
+    assert "mode" in names

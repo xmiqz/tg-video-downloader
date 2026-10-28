@@ -3073,9 +3073,11 @@ class _BackdropDriver:
         self.user32 = user32
         self.last_ver = 0
         self.n = 0
+        self.mode = "dark"
 
     def set_mode(self, mode):
         """UI 线程调用：进入液态玻璃才创建放大镜并启动泵，其余模式停止。"""
+        self.mode = mode
         # T19c：沉浸式标题栏随外观联动（light=浅色 caption，
         # dark/liquid=深色 caption + Mica）；失败不阻塞外观切换
         try:
@@ -3124,7 +3126,13 @@ class _BackdropDriver:
             time.sleep(0.2)              # 5fps 推送；环境光变化缓慢，足够流畅，
                                         # 静止画面字节去重零通信
             try:
-                if self.cap is None:
+                # A stopped timer does not stop this already-running thread.
+                # Without the mode gate it kept re-pushing the last liquid
+                # frame every 2s after the user switched to Bing wallpaper.
+                if self.cap is None or self.mode != "liquid":
+                    last_url = None
+                    last_lum = None
+                    last_push = 0.0
                     continue
                 if self.cap.version != last:
                     changed, url, ver, lum = self.cap.render_jpeg()
