@@ -495,6 +495,12 @@ function bindBackdropRecovery() {
     const back = document.getElementById("sh-backdrop");
     if (!back || !back.style.backgroundImage) applyBingBackdrop();
   });
+  window.addEventListener("visibilitychange", function () {
+    if (document.visibilityState !== "visible") return;
+    if (document.documentElement.getAttribute("data-theme") !== "wallpaper") return;
+    const back = document.getElementById("sh-backdrop");
+    if (!back || !back.style.backgroundImage) applyBingBackdrop();
+  });
 }
 
 // T17 手势增量：边缘返回 + 聚焦保持（虚拟键盘遮挡补偿）
@@ -658,17 +664,6 @@ function buildDom() {
   webCard.hidden = true;
   root.append(webCard);
 
-  const nasPanel = buildNasDeployPanel();
-  root.append(makeCard("NAS 一键部署（Docker）", [
-    el("p", {
-      class: "st-hint",
-      text: "在群晖 / 飞牛 fnOS / Unraid 等支持 Docker 的 NAS 上，用下面的"
-          + " compose.yaml 即可跑起同一套服务；数据只落在宿主机 ./data 目录，"
-          + "不会写容器层。",
-    }),
-    nasPanel.el,
-  ]));
-
   refs = {
     root: root,
     appearanceSeg: appearanceSeg,
@@ -686,7 +681,6 @@ function buildDom() {
     pathHint: pathHint,
     btnWebLogout: btnWebLogout,
     webCard: webCard,
-    nasPanel: nasPanel,
   };
   return root;
 }
@@ -837,230 +831,6 @@ function syncSeg(mode) {
 // ---------------------------------------------------------------
 // Task export / import panel
 // ---------------------------------------------------------------
-// ============================================================
-// NAS 一键部署（Docker / Compose）
-//
-// 目标：不用让用户去翻仓库找 compose 文件，也不用记 buildx/ghcr 的细节。
-// 面板给出可直接粘贴的 compose.yaml 与三条启动命令，端口和镜像 tag 都能
-// 在页面上改。生成的 YAML 只依赖官方镜像，不含任何本地路径假设。
-// ============================================================
-
-const NAS_IMAGE_DEFAULT = "ghcr.io/xmiqz/tg-video-downloader:v2.4.0-beta.2";
-
-export function nasCompose(port, image, dataDir) {
-  const p = String(port || "8787");
-  const img = String(image || NAS_IMAGE_DEFAULT);
-  // Empty means "use the named volume". A bind mount is only emitted when the
-  // user names a host path, because a host-created ./data is root:root 0755
-  // and this container runs as uid 10001 with cap_drop ALL - it cannot create
-  // /data/downloads there and dies at boot. A named volume inherits /data's
-  // ownership from the image, so the default path needs no manual chown.
-  const data = String(dataDir || "").trim();
-  const volumeLines = data
-    ? ["    volumes:", "      - " + data + ":/data"]
-    : ["    volumes:", "      - tgvd-data:/data"];
-  return [
-    "services:",
-    "  tg-video-downloader:",
-    "    image: " + img,
-    "    container_name: tg-video-downloader",
-    "    restart: unless-stopped",
-    "    ports:",
-    "      - \"" + p + ":8787\"",
-    "    environment:",
-    "      TGDL_HOST: 0.0.0.0",
-    "      TGDL_PORT: \"8787\"",
-    "      TGDL_DATA_DIR: /data",
-    "      TGDL_ALLOWED_ROOTS: /data",
-    "      TGDL_COOKIE_SECURE: \"0\"",
-    ...volumeLines,
-    "    read_only: true",
-    "    tmpfs:",
-    "      - /tmp:size=64m,mode=1777",
-    "    cap_drop:",
-    "      - ALL",
-    "    security_opt:",
-    "      - no-new-privileges:true",
-    "    stop_grace_period: 20s",
-    "    healthcheck:",
-    "      test:",
-    "        - CMD",
-    "        - python",
-    "        - -c",
-    "        - \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=3).read()\"",
-    "      interval: 30s",
-    "      timeout: 5s",
-    "      retries: 3",
-    "      start_period: 25s",
-    "",
-    // Top-level declaration for the named volume. Harmless when a bind mount
-    // was chosen instead, and keeps the emitted file self-consistent.
-    "volumes:",
-    "  tgvd-data:",
-    "    name: tg-video-downloader-data",
-    "",
-  ].join("\n");
-}
-
-function nasInitCommands(port) {
-  const p = String(port || "8787");
-  return [
-    "# 1) 建目录并写入 compose.yaml",
-    "mkdir -p /vol1/1000/docker/tg-video-downloader && \\",
-    "  cd /vol1/1000/docker/tg-video-downloader",
-    "# 把上面生成的 compose.yaml 保存为本目录的 compose.yaml",
-    "",
-    "# 2) 拉取镜像并后台启动",
-    "docker compose up -d",
-    "",
-    "# 3) 看日志与健康状态",
-    "docker compose ps",
-    "docker compose logs -f --tail=100",
-    "",
-    "# 4) 浏览器打开 http://<NAS-IP>:" + p,
-    "#    首次进入会要求设置管理员密码；初始化令牌在容器内：",
-    "docker compose exec tg-video-downloader cat /data/.setup-token",
-  ].join("\n");
-}
-
-function buildNasDeployPanel() {
-  const portInput = el("input", {
-    class: "st-input", id: "nas-port", type: "text",
-    value: "8787", spellcheck: "false",
-  });
-  const imageInput = el("input", {
-    class: "st-input", id: "nas-image", type: "text",
-    value: NAS_IMAGE_DEFAULT, spellcheck: "false",
-  });
-  const dataInput = el("input", {
-    class: "st-input", id: "nas-data", type: "text",
-    value: "", placeholder: "留空 = 使用命名卷（推荐）", spellcheck: "false",
-  });
-
-  const yamlBox = el("textarea", {
-    class: "st-code", id: "nas-yaml", rows: "18", spellcheck: "false",
-    readonly: "",
-  });
-  const cmdBox = el("textarea", {
-    class: "st-code", id: "nas-cmd", rows: "12", spellcheck: "false",
-    readonly: "",
-  });
-
-  function regen() {
-    yamlBox.value = nasCompose(portInput.value, imageInput.value, dataInput.value);
-    cmdBox.value = nasInitCommands(portInput.value);
-  }
-
-  // WebView2 (and Chromium without a secure context) refuses
-  // navigator.clipboard.writeText even inside a click handler. execCommand on a
-  // selected <textarea> is the one path that works in both the desktop shell
-  // and the browser, so it is tried first and clipboard.writeText is only a
-  // fallback for environments that blocked execCommand.
-  function legacyCopy(text) {
-    const scratch = document.createElement("textarea");
-    scratch.value = text;
-    scratch.setAttribute("readonly", "");
-    scratch.style.position = "fixed";
-    scratch.style.top = "-9999px";
-    scratch.style.opacity = "0";
-    document.body.appendChild(scratch);
-    const prev = document.activeElement;
-    let ok = false;
-    try {
-      scratch.select();
-      scratch.setSelectionRange(0, text.length);
-      ok = document.execCommand("copy");
-    } catch (e) {
-      ok = false;
-    }
-    // Detaching the scratch node must never mask a successful copy.
-    try {
-      document.body.removeChild(scratch);
-    } catch (e) {
-      if (scratch.parentNode) {
-        try { scratch.parentNode.removeChild(scratch); } catch (e2) {}
-      }
-    }
-    if (prev && typeof prev.focus === "function") {
-      try { prev.focus(); } catch (e) {}
-    }
-    return ok;
-  }
-
-  async function copyFrom(box, label, btn) {
-    const restore = busyOn(btn, null);
-    const text = box.value;
-    let ok = legacyCopy(text);
-    if (!ok) {
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          await navigator.clipboard.writeText(text);
-          ok = true;
-        }
-      } catch (e) {
-        ok = false;
-      }
-    }
-    restore();
-    if (ok) {
-      toast("ok", label + "已复制到剪贴板", "可直接粘贴到 NAS 的终端里");
-      return;
-    }
-    // Copy is unavailable: leave the text selected so Ctrl+C works.
-    box.focus();
-    box.select();
-    toast("error", "无法自动复制，已为你全选",
-          "按 Ctrl+C 复制，或手动全选这段文本");
-  }
-
-  const btnYaml = el("button", {
-    class: "u-btn u-btn--primary", type: "button", text: "复制 compose.yaml",
-  });
-  const btnCmd = el("button", {
-    class: "u-btn u-btn--ghost", type: "button", text: "复制启动命令",
-  });
-  btnYaml.addEventListener("click", function () {
-    copyFrom(yamlBox, "compose.yaml", btnYaml);
-  });
-  btnCmd.addEventListener("click", function () {
-    copyFrom(cmdBox, "启动命令", btnCmd);
-  });
-
-  [portInput, imageInput, dataInput].forEach(function (i) {
-    i.addEventListener("input", regen);
-  });
-  regen();
-
-  const field = function (label, input, hint) {
-    return el("div", { class: "st-field" }, [
-      el("label", { class: "st-field-label", for: input.id, text: label }),
-      input,
-      hint ? el("p", { class: "st-hint", text: hint }) : null,
-    ].filter(Boolean));
-  };
-
-  const root = el("div", { class: "st-nas" }, [
-    field("对外端口", portInput, "宿主机端口，容器内固定 8787。"),
-    field("镜像", imageInput, "默认取当前 beta 标签；正式版发布后可改成 :latest。"),
-    field("数据目录（可选）", dataInput,
-          "留空则使用命名卷 tg-video-downloader-data，无需手动改属主；"
-          + "填宿主机路径则改用绑定挂载，需先 chown 10001:10001。"),
-    el("div", { class: "st-nas-actions" }, [btnYaml, btnCmd]),
-    el("label", { class: "st-field-label", for: "nas-yaml", text: "compose.yaml" }),
-    yamlBox,
-    el("label", { class: "st-field-label", for: "nas-cmd", text: "启动命令" }),
-    cmdBox,
-    el("p", {
-      class: "st-hint",
-      text: "NAS 上通常没有浏览器可直连的 GitHub；若拉取镜像失败，"
-          + "先在能联网的机器上 docker pull 再 docker save / load，"
-          + "或给 NAS 配置可用的镜像加速器。",
-    }),
-  ]);
-
-  return { el: root, yamlBox: yamlBox, cmdBox: cmdBox, portInput: portInput };
-}
-
 function buildTaskPortPanel() {
   const listWrap = el("div", { class: "tp-list", hidden: true });
   const list = el("div", { class: "tp-items" });

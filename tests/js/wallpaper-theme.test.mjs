@@ -225,6 +225,19 @@ test("re-entering the same material preserves the live/static backdrop", async (
     "窗口尺寸变化后应能恢复丢失的 Bing 背景");
   assert.match(settings, /bindBackdropRecovery\(\);[\s\S]{0,120}loadAll\(\)/,
     "设置页进入时应绑定背景恢复监听");
+  assert.match(settings, /visibilitychange[\s\S]{0,600}applyBingBackdrop/,
+    "窗口从最小化恢复后应能恢复 Bing 背景");
+});
+
+test("stale liquid capture events cannot overwrite the daily wallpaper", async () => {
+  const router = await readFile(
+    path.join(ROOT, "web", "js", "router.js"), "utf8");
+  const start = router.indexOf("win._setBackdrop = function");
+  const block = router.slice(start, router.indexOf("\n  };", start) + 5);
+  assert.ok(start > 0, "缺少 _setBackdrop 消费方");
+  assert.match(block,
+    /data-theme[^\n]+wallpaper[\s\S]{0,140}return;/,
+    "每日壁纸模式下必须丢弃延迟到达的液态采样帧");
 });
 
 test("standalone editor consumes the shared backdrop hook and syncs tabs", async () => {

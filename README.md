@@ -70,24 +70,69 @@ Linux 不再只能使用命令行。`server_app` 提供与 Windows 界面相同�
 - `linux/amd64` 与 `linux/arm64` 多架构镜像
 - 不依赖外部 CDN、ffmpeg 或桌面显示环境
 
-### Docker Compose
+### NAS / Docker 部署
 
-仓库自带 [compose.yaml](./compose.yaml)。先构建本地镜像：
+推荐直接用仓库根目录的 [compose.yaml](./compose.yaml)。它默认使用命名卷
+`tg-video-downloader-data`，无需提前在宿主机创建 `./data` 或手动改属主；
+容器以 uid/gid `10001:10001` 运行，并启用只读根文件系统、`cap_drop: ALL`
+与 `no-new-privileges`。
+
+在 NAS 上创建部署目录，把 `compose.yaml` 保存进去，然后执行：
 
 ```bash
-docker build -t ghcr.io/xmiqz/tg-video-downloader:dev .
 docker compose up -d
+docker compose ps
+docker compose logs -f --tail=100
 ```
 
-读取一次性初始化令牌：
+首次启动读取一次性初始化令牌：
 
 ```bash
 docker compose exec tg-video-downloader cat /data/.setup-token
 ```
 
-打开 `http://NAS地址:8787`，输入初始化令牌并设置管理员密码。该密码只保护 Web 管理界面，不是 Telegram 两步验证密码。初始化成功后 `.setup-token` 会自动删除。
+浏览器打开 `http://NAS地址:8787`，输入初始化令牌并设置管理员密码。该密码
+只保护 Web 管理界面，不是 Telegram 两步验证密码；初始化成功后
+`.setup-token` 会自动删除。
 
-升级镜像时保留 `./data` 即可；配置、Telegram session、任务清单、管理员密码哈希和下载文件都在该目录。
+如果要指定宿主机数据目录，先在 NAS 上创建目录并授权给容器用户：
+
+```bash
+mkdir -p /vol1/1000/docker/tg-video-downloader-data
+chown -R 10001:10001 /vol1/1000/docker/tg-video-downloader-data
+```
+
+然后把 `compose.yaml` 中的命名卷改为绑定挂载：
+
+```yaml
+    volumes:
+      - /vol1/1000/docker/tg-video-downloader-data:/data
+```
+
+升级时先备份数据卷，再拉取新镜像并重建容器：
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+配置、Telegram session、任务清单、管理员密码哈希和下载文件都保存在
+`/data`。不要删除该卷。
+
+#### 镜像版本与更新检测
+
+GHCR 镜像地址为 `ghcr.io/xmiqz/tg-video-downloader`，支持
+`linux/amd64` 与 `linux/arm64`。发布 tag 会同时推送同名镜像 tag，例如
+`v2.4.0-beta.2`；日常开发分支推送会生成 `dev-<sha>`。
+
+NAS 的 Docker 管理器能否“检查到更新”，取决于它是否支持检测 GHCR 镜像
+摘要变化：
+
+- 固定版本（例如 `:v2.4.0-beta.2`）不会自动提示新版本，需手动改 tag。
+- 若管理器支持“检查镜像更新”，可先使用明确 tag 验证，再按需切换；
+  不要依赖不可变的 `:latest` 判断版本。
+- 最可靠的更新方式是本页给出的 `docker compose pull && docker compose up -d`，
+  或在管理器里执行“拉取新镜像后重建容器”。
 
 ### 环境变量
 
