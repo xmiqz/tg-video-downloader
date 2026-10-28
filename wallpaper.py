@@ -127,6 +127,7 @@ class WallpaperCache:
         # call status() to build their reply. A plain Lock deadlocks there.
         self._lock = threading.RLock()
         self._index = None
+        self._lum_cache = {}
 
     # ---------- index ----------
     def _load(self):
@@ -155,6 +156,31 @@ class WallpaperCache:
         path = _cache_dir(self.data_dir) / name
         return path if path.is_file() else None
 
+    def _lum_of(self, path):
+        """Return perceptual luminance (0-255) without blocking list scroll.
+
+        History can contain dozens of full-size photos. Decode a tiny
+        thumbnail and reuse the result until the file changes; broken uploads
+        remain usable and simply carry no luminance hint.
+        """
+        if path is None:
+            return None
+        try:
+            st = path.stat()
+            key = (str(path), int(st.st_mtime_ns), int(st.st_size))
+            if key in self._lum_cache:
+                return self._lum_cache[key]
+            from PIL import Image, ImageStat
+
+            with Image.open(path) as im:
+                rgb = im.convert("RGB")
+                rgb.thumbnail((32, 32), Image.Resampling.LANCZOS)
+                value = round(float(ImageStat.Stat(rgb.convert("L")).mean[0]), 1)
+            self._lum_cache[key] = value
+            return value
+        except (OSError, ValueError, ImportError):
+            return None
+
     def _entry_view(self, entry):
         # Uploaded backgrounds carry no remote url, only a local file, so the
         # guard must accept either source.
@@ -171,6 +197,7 @@ class WallpaperCache:
             "title": str(entry.get("title") or ""),
             "file": str(entry.get("file") or ""),
             "local": path is not None,
+            "lum": self._lum_of(path),
         }
 
     # ---------- feed ----------

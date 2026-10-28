@@ -881,10 +881,15 @@ class NativeHost(host.HostApp):
             raise RuntimeError(detail)
 
     def emit(self, obj):
-        sys.stdout.write("EVIDENCE: "
-                         + json.dumps(obj, ensure_ascii=True,
-                                      default=str) + "\n")
-        sys.stdout.flush()
+        # Packaged --windowed builds can expose an invalid stdout handle
+        # (not None). Diagnostics must never take down the app.
+        try:
+            sys.stdout.write("EVIDENCE: "
+                             + json.dumps(obj, ensure_ascii=True,
+                                          default=str) + "\n")
+            sys.stdout.flush()
+        except (OSError, ValueError, AttributeError):
+            pass
 
 
 def threading_get_ident():
@@ -1301,7 +1306,7 @@ def run_liquid_sink(args):
             try:
                 if cap.version == last:
                     continue
-                changed, url, ver = cap.render_jpeg()
+                changed, url, ver, _lum = cap.render_jpeg()
                 if changed and url:
                     with sink_lock:
                         sink.append((time.perf_counter(), url))

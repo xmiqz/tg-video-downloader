@@ -342,3 +342,47 @@
   /* 内高光回静态亮单顶 hi（§2.2 默认形，覆盖 §6 liquid 双高光） */
   --glass-card-hi: inset 0 1px 0 var(--gl-hi);
 }
+
+/* ============ 8. 壁纸主题的明暗自适应（与 §7 液态玻璃同一套机制） ============
+   壁纸是用户自己选的照片，亮度不可预知：白天雪景、浅色沙滩上浅墨文字
+   几乎不可读，夜景上深墨文字同样不可读。router.js 对壁纸图做 12x8 亮度
+   采样，挂 html[data-lum="bright"|"dark"]，本块按结果整组换原料表，
+   与 §7 液态玻璃同值同口径，只是选择器挂在壁纸主题上。
+   无 data-lum（采样前/失败）时保持深色表，避免首帧闪白。 */
+:root[data-theme="wallpaper"][data-lum="bright"] {
+  --raw-bg: #f2f5fc;          --raw-bg-2: #ffffff;
+  --raw-bg-sunk: #e8edf7;    --raw-ink: #1b2233;
+  --raw-ink-dim: rgba(27,34,51,.68);  --raw-ink-mute: rgba(27,34,51,.45);
+  --raw-brand-soft: rgba(79,124,255,.16);
+  --raw-danger: #e5455a;     --raw-danger-soft: rgba(229,69,90,.14);
+  --raw-danger-ink: #cf3b50; --raw-ok: #16a97c;
+  --raw-warn: #d98f1f;       --raw-warn-soft: rgba(217,143,31,.16);
+  --raw-border: rgba(20,30,60,.12);  --raw-border-strong: rgba(20,30,60,.24);
+  --raw-scrim: rgba(16,22,40,.35);   --raw-frost: rgba(238,242,250,.45);
+  --raw-shade: rgba(30,42,80,.35);   --raw-shade-strong: rgba(30,42,80,.14);
+  --raw-shade-deep: rgba(4,6,18,.32); --raw-ring: rgba(79,124,255,.22);
+  --raw-irid-1: rgba(64,201,224,.50);
+  --raw-irid-2: rgba(96,219,156,.48);
+  --raw-irid-3: rgba(230,146,224,.50);
+  --raw-solid: #ffffff;
+  /* 亮壁纸上用「白色磨砂玻璃 + 深墨」，文字才够对比 */
+  --gl-g-a: rgba(255,255,255,.72);  --gl-g-b: rgba(255,255,255,.64);
+  --gl-g-c: rgba(255,255,255,.52);
+  --gl-e-a: rgba(20,30,60,.12);     --gl-e-b: rgba(20,30,60,.12);
+  --gl-hi: rgba(255,255,255,.9);    --gl-hi-soft: rgba(255,255,255,.55);
+  --gl-sh-color: rgba(30,42,80,.14);
+  --gl-shadow: 0 12px 30px var(--gl-sh-color);
+  --gl-btn-a: rgba(255,255,255,.85);  --gl-btn-b: rgba(255,255,255,.62);
+  --gl-btn-e: rgba(20,30,60,.12);     --gl-btn-hi: rgba(255,255,255,.4);
+  --glass-card-hi: inset 0 1px 0 var(--gl-hi);
+}
+
+/* 暗壁纸：玻璃面要比静态暗更「透亮」一点，照片才透得出来而不是被
+   一层灰糊住；文字保持浅墨。 */
+:root[data-theme="wallpaper"][data-lum="dark"] {
+  --gl-g-a: rgba(255,255,255,.16);  --gl-g-b: rgba(255,255,255,.10);
+  --gl-g-c: rgba(255,255,255,.06);
+  --gl-e-a: rgba(255,255,255,.26);  --gl-e-b: rgba(255,255,255,.26);
+  --gl-hi: rgba(255,255,255,.42);   --gl-hi-soft: rgba(255,255,255,.2);
+  --glass-card-hi: inset 0 1px 0 var(--gl-hi);
+}

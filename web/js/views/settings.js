@@ -231,6 +231,21 @@ export function bingBackdropCss(url) {
   return "url(\"" + u.replace(/["\\]/g, "\\$&") + "\")";
 }
 
+// All wallpaper assignments go through window._setBackdrop when it exists:
+// that is the hook router.js uses to sample the image brightness and put
+// html[data-lum] on the document, which is what makes the text switch between
+// dark and light ink per wallpaper.
+export function setBackdropImage(file, lum) {
+  const back = document.getElementById("sh-backdrop");
+  if (!back) return;
+  const url = file ? assetUrl("/wallpaper/" + file) : "";
+  if (typeof window !== "undefined" && typeof window._setBackdrop === "function") {
+    window._setBackdrop(url, lum);
+    return;
+  }
+  back.style.backgroundImage = url ? bingBackdropCss(url) : "";
+}
+
 export async function applyBingBackdrop() {
   const back = document.getElementById("sh-backdrop");
   if (!back) return;
@@ -242,7 +257,7 @@ export async function applyBingBackdrop() {
   }
   const cur = st && st.ok ? st.current : null;
   if (cur && cur.file) {
-    back.style.backgroundImage = bingBackdropCss(assetUrl("/wallpaper/" + cur.file));
+    setBackdropImage(cur.file, cur.lum);
     if (cur.copyright) back.title = cur.copyright;
     return;
   }
@@ -254,7 +269,7 @@ export async function applyBingBackdrop() {
   }
   const fresh = st && st.ok ? st.current : null;
   if (fresh && fresh.file) {
-    back.style.backgroundImage = bingBackdropCss(assetUrl("/wallpaper/" + fresh.file));
+    setBackdropImage(fresh.file, fresh.lum);
     if (fresh.copyright) back.title = fresh.copyright;
   }
 }
@@ -462,9 +477,24 @@ export function mount() {
 export function onEnter() {
   if (cached && refs) {
     bindHint();
+    bindBackdropRecovery();
     attachGestures();   // T17 手势增量（幂等）
     loadAll();
   }
+}
+
+let backdropResizeBound = false;
+
+function bindBackdropRecovery() {
+  if (backdropResizeBound || typeof window === "undefined") return;
+  backdropResizeBound = true;
+  // A window resize can recreate the WebView2 surface. Keep the static Bing
+  // image recoverable without clearing it on every settings entry.
+  window.addEventListener("resize", function () {
+    if (document.documentElement.getAttribute("data-theme") !== "wallpaper") return;
+    const back = document.getElementById("sh-backdrop");
+    if (!back || !back.style.backgroundImage) applyBingBackdrop();
+  });
 }
 
 // T17 手势增量：边缘返回 + 聚焦保持（虚拟键盘遮挡补偿）
@@ -715,6 +745,7 @@ async function loadAll() {
     }
     if (r && typeof r.mode === "string" && r.mode !== HOST_MODE) {
       HOST_MODE = r.mode;
+      if (typeof window !== "undefined") window.__TVG_HOST_MODE = r.mode;
       rebuildAppearanceSeg();
     }
     if (r && r.mode === "headless") {
@@ -764,14 +795,20 @@ function applyAppearance(mode) {
   const canLiquid = HOST_MODE !== "headless";
   const eff = (String(mode || "") === "liquid" && !canLiquid) ? "dark" : mode;
   const isBing = eff === "bing";
+  const sameMaterial =
+    (eff === "liquid" && document.documentElement.classList.contains("liquid"))
+    || (isBing && document.documentElement.getAttribute("data-theme") === "wallpaper");
+  // Clear the previous backdrop before selecting the next material. Bing ->
+  // liquid otherwise keeps the old photo and data-lum until capture succeeds.
+  document.documentElement.removeAttribute("data-lum");
+  if (typeof window !== "undefined" &&
+      typeof window._setBackdrop === "function") {
+    if (!sameMaterial) window._setBackdrop("");
+  }
   // wallpaper 主题沿用暗色令牌（照片上压深色遮罩），data-theme 只用于选层
   document.documentElement.setAttribute(
     "data-theme", isBing ? "wallpaper" : effectiveTheme(eff));
   document.documentElement.classList.toggle("liquid", eff === "liquid");
-  if (eff !== "liquid" && typeof window !== "undefined" &&
-      typeof window._setBackdrop === "function") {
-    window._setBackdrop("");
-  }
   const wp = refs && refs.wpPanel;
   if (wp) {
     wp.el.hidden = !isBing;
@@ -781,7 +818,7 @@ function applyAppearance(mode) {
     applyBingBackdrop();
   } else {
     const back = document.getElementById("sh-backdrop");
-    if (back) { back.style.backgroundImage = ""; back.removeAttribute("title"); }
+    if (back) back.removeAttribute("title");
   }
   syncSeg(mode);
 }
@@ -808,7 +845,7 @@ function syncSeg(mode) {
 // 在页面上改。生成的 YAML 只依赖官方镜像，不含任何本地路径假设。
 // ============================================================
 
-const NAS_IMAGE_DEFAULT = "ghcr.io/xmiqz/tg-video-downloader:v2.4.0-beta.1";
+const NAS_IMAGE_DEFAULT = "ghcr.io/xmiqz/tg-video-downloader:v2.4.0-beta.2";
 
 export function nasCompose(port, image, dataDir) {
   const p = String(port || "8787");
@@ -1070,6 +1107,12 @@ async function toggleTaskPicker() {
     panel.listWrap.hidden = true;
     return;
   }
+  let ready = false;
+  try { ready = await ensureApi(); } catch (e) { ready = false; }
+  if (!ready) {
+    panel.statusLine.textContent = "读取任务列表失败：桥接未就绪（请刷新页面）";
+    return;
+  }
   let r = null;
   let failure = "";
   try {
@@ -1137,6 +1180,12 @@ async function exportSelectedTasks() {
           empty ? "任务库为空，或尚未加载完成" : "请先勾选要导出的任务");
     return;
   }
+  let ready = false;
+  try { ready = await ensureApi(); } catch (e) { ready = false; }
+  if (!ready) {
+    toast("error", "导出失败", "桥接未就绪（请刷新页面）");
+    return;
+  }
   let r = null;
   try { r = await tpApi("export_tasks", [ids]); } catch (e) {}
   if (!r || !r.ok) {
@@ -1154,6 +1203,12 @@ async function importTaskBundle(file) {
     bundle = JSON.parse(await file.text());
   } catch (e) {
     toast("error", "任务包无法解析", "不是有效的 JSON 文件");
+    return;
+  }
+  let ready = false;
+  try { ready = await ensureApi(); } catch (e) { ready = false; }
+  if (!ready) {
+    toast("error", "导入失败", "桥接未就绪（请刷新页面）");
     return;
   }
   let r = null;
@@ -1348,9 +1403,8 @@ async function renderWallpaperHistory() {
   });
 }
 
-function setWallpaperImage(file) {
-  const back = document.getElementById("sh-backdrop");
-  if (back && file) back.style.backgroundImage = bingBackdropCss(assetUrl("/wallpaper/" + file));
+function setWallpaperImage(file, lum) {
+  setBackdropImage(file, lum);
 }
 
 async function selectWallpaper(date, btn) {
@@ -1362,7 +1416,8 @@ async function selectWallpaper(date, btn) {
     toast("error", "切换壁纸失败", (r && r.error) || "未知错误");
     return;
   }
-  if (r.current && r.current.file) setWallpaperImage(r.current.file);
+  if (r.current && r.current.file) setWallpaperImage(r.current.file, r.current.lum);
+  try { localStorage.setItem("wallpaper-rev", String(Date.now())); } catch (e) {}
   refreshWallpaper(false);
 }
 
@@ -1410,7 +1465,8 @@ async function uploadWallpaper(file) {
     toast("error", "上传失败", (body && body.error) || ("HTTP " + resp.status));
     return;
   }
-  if (body.current && body.current.file) setWallpaperImage(body.current.file);
+  if (body.current && body.current.file) setWallpaperImage(body.current.file, body.current.lum);
+  try { localStorage.setItem("wallpaper-rev", String(Date.now())); } catch (e) {}
   refreshWallpaper(false);
 }
 

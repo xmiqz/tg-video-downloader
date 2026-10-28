@@ -2,3 +2,4 @@ fastapi>=0.143,<0.144
 uvicorn>=0.54,<0.55
 websockets>=16,<17
 telethon>=1.45
+Pillow>=10.0

@@ -23,7 +23,11 @@
 .vw-settings {
   display: flex;
   flex-direction: column;
-  gap: 0;                       /* 2.1 卡距实测=0 */
+  /* 2.1 的卡距是 0：相邻两张玻璃卡边框直接贴在一起，视觉上读成「一整块
+     被切成两半」，在壁纸背景上尤其明显（用户实测：玻璃组件挨得太近）。
+     24px 让每张卡是独立的玻璃面，同时仍小于卡内 26px 内边距，
+     不会把卡片切碎。 */
+  gap: var(--space-6);
   min-width: 0;                 /* 320/360 防横向溢出（FR-23） */
 }
 .st-head {
@@ -52,6 +56,66 @@
   backdrop-filter: blur(var(--glass-card-blur)) saturate(var(--gl-sat));
   border: var(--line-1) solid var(--glass-card-border);
   box-shadow: var(--glass-card-hi), var(--glass-card-shadow);
+  /* HDR-ish glass: a bright top-edge specular plus a soft coloured bloom
+     underneath reads as a lit pane rather than a flat tinted rectangle. The
+     highlight uses the glass hi token so it follows the theme (dark, light,
+     wallpaper-bright, wallpaper-dark). */
+  position: relative;
+  isolation: isolate;
+  /* The specular layers are pseudo-elements painted above the fill; children
+     need their own stacking context so the text stays on top of them. */
+}
+.st-card > * { position: relative; z-index: 1; }
+/* Specular sweep: a 155deg diagonal highlight across the top third of the
+   pane, plus a 1px bright edge that catches the "light". Painted by a
+   pseudo-element so it sits above the fill but below the content, and it
+   never intercepts pointer events. This is what makes the glass read as a
+   lit physical surface instead of a translucent rectangle - the "HDR"
+   impression on an SDR display comes from the bright edge against the fill,
+   not from an actual >1.0 luminance value. */
+.st-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    linear-gradient(155deg,
+      rgba(255, 255, 255, .28) 0%,
+      rgba(255, 255, 255, .10) 26%,
+      rgba(255, 255, 255, 0) 52%),
+    radial-gradient(120% 80% at 50% 0%,
+      rgba(255, 255, 255, .16) 0%,
+      rgba(255, 255, 255, 0) 60%);
+}
+/* Bottom inner reflection: a thin warm/cool gradient that mimics the light
+   bouncing off the lower edge of a real glass pane. */
+.st-card::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 38%;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  background: linear-gradient(0deg,
+    rgba(255, 255, 255, .10) 0%,
+    rgba(255, 255, 255, 0) 100%);
+}
+/* On bright backgrounds the white specular has nothing to stand against, so
+   lean on the dark edge instead and keep the highlight subtler. */
+:root[data-theme="wallpaper"][data-lum="bright"] .st-card::before {
+  background:
+    linear-gradient(155deg,
+      rgba(255, 255, 255, .55) 0%,
+      rgba(255, 255, 255, .18) 30%,
+      rgba(255, 255, 255, 0) 55%);
+}
+:root[data-theme="wallpaper"][data-lum="bright"] .st-card::after {
+  background: linear-gradient(0deg,
+    rgba(20, 30, 60, .07) 0%,
+    rgba(20, 30, 60, 0) 100%);
 }
 .st-card-label {
   /* 2.1 全局 label 逐值（style.css:219） */

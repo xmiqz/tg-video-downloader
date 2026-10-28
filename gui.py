@@ -2463,6 +2463,79 @@ class Api:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    def browse_folders(self, path=""):
+        """List server directories without escaping the configured roots.
+
+        The browser cannot use a native folder dialog, so the editor needs a
+        small server-side picker. Symlinked directories are deliberately not
+        listed: resolving them would make containment depend on the target and
+        can change after validation.
+        """
+        roots = []
+        for raw_root in (self.allowed_roots or (core.DATA_DIR,)):
+            try:
+                root = pathlib.Path(raw_root).expanduser().resolve()
+            except OSError:
+                continue
+            if root.is_dir():
+                roots.append(root)
+        if not roots:
+            return {"ok": False, "error": "没有可浏览的目录根"}
+
+        raw = str(path or "").strip()
+        if not raw:
+            raw = str(core.get_download_root(self.cfg))
+        current, error = self._resolve_runtime_folder(raw)
+        if error:
+            return {"ok": False, "error": error}
+        if not current.is_dir():
+            return {"ok": False, "error": f"目录不存在：{current}"}
+
+        dirs = []
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        if not entry.is_dir(follow_symlinks=False):
+                            continue
+                    except OSError:
+                        continue
+                    child = current / entry.name
+                    resolved, child_error = self._resolve_runtime_folder(child)
+                    if child_error or not resolved.is_dir():
+                        continue
+                    dirs.append({
+                        "name": entry.name,
+                        "path": str(resolved),
+                    })
+        except OSError as exc:
+            return {
+                "ok": False,
+                "error": f"目录不可读取：{type(exc).__name__}: {exc}",
+            }
+        dirs.sort(key=lambda item: item["name"].casefold())
+
+        parent = ""
+        for root in roots:
+            if current == root:
+                break
+            try:
+                current.relative_to(root)
+                parent = str(current.parent)
+                break
+            except ValueError:
+                continue
+
+        return {
+            "ok": True,
+            "roots": [{"name": root.name or str(root), "path": str(root)}
+                      for root in roots],
+            "path": str(current),
+            "parent": parent,
+            "dirs": dirs,
+            "writable": os.access(current, os.W_OK),
+        }
+
     def choose_folder(self):
         if self.runtime_mode == "headless":
             return {
@@ -2656,8 +2729,14 @@ class Api:
         if cap is None:
             return {"ok": False}
         try:
-            changed, url, ver = cap.render_jpeg()
-            return {"ok": True, "changed": changed, "url": url, "v": ver}
+            changed, url, ver, lum = cap.render_jpeg()
+            return {
+                "ok": True,
+                "changed": changed,
+                "url": url,
+                "v": ver,
+                "lum": lum,
+            }
         except Exception as e:
             print("[GUI] backdrop_frame 失败：", e)
             return {"ok": False}
@@ -2761,6 +2840,7 @@ class AmbientCapture:
         self.version = 0
         self._cache_key = None
         self._prev_bytes = None       # 上一次 JPEG 字节，用于内容去重
+        self._cache_lum = None
 
     def _main_rect(self):
         r = wintypes.RECT()
@@ -2872,11 +2952,11 @@ class AmbientCapture:
     def render_jpeg(self, out_w=None, quality=82):
         """按主窗当前屏幕位置，从最新全屏帧裁剪背后区域，降采样并烘焙
         模糊，编码为 JPEG data URL。
-        返回 (是否有变化, url或None, 版本号)。可从任意线程调用。"""
+        返回 (是否有变化, url或None, 版本号, 感知亮度)。可从任意线程调用。"""
         rect = self._main_rect()
         with self._lock:
             if self._frame is None:
-                return False, None, 0
+                return False, None, 0, None
             fw, fh, buf = self._frame
             ver = self.version
             if out_w is None:
@@ -2887,12 +2967,12 @@ class AmbientCapture:
                 out_w = max(640, min(1600, round(rw * 0.5)))
             key = (ver, rect, out_w, quality)
             if key == self._cache_key:
-                return False, None, ver
+                return False, None, ver, self._cache_lum
             x, y, w, h = rect
             x0, y0 = max(0, x), max(0, y)
             x1, y1 = min(fw, x + w), min(fh, y + h)
             if x1 <= x0 or y1 <= y0:
-                return False, None, ver
+                return False, None, ver, self._cache_lum
             from PIL import Image
             full = Image.frombuffer("RGBA", (fw, fh), buf, "raw", "BGRA", 0, 1)
             # crop 在锁内完成，得到独立图像，避免 buf 被 pump 复用
@@ -2905,7 +2985,7 @@ class AmbientCapture:
         # 对角冷色液晶染色。旧版“盒式 resize 霜化”（先缩到约 74px 再放大
         # 回全尺寸）会让文本行变成横向条带，深色 IDE 背景整体 murky 灰暗，
         # 故彻底删除。注：仅 liquid 主题调用，静态主题不受影响。
-        from PIL import Image, ImageFilter, ImageEnhance
+        from PIL import Image, ImageFilter, ImageEnhance, ImageStat
         phys_w = rect[2] or cw
         # 输出宽约为主窗物理宽的一半，半径按比例反推，目标≈28 物理像素霜化
         r_eff = max(8, min(22, round(28 * cw / max(1, phys_w))))
@@ -2935,18 +3015,20 @@ class AmbientCapture:
         tint = Image.composite(purple, blue, self._diag_mask)
         tint = tint.resize((cw, ch), Image.BILINEAR)
         baked = Image.blend(baked, tint, 0.10)
+        lum = round(float(ImageStat.Stat(baked.convert("L")).mean[0]), 1)
+        self._cache_lum = lum
         bio = io.BytesIO()
         baked.save(bio, format="JPEG", quality=quality)
         data = bio.getvalue()
         if data == self._prev_bytes:
             # 裁剪内容真正未变，不重复推送（静止画面零 JS 通信）
             self._cache_key = key
-            return False, None, ver
+            return False, None, ver, lum
         self._prev_bytes = data
         url = ("data:image/jpeg;base64,"
                + base64.b64encode(data).decode("ascii"))
         self._cache_key = key
-        return True, url, ver
+        return True, url, ver, lum
 
 
 def _dpi_scale():
@@ -3023,19 +3105,43 @@ class _BackdropDriver:
         except Exception as ex:
             print("[GUI] pump 失败：", ex)
 
+    # A page that reloads (entering 设置 re-renders the view, and a hash change
+    # can reload the document) loses the backdrop image: it lives only in a CSS
+    # background-image set by the last pushed frame. Because this loop only
+    # pushed on *change*, a static scene never sent anything again, so the
+    # background stayed blank until the user moved the window. Re-push the last
+    # encoded frame on a slow heartbeat so any fresh document recovers on its
+    # own.
+    BACKDROP_REPUSH_SECS = 2.0
+
     def push_loop(self):
         # 后台线程：编码并经 main 注入的推送句柄发出事件（不直接触碰页面）
         last = 0
+        last_url = None
+        last_lum = None
+        last_push = 0.0
         while True:
             time.sleep(0.2)              # 5fps 推送；环境光变化缓慢，足够流畅，
                                         # 静止画面字节去重零通信
             try:
-                if self.cap is None or self.cap.version == last:
+                if self.cap is None:
                     continue
-                changed, url, ver = self.cap.render_jpeg()
-                if changed and url:
-                    self.api.push_event("_setBackdrop", [url])
-                last = ver
+                if self.cap.version != last:
+                    changed, url, ver, lum = self.cap.render_jpeg()
+                    if changed and url:
+                        self.api.push_event("_setBackdrop", [url, lum])
+                        last_url = url
+                        last_lum = lum
+                        last_push = time.monotonic()
+                    last = ver
+                    continue
+                # Static scene: heartbeat re-push so a reloaded document gets
+                # its backdrop back without waiting for motion.
+                now = time.monotonic()
+                if (last_url is not None
+                        and now - last_push >= self.BACKDROP_REPUSH_SECS):
+                    self.api.push_event("_setBackdrop", [last_url, last_lum])
+                    last_push = now
             except Exception as ex:
                 print("[GUI] 背景推送失败：", ex)
                 time.sleep(0.5)

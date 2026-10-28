@@ -58,17 +58,26 @@ button { cursor: pointer; color: inherit; }
 }
 #sh-backdrop::after {
   content: ""; position: absolute; inset: 0;
-  background: linear-gradient(155deg, rgba(8,10,18,.34), rgba(8,10,18,.58));
+  background: linear-gradient(155deg, rgba(8,10,18,.10), rgba(8,10,18,.24));
 }
 :root[data-theme="wallpaper"] #sh-backdrop { display: block; }
 :root[data-theme="wallpaper"] .ambient { display: none; }
-/* 壁纸态卡片需要更实的底色，否则照片会透进正文影响可读性 */
+/* 壁纸态保留照片本身，玻璃面板负责局部可读性；整张图不再压成灰糊。 */
 :root[data-theme="wallpaper"] .glass,
 :root[data-theme="wallpaper"] .dl-card,
 :root[data-theme="wallpaper"] .task-card,
 :root[data-theme="wallpaper"] .bulk-bar,
 :root[data-theme="wallpaper"] .ed-table thead th {
-  background: rgba(18, 21, 32, .82);
+  background: linear-gradient(155deg,
+    rgba(255,255,255,.17) 0%,
+    rgba(255,255,255,.09) 46%,
+    rgba(255,255,255,.05) 100%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  backdrop-filter: blur(30px) saturate(180%);
+  border-color: rgba(255,255,255,.30);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.44),
+    0 16px 40px rgba(4,6,18,.32);
 }
 
 /* ---------- 真实环境取光：仅液态玻璃(实时透明)模式显示 ---------- */
@@ -230,7 +239,7 @@ body:not(.liquid) .btn.glass-btn {
 .btn:active { transform: translateY(0) scale(.97); }
 .btn.primary {
   background: var(--brand-grad);
-  border: none; font-weight: 600;
+  border: none; font-weight: 600; color: #fff;
   box-shadow: 0 10px 26px rgba(92, 110, 255, .42),
               inset 0 1px 0 rgba(255,255,255,.4);
 }
@@ -790,6 +799,83 @@ nav { flex: 1; display: flex; flex-direction: column; gap: 5px; }
 .ed-settings .path-row input { min-width: 230px; }
 .ed-settings .check-line { font-size: 11.5px; color: var(--ink-dim);
                            white-space: nowrap; display: flex; gap: 5px; }
+
+/* 浏览器目录选择器：服务端受限目录浏览，不弹原生窗口 */
+.ed-folder-modal {
+  width: min(680px, 94vw);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+.ed-folder-roots,
+.ed-folder-location,
+.ed-folder-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ed-folder-roots { flex-wrap: wrap; }
+.ed-folder-roots .btn { max-width: 100%; }
+.ed-folder-location input {
+  flex: 1;
+  min-width: 0;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+.ed-folder-list {
+  min-height: 220px;
+  max-height: min(48vh, 420px);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: var(--r-md);
+  background: rgba(7,9,20,.22);
+}
+.ed-folder-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+.ed-folder-row:hover,
+.ed-folder-row:focus-visible {
+  background: rgba(255,255,255,.10);
+  border-color: rgba(255,255,255,.18);
+  outline: none;
+}
+.ed-folder-row .folder-ico {
+  color: #ffcf70;
+  font-size: 18px;
+  line-height: 1;
+}
+.ed-folder-row .folder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ed-folder-empty {
+  padding: 32px 18px;
+  color: var(--ink-mute);
+  text-align: center;
+}
+.ed-folder-status { min-height: 18px; margin: 0; }
+.ed-folder-actions { justify-content: flex-end; }
+:root[data-theme="wallpaper"] .ed-folder-list {
+  background: rgba(8,11,22,.28);
+  border-color: var(--wp-field-edge);
+}
+:root[data-theme="wallpaper"][data-lum="bright"] .ed-folder-list {
+  background: rgba(255,255,255,.40);
+  border-color: rgba(20,30,60,.12);
+}
 
 /* 工具栏 */
 .editor-toolbar {
@@ -1660,6 +1746,16 @@ body.liquid .sheet { position: fixed; }
     min-height: 40px;
     padding: 7px 12px;
   }
+  .ed-folder-modal {
+    width: 96vw;
+    max-height: 92vh;
+    padding: 16px;
+  }
+  .ed-folder-location { align-items: stretch; }
+  .ed-folder-location .btn { min-height: 40px; }
+  .ed-folder-list { min-height: 180px; max-height: 46vh; }
+  .ed-folder-row { min-height: 44px; }
+  .ed-folder-actions .btn { flex: 1; min-height: 44px; }
   .ed-settings .check-line {
     min-height: 40px;
     margin: 0;
@@ -1811,4 +1907,192 @@ body.liquid .sheet { position: fixed; }
   .rn-before { flex: 1 1 0; min-width: 0; }   /* 与勾选同行，不再独占 */
   .rn-arrow { display: none; }
   .rn-input { flex: 1 1 100%; min-height: 44px; }
+}
+
+/* Medium browser windows: the old single-row header squeezed the title,
+   metadata and path picker into each other. Keep the compact two-row form
+   before the phone breakpoint takes over. */
+@media (min-width: 768px) and (max-width: 1180px) {
+  .editor-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .ed-task-info { flex: none; }
+  .ed-settings {
+    flex-wrap: wrap;
+    align-items: flex-end;
+  }
+  .ed-settings .ed-field:first-child { flex: 1 1 100%; }
+  .ed-settings .path-row input {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
+/* ============================================================
+   每日壁纸：真实磨砂玻璃 + 按照片亮度翻转墨色
+   ------------------------------------------------------------
+   The legacy static themes intentionally suppress backdrop-filter.
+   Wallpaper is different: it is the one theme where the photo must stay
+   visible while panels blur only the content directly behind them.
+   ============================================================ */
+:root[data-theme="wallpaper"] {
+  --wp-glass-a: rgba(255,255,255,.17);
+  --wp-glass-b: rgba(255,255,255,.09);
+  --wp-glass-c: rgba(255,255,255,.05);
+  --wp-glass-edge: rgba(255,255,255,.30);
+  --wp-glass-shadow: rgba(4,6,18,.34);
+  --wp-field-bg: rgba(8,11,22,.30);
+  --wp-field-edge: rgba(255,255,255,.20);
+  --wp-thead-bg: rgba(12,16,30,.48);
+  --wp-thead-edge: rgba(255,255,255,.16);
+  --ed-thead-bg: var(--wp-thead-bg);
+  --ed-thead-edge: var(--wp-thead-edge);
+}
+:root[data-theme="wallpaper"][data-lum="bright"] {
+  --ink: #182034;
+  --ink-dim: rgba(24,32,52,.76);
+  --ink-mute: rgba(24,32,52,.56);
+  --glass-edge: rgba(20,30,60,.16);
+  --specular: rgba(255,255,255,.82);
+  --wp-glass-a: rgba(255,255,255,.60);
+  --wp-glass-b: rgba(255,255,255,.44);
+  --wp-glass-c: rgba(255,255,255,.34);
+  --wp-glass-edge: rgba(255,255,255,.78);
+  --wp-glass-shadow: rgba(30,42,80,.18);
+  --wp-field-bg: rgba(255,255,255,.58);
+  --wp-field-edge: rgba(20,30,60,.16);
+  --wp-thead-bg: rgba(255,255,255,.68);
+  --wp-thead-edge: rgba(20,30,60,.13);
+  --gl-thead-text: rgba(24,32,52,.76);
+}
+:root[data-theme="wallpaper"][data-lum="dark"] {
+  --ink: #f7f9ff;
+  --ink-dim: rgba(244,247,255,.82);
+  --ink-mute: rgba(237,242,255,.62);
+  --glass-edge: rgba(255,255,255,.30);
+  --specular: rgba(255,255,255,.46);
+}
+
+:root[data-theme="wallpaper"] body {
+  color: var(--ink);
+  background: #0a0c14;
+}
+:root[data-theme="wallpaper"] .glass,
+:root[data-theme="wallpaper"] body:not(.liquid) .glass,
+:root[data-theme="wallpaper"] .dl-card,
+:root[data-theme="wallpaper"] .task-card,
+:root[data-theme="wallpaper"] .bulk-bar,
+:root[data-theme="wallpaper"] .job-card,
+:root[data-theme="wallpaper"] .job-dock-mini,
+:root[data-theme="wallpaper"] .sheet,
+:root[data-theme="wallpaper"] .modal {
+  background: linear-gradient(155deg,
+    var(--wp-glass-a) 0%,
+    var(--wp-glass-b) 48%,
+    var(--wp-glass-c) 100%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%) !important;
+  backdrop-filter: blur(30px) saturate(180%) !important;
+  border: 1px solid var(--wp-glass-edge);
+  box-shadow:
+    inset 0 1px 0 var(--specular),
+    inset 0 -1px 0 rgba(255,255,255,.06),
+    0 16px 40px var(--wp-glass-shadow);
+}
+
+:root[data-theme="wallpaper"] .btn.glass-btn,
+:root[data-theme="wallpaper"] body:not(.liquid) .btn.glass-btn {
+  background: linear-gradient(160deg,
+    rgba(255,255,255,.20), rgba(255,255,255,.07));
+  border-color: var(--wp-glass-edge);
+  -webkit-backdrop-filter: blur(18px) saturate(170%) !important;
+  backdrop-filter: blur(18px) saturate(170%) !important;
+  box-shadow: inset 0 1px 0 var(--specular);
+}
+
+:root[data-theme="wallpaper"] .ed-table thead th,
+:root[data-theme="wallpaper"] body:not(.liquid) .ed-table thead th {
+  background: var(--wp-thead-bg);
+  color: var(--gl-thead-text, var(--ink-dim));
+  border-bottom-color: var(--wp-thead-edge);
+  -webkit-backdrop-filter: blur(22px) saturate(180%) !important;
+  backdrop-filter: blur(22px) saturate(180%) !important;
+}
+:root[data-theme="wallpaper"] input[type="text"],
+:root[data-theme="wallpaper"] input[type="number"],
+:root[data-theme="wallpaper"] input[type="date"],
+:root[data-theme="wallpaper"] input[type="password"],
+:root[data-theme="wallpaper"] .ed-field.narrow input,
+:root[data-theme="wallpaper"] .rn-input {
+  background: var(--wp-field-bg);
+  border-color: var(--wp-field-edge);
+  color: var(--ink);
+}
+:root[data-theme="wallpaper"] input:focus,
+:root[data-theme="wallpaper"] .rn-input:focus {
+  background: var(--wp-field-bg);
+  border-color: rgba(110,145,255,.78);
+  box-shadow: 0 0 0 4px rgba(91,134,255,.16);
+}
+:root[data-theme="wallpaper"] .segmented {
+  background: rgba(8,11,22,.26);
+  border-color: var(--wp-field-edge);
+}
+:root[data-theme="wallpaper"][data-lum="bright"] .segmented {
+  background: rgba(255,255,255,.46);
+}
+:root[data-theme="wallpaper"] .ed-detail,
+:root[data-theme="wallpaper"] .ditem {
+  background: rgba(8,11,22,.30);
+  border-color: var(--wp-field-edge);
+}
+:root[data-theme="wallpaper"][data-lum="bright"] .ed-detail,
+:root[data-theme="wallpaper"][data-lum="bright"] .ditem {
+  background: rgba(255,255,255,.44);
+  border-color: rgba(20,30,60,.12);
+}
+:root[data-theme="wallpaper"] .ed-row td {
+  border-bottom-color: rgba(255,255,255,.08);
+}
+:root[data-theme="wallpaper"][data-lum="bright"] .ed-row td {
+  border-bottom-color: rgba(20,30,60,.10);
+}
+:root[data-theme="wallpaper"][data-lum="bright"] .ed-title-input {
+  color: #141b2d;
+}
+:root[data-theme="wallpaper"][data-lum="bright"] .st-done,
+:root[data-theme="wallpaper"][data-lum="bright"] .badge.done {
+  background: rgba(5, 150, 105, .16);
+  color: #087a55;
+}
+:root[data-theme="wallpaper"][data-lum="bright"] .st-pending,
+:root[data-theme="wallpaper"][data-lum="bright"] .badge.paused {
+  background: rgba(190, 120, 0, .16);
+  color: #7c5100;
+}
+:root[data-theme="wallpaper"][data-lum="bright"] .st-failed,
+:root[data-theme="wallpaper"][data-lum="bright"] .badge.fail {
+  background: rgba(190, 35, 58, .14);
+  color: #a51f35;
+}
+:root[data-theme="wallpaper"][data-lum="bright"] .st-skipped,
+:root[data-theme="wallpaper"][data-lum="bright"] .badge.wait {
+  background: rgba(55, 66, 92, .12);
+  color: #414b62;
+}
+:root[data-theme="wallpaper"][data-lum="bright"] .badge.run {
+  background: rgba(55, 90, 210, .15);
+  color: #294ca8;
+}
+:root[data-theme="wallpaper"][data-lum="bright"] .btn.danger,
+:root[data-theme="wallpaper"][data-lum="bright"] .mini-action.danger {
+  background: rgba(190, 35, 58, .12);
+  border-color: rgba(190, 35, 58, .28);
+  color: #a51f35;
+}
+:root[data-theme="wallpaper"] .ed-meta,
+:root[data-theme="wallpaper"] .ed-counts,
+:root[data-theme="wallpaper"] .ed-detail-label {
+  color: var(--ink-mute);
 }

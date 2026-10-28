@@ -40,7 +40,8 @@
           <label>保存目录</label>
           <div class="path-row">
             <input id="ed2-folder" type="text" readonly>
-            <button class="btn glass-btn sm" onclick="edChooseFolder()">浏览</button>
+            <button id="ed2-folder-browse" class="btn glass-btn sm"
+              onclick="edChooseFolder()">浏览</button>
           </div>
         </div>
         <div class="ed-field narrow">
@@ -121,6 +122,33 @@
       <button class="btn glass-btn sm" onclick="edBulkStatus('pending')">标记重新下载</button>
       <button class="btn glass-btn sm" onclick="edBulkStatus('skipped')">标记跳过</button>
       <button class="btn danger sm" onclick="edBulkRemove()">移除条目</button>
+    </div>
+  </div>
+
+  <div id="ed2-folder-modal" class="modal-mask hidden" role="dialog"
+       aria-modal="true" aria-labelledby="ed2-folder-modal-title">
+    <div class="modal glass ed-folder-modal">
+      <div class="modal-head">
+        <h3 id="ed2-folder-modal-title">选择保存目录</h3>
+        <button class="icon-btn" type="button" aria-label="关闭"
+                onclick="edCloseFolderPicker()">×</button>
+      </div>
+      <p class="modal-sub">仅显示服务器允许目录内的文件夹。</p>
+      <div id="ed2-folder-roots" class="ed-folder-roots"></div>
+      <div class="ed-folder-location">
+        <button id="ed2-folder-up" class="btn glass-btn sm" type="button"
+                onclick="edFolderUp()">上一级</button>
+        <input id="ed2-folder-current" type="text" readonly
+               aria-label="当前目录">
+      </div>
+      <div id="ed2-folder-list" class="ed-folder-list"></div>
+      <p id="ed2-folder-status" class="modal-sub ed-folder-status"></p>
+      <div class="ed-folder-actions">
+        <button class="btn glass-btn" type="button"
+                onclick="edCloseFolderPicker()">取消</button>
+        <button class="btn primary" type="button"
+                onclick="edUseCurrentFolder()">选择此目录</button>
+      </div>
     </div>
   </div>
 

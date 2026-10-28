@@ -1373,59 +1373,54 @@ function extractFiles(r) {
 }
 
 // app.js:1898-1900 openSheetEditor —— T19h 用户裁决恢复 2.1 双窗。
-// The in-shell /task/:id/edit route is NOT a usable fallback (its layout was
-// built for the native shell and collapses at browser widths), so it is no
-// longer used. Desktop opens the native aux window; headless opens
-// taskedit.html in a tab. If the tab is blocked we surface the reason instead
-// of navigating somewhere broken.
+// Desktop opens the native aux window. Browser/container mode navigates the
+// current tab to the standalone editor: a same-tab navigation is never
+// popup-blocked, and the editor itself is responsive at browser widths.
 function openSheetEditor(taskId) {
   if (!taskId) return;
-  const directUrl = "/taskedit.html?id=" + encodeURIComponent(taskId);
+  let tokenHash = "";
+  try {
+    const m = String(location.hash || "").match(/[#&]t=([^&]*)/);
+    if (m) tokenHash = "#t=" + m[1];
+  } catch (e) {}
+  const directUrl = "/taskedit.html?id=" + encodeURIComponent(taskId) + tokenHash;
   const hostMode = sheet.headless ? "headless" : "desktop";
 
-  // Browsers only allow window.open() during the user-gesture tick. Awaiting
-  // the open_editor RPC first (a promise) moves us out of that tick and the
-  // popup gets blocked - which is exactly what "编辑页被浏览器拦截" was.
-  // So open the tab synchronously - but ONLY in headless mode. The desktop
-  // shell opens its own native aux window, and pre-opening a tab there left
-  // the user with two editor windows for one task.
-  let tab = null;
-  if (hostMode === "headless" && typeof window.open === "function") {
-    tab = openExternal(directUrl);
+  if (hostMode === "headless") {
+    location.assign(directUrl);
+    return;
   }
-
-  const reportBlocked = function () {
-    toast("error", "编辑页被浏览器拦截", "请允许本站弹出窗口后重试");
-  };
 
   try {
     const p = window.pywebview && window.pywebview.api
       ? window.pywebview.api.open_editor(taskId) : null;
     if (!p || typeof p.then !== "function") {
-      if (!tab) reportBlocked();
+      toast("error", "无法打开编辑页", "桥接未就绪，请刷新页面");
       return;
     }
     p.then(function (r) {
-      if (r && r.ok) {
-        // Desktop native window opened; a tab must not linger beside it.
-        if (tab && tab.close) { try { tab.close(); } catch (e) {} }
-        return;
-      }
-      // Headless: the tab we already opened is the editor. If the browser
-      // blocked it, say so instead of silently doing nothing.
-      if (r && r.headless) {
-        if (!tab) reportBlocked();
+      if (r && r.ok) return;
+      // Defensive fallback if the host hint was stale.
+      if (r && r.headless && r.url) {
+        try {
+          const target = new URL(r.url, location.origin);
+          if (target.origin !== location.origin) {
+            return toast("error", "无法打开编辑页", "返回地址不在本站");
+          }
+          location.assign(target.href);
+        } catch (e) {
+          toast("error", "无法打开编辑页", "返回地址无效");
+        }
         return;
       }
       if (r && r.error) {
-        if (tab && tab.close) tab.close();     // 任务不存在等：别留空标签
         return toast("error", "无法打开编辑页", r.error);
       }
-      if (!tab) reportBlocked();
+      toast("error", "无法打开编辑页", "操作未生效");
     }).catch(function () {
-      if (!tab) reportBlocked();
+      toast("error", "无法打开编辑页", "服务连接失败");
     });
   } catch (e) {
-    if (!tab) reportBlocked();
+    toast("error", "无法打开编辑页", "服务连接失败");
   }
 }

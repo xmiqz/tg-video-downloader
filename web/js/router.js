@@ -551,12 +551,45 @@ export async function boot() {
       img.src = url;
     } catch (e) { /* 解码失败维持现状 */ }
   }
-  win._setBackdrop = function (url) {
+  // Both liquid and the daily-wallpaper theme put an arbitrary image behind
+  // the text, so both need the same brightness switch. Liquid re-samples on a
+  // 1.5s throttle because its frame changes continuously; a wallpaper image is
+  // static, so it is sampled once per distinct URL.
+  let lumLastUrl = "";
+  function themeNeedsLum() {
+    const de = doc.documentElement;
+    return de.classList.contains("liquid")
+      || de.getAttribute("data-theme") === "wallpaper";
+  }
+  function setLum(value) {
+    const lum = Number(value);
+    if (!Number.isFinite(lum)) return false;
+    const de = doc.documentElement;
+    if (lum >= 160) de.setAttribute("data-lum", "bright");
+    else if (lum <= 120) de.setAttribute("data-lum", "dark");
+    else de.removeAttribute("data-lum");
+    return true;
+  }
+  win._setBackdrop = function (url, backendLum) {
     backdropEl.style.backgroundImage = url ? 'url("' + url + '")' : "";
-    if (!url || !doc.documentElement.classList.contains("liquid")) {
+    if (!url || !themeNeedsLum()) {
       doc.documentElement.removeAttribute("data-lum");
+      lumLastUrl = "";
       return;
     }
+    // The server can measure the final encoded image (including gamma and
+    // glass tint). Prefer that value; only older plain-string events fall
+    // back to canvas decoding in the page.
+    if (setLum(backendLum)) {
+      lumLastUrl = url;
+      lumLast = Date.now();
+      return;
+    }
+    // Never let a previous wallpaper's brightness classify a new image while
+    // its replacement is still being decoded.
+    doc.documentElement.removeAttribute("data-lum");
+    if (url === lumLastUrl) return;   // 壁纸是静态图，同一张不必重采
+    lumLastUrl = url;
     const now = Date.now();
     if (now - lumLast < 1500) return;
     lumLast = now;
@@ -564,19 +597,26 @@ export async function boot() {
   };
 
   // 主题镜像（对齐 2.1 app.js:2551-2562 applyAppearance）：localStorage.appearance
-  // 同一数据源（后端配置为准、这里仅镜像）。默认 dark；liquid 仅 Windows 生效，
-  // 其余平台按静态暗降级（app.js:2555-2556）。html.liquid 切换与 data-theme
-  // 只作用于 html 令牌层；非 liquid 清 backdrop 图。
-  const IS_WIN = /windows/i.test((win.navigator && win.navigator.userAgent) || "");
+  // 同一数据源（后端配置为准、这里仅镜像）。Host mode is authoritative:
+  // a Windows browser pointed at the container must not inherit desktop-only
+  // capabilities merely because its UA contains "Windows".
   let wallpaperPending = false;
   function applyAppearance(mode) {
-    const eff = (mode === "liquid" && !IS_WIN) ? "dark" : mode;
+    const headless = String(win.__TVG_HOST_MODE || "") === "headless";
+    const eff = (mode === "liquid" && headless) ? "dark" : mode;
     const isBing = eff === "bing";
+    const sameMaterial =
+      (eff === "liquid" && doc.documentElement.classList.contains("liquid"))
+      || (isBing && doc.documentElement.getAttribute("data-theme") === "wallpaper");
+    // Drop the previous image and luminance class before selecting the next
+    // material. Bing -> liquid otherwise leaves the old wallpaper visible
+    // until capture succeeds (and forever if capture never arrives).
+    doc.documentElement.removeAttribute("data-lum");
+    if (!sameMaterial) win._setBackdrop("");
     // wallpaper 主题沿用暗色令牌，data-theme 只用来选中壁纸图层
     doc.documentElement.setAttribute(
       "data-theme", isBing ? "wallpaper" : (eff === "light" ? "light" : "dark"));
     doc.documentElement.classList.toggle("liquid", eff === "liquid");
-    if (eff !== "liquid") win._setBackdrop("");
     if (isBing) wallpaperPending = true;   // 图层尚未建，稍后再拉图
   }
   try {

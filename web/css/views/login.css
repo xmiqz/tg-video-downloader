@@ -28,8 +28,19 @@
 /* T19j：液态叠加面羽化加强（用户裁决 2026-10-19）——登录卡同折叠胶囊
    配方 blur(20px) saturate(160%)（shell.css:766），修液态下层穿透。 */
 html.liquid .lg-login-card {
-  backdrop-filter: blur(20px) saturate(160%);
-  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  /* The card sits directly over a busy sampled frame. 20px blur alone left the
+     task card behind it legible through the panel, so the title, the phone
+     field and the hint text all competed with the content underneath
+     ("登录弹出可读性差了些"). 34px + a denser fill separates the layers. */
+  backdrop-filter: blur(34px) saturate(150%);
+  -webkit-backdrop-filter: blur(34px) saturate(150%);
+  background: linear-gradient(155deg,
+    rgba(24, 27, 40, .82) 0%,
+    rgba(18, 21, 33, .88) 60%,
+    rgba(14, 17, 27, .92) 100%);
+  border-color: rgba(255, 255, 255, .26);
+  box-shadow: 0 24px 70px rgba(4, 6, 18, .62),
+              inset 0 1px 0 rgba(255, 255, 255, .34);
 }
 .lg-login-card {
   width: 380px;
@@ -39,6 +50,24 @@ html.liquid .lg-login-card {
   text-align: center;
   gap: 0;
   animation: lg-pop .5s var(--ease-spring);
+}
+/* The login card is deliberately dark in every theme so the form reads the
+   same way everywhere. That means its ink must also be pinned to the light
+   set: on a bright captured backdrop the liquid theme swaps --raw-ink to dark,
+   which would put near-black text on this dark panel. */
+.lg-login-card {
+  --color-text: #f2f5ff;
+  --color-text-strong: #ffffff;
+  --color-text-muted: rgba(238, 242, 252, .80);
+  --color-text-faint: rgba(231, 236, 249, .62);
+  color: var(--color-text);
+}
+.lg-login-card .lg-title,
+.lg-login-card .lg-sub,
+.lg-login-card .lg-step,
+.lg-login-card label,
+.lg-login-card .lg-hint {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .45);
 }
 @keyframes lg-pop {
   from { opacity: 0; transform: scale(.9) translateY(14px); } /* style.css:246 */

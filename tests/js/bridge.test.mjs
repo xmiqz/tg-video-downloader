@@ -246,9 +246,10 @@ test("TR1-C 事件白名单：五个放行名 + 未列入只 debug", async () =>
     deep(evs[0].detail, payloads[name], "tg:" + name + " 的 detail = params[0]");
   }
 
-  h.win._setBackdrop = (u) => h.win.backdropCalls.push(u);
-  h.push({ event: "_setBackdrop", params: ["data:image/jpeg;base64,AA"] });
-  deep(h.win.backdropCalls, ["data:image/jpeg;base64,AA"], "_setBackdrop 调 window._setBackdrop(params[0])");
+  h.win._setBackdrop = (u, lum) => h.win.backdropCalls.push([u, lum]);
+  h.push({ event: "_setBackdrop", params: ["data:image/jpeg;base64,AA", 187] });
+  deep(h.win.backdropCalls, [["data:image/jpeg;base64,AA", 187]],
+    "_setBackdrop 透传 URL 与后端亮度");
   eq(h.tg("_setBackdrop").length, 0, "_setBackdrop 不转发为 CustomEvent");
 
   const before = h.emitted.length;

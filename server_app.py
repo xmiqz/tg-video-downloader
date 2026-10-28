@@ -43,7 +43,7 @@ log = logging.getLogger("server_app")
 RPC_METHODS = frozenset({
     "abort_task", "account_add_start", "account_list",
     "account_remove", "account_verify_code", "account_verify_password",
-    "active_states", "choose_folder", "connect", "delete_task",
+    "active_states", "browse_folders", "choose_folder", "connect", "delete_task",
     "edit_task", "editor_data", "editor_remove", "editor_save",
     "editor_set_status", "get_appearance", "get_item_text", "get_settings",
     "get_task", "is_active", "item_action", "items_file_info", "job_cancel",

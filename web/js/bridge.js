@@ -28,6 +28,20 @@ function readToken() {
 
 const token = readToken();
 
+// The shell starts before the asynchronous auth probe finishes. Use the
+// injected webview API as the synchronous host hint when available. The
+// standalone taskedit page is also opened from the browser with a short-lived
+// #t=<token> for asset URLs, so a token alone is not a reliable desktop hint.
+// This prevents a Windows browser pointing at a container from briefly showing
+// desktop-only themes (and keeps the first paint on the correct host mode).
+if (typeof window !== "undefined") {
+  const page = String((typeof location !== "undefined" && location.pathname) || "");
+  const standaloneEditor = /\/taskedit\.html$/i.test(page);
+  const hasNativeHost = !!(window.pywebview && window.pywebview.api);
+  window.__TVG_HOST_MODE = (hasNativeHost || (token && !standaloneEditor))
+    ? "desktop" : "headless";
+}
+
 async function startBridge() {
   if (token) {
     boot();
@@ -109,7 +123,7 @@ function boot() {
   const EVENT_WHITELIST = {
     _setBackdrop: (params) => {
       if (typeof window._setBackdrop === "function") {
-        window._setBackdrop(params[0]);
+        window._setBackdrop(params[0], params[1]);
       }
     },
   };

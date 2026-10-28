@@ -76,6 +76,7 @@ async function edLoad() {
   }
   state.task = r.task;
   state.items = r.items || [];
+  await edApplyHostMode();
 
   document.getElementById("ed2-title").value = r.task.channel_title || "";
   document.getElementById("ed2-channel").textContent =
@@ -95,6 +96,30 @@ async function edLoad() {
   if (rnWide) rnWide.checked = String((r.task && r.task.name_wide) || "") === "1";
 
   if (_edNeedEnrich()) _edRefetchStart();
+}
+
+function edFolderIsHeadless() {
+  return String(window.__TVG_HOST_MODE || "") === "headless";
+}
+
+async function edApplyHostMode() {
+  let mode = window.__TVG_HOST_MODE;
+  if (mode !== "headless" && mode !== "desktop") {
+    try {
+      const st = await api().get_settings();
+      mode = st && st.mode;
+      if (mode) window.__TVG_HOST_MODE = mode;
+    } catch (e) { /* keep the synchronous bridge hint */ }
+  }
+  const input = document.getElementById("ed2-folder");
+  const browse = document.getElementById("ed2-folder-browse");
+  if (!input) return;
+  const headless = mode === "headless";
+  input.readOnly = !headless;
+  if (browse) browse.hidden = false;
+  input.title = headless ? "可输入服务器路径，或使用浏览按钮选择目录" : "";
+  if (headless) input.placeholder = "输入或浏览服务器目录";
+  else input.removeAttribute("placeholder");
 }
 
 // ---------- 补全回捞（P1-7：单飞收敛式轮询）----------
@@ -522,6 +547,10 @@ async function edRenameRestore(btn) {
 function edChooseFolder() {
   const btn = document.querySelector(".path-row .glass-btn");
   if (_edChoosing) return;                 // JS 锁兜底（disabled 之外）
+  if (edFolderIsHeadless()) {
+    edOpenFolderPicker();
+    return;
+  }
   _edChoosing = true;
   if (btn) btn.disabled = true;
   const settle = () => {
@@ -550,6 +579,132 @@ function edChooseFolder() {
     alert("选择目录失败：" + (e && e.message || e));
   });
 }
+
+// ---------- 浏览器服务端目录选择器 ----------
+let _edFolderPath = "";
+let _edFolderParent = "";
+let _edFolderBusy = false;
+
+function edFolderModal() {
+  return document.getElementById("ed2-folder-modal");
+}
+
+function edOpenFolderPicker() {
+  const modal = edFolderModal();
+  if (!modal) return;
+  modal.classList.remove("hidden");
+  const input = document.getElementById("ed2-folder");
+  const start = input ? input.value.trim() : "";
+  edBrowseFolder(start);
+}
+
+function edCloseFolderPicker() {
+  const modal = edFolderModal();
+  if (modal) modal.classList.add("hidden");
+}
+
+function edFolderUp() {
+  if (_edFolderParent && !_edFolderBusy) edBrowseFolder(_edFolderParent);
+}
+
+function edUseCurrentFolder() {
+  if (!_edFolderPath) return;
+  const input = document.getElementById("ed2-folder");
+  if (input) input.value = _edFolderPath;
+  edCloseFolderPicker();
+}
+
+function edFolderStatus(text) {
+  const node = document.getElementById("ed2-folder-status");
+  if (node) node.textContent = text || "";
+}
+
+function edRenderFolderBrowser(r) {
+  const roots = document.getElementById("ed2-folder-roots");
+  const list = document.getElementById("ed2-folder-list");
+  const current = document.getElementById("ed2-folder-current");
+  const up = document.getElementById("ed2-folder-up");
+  if (!roots || !list || !current || !up) return;
+
+  roots.textContent = "";
+  (r.roots || []).forEach(function (root) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn glass-btn sm";
+    b.textContent = root.name || root.path;
+    b.title = root.path;
+    b.addEventListener("click", function () { edBrowseFolder(root.path); });
+    roots.appendChild(b);
+  });
+
+  current.value = r.path || "";
+  up.disabled = !r.parent || _edFolderBusy;
+  list.textContent = "";
+  const dirs = Array.isArray(r.dirs) ? r.dirs : [];
+  if (!dirs.length) {
+    const empty = document.createElement("div");
+    empty.className = "ed-folder-empty";
+    empty.textContent = "此目录下没有子文件夹";
+    list.appendChild(empty);
+  } else {
+    dirs.forEach(function (dir) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "ed-folder-row";
+      row.title = dir.path;
+      const icon = document.createElement("span");
+      icon.className = "folder-ico";
+      icon.textContent = "▰";
+      const name = document.createElement("span");
+      name.className = "folder-name";
+      name.textContent = dir.name;
+      row.append(icon, name);
+      row.addEventListener("click", function () { edBrowseFolder(dir.path); });
+      list.appendChild(row);
+    });
+  }
+  edFolderStatus(r.writable === false ? "当前目录不可写，请选择其它目录。" : "");
+}
+
+async function edBrowseFolder(path) {
+  if (_edFolderBusy) return;
+  _edFolderBusy = true;
+  edFolderStatus("正在读取目录…");
+  const list = document.getElementById("ed2-folder-list");
+  if (list) list.setAttribute("aria-busy", "true");
+  try {
+    const r = await api().browse_folders(path || "");
+    if (!r || !r.ok) {
+      edFolderStatus("读取目录失败：" + ((r && r.error) || "未知错误"));
+      return;
+    }
+    _edFolderPath = r.path || "";
+    _edFolderParent = r.parent || "";
+    edRenderFolderBrowser(r);
+  } catch (e) {
+    edFolderStatus("读取目录失败：" + (e && e.message || e));
+  } finally {
+    _edFolderBusy = false;
+    const up = document.getElementById("ed2-folder-up");
+    if (up) up.disabled = !_edFolderParent;
+    if (list) list.removeAttribute("aria-busy");
+  }
+}
+
+document.addEventListener("keydown", function (ev) {
+  const modal = edFolderModal();
+  if (ev.key === "Escape" && modal && !modal.classList.contains("hidden")) {
+    edCloseFolderPicker();
+  }
+});
+document.addEventListener("DOMContentLoaded", function () {
+  const modal = edFolderModal();
+  if (modal) {
+    modal.addEventListener("click", function (ev) {
+      if (ev.target === modal) edCloseFolderPicker();
+    });
+  }
+});
 
 // T50：二窗搬运作业弹层（editor.html 零改，DOM 由 JS 动态建；class 与
 // 主窗 T50Move 共用 style.css 的 t50-move-* 样式）。运行中无取消/关闭
@@ -702,15 +857,25 @@ function edApplyAppearance() {
   try {
     api().get_appearance().then(function (r) {
       const mode = r && r.mode;
+      const root = document.documentElement;
+      const body = document.body;
+      const back = document.getElementById("sh-backdrop");
+      root.removeAttribute("data-theme");
+      root.removeAttribute("data-lum");
+      body.classList.remove("liquid");
+      if (back) {
+        back.style.backgroundImage = "";
+        back.removeAttribute("title");
+      }
       if (mode === "light") {
-        document.documentElement.setAttribute("data-theme", "light");
+        root.setAttribute("data-theme", "light");
         return;
       }
       // 每日壁纸：与主壳同一套 data-theme="wallpaper" + #sh-backdrop，
       // 图片走后端缓存（Bing 每日一图），独立窗也要跟随，否则编辑页
       // 停在深色而主窗是壁纸。
       if (mode === "bing" || mode === "wallpaper") {
-        document.documentElement.setAttribute("data-theme", "wallpaper");
+        root.setAttribute("data-theme", "wallpaper");
         edApplyBackdrop();
       }
     }).catch(function () {});
@@ -733,22 +898,85 @@ function edApplyBackdrop() {
   if (!back) return;
   const tok = edAssetToken();
   const q = tok ? "?t=" + encodeURIComponent(tok) : "";
+  const paint = function (cur) {
+    if (!cur || !cur.file) return;
+    const url = "/wallpaper/" + cur.file + q;
+    if (typeof window._setBackdrop === "function") {
+      window._setBackdrop(url, cur.lum);
+    } else {
+      back.style.backgroundImage = 'url("' + url + '")';
+      edSetLum(cur.lum);
+    }
+    if (cur.copyright) back.title = cur.copyright;
+  };
   api().wallpaper_status().then(function (st) {
     const cur = st && st.ok ? st.current : null;
     if (cur && cur.file) {
-      back.style.backgroundImage = 'url("/wallpaper/' + cur.file + q + '")';
-      if (cur.copyright) back.title = cur.copyright;
+      paint(cur);
       return null;
     }
     return api().wallpaper_refresh([false]).then(function (fresh) {
       const c2 = fresh && fresh.ok ? fresh.current : null;
-      if (c2 && c2.file) {
-        back.style.backgroundImage = 'url("/wallpaper/' + c2.file + q + '")';
-        if (c2.copyright) back.title = c2.copyright;
-      }
+      if (c2) paint(c2);
     });
   }).catch(function () {});
 }
+
+let _edLumUrl = "";
+const _edLumCanvas = document.createElement("canvas");
+_edLumCanvas.width = 12;
+_edLumCanvas.height = 8;
+
+function edSetLum(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    document.documentElement.removeAttribute("data-lum");
+    return false;
+  }
+  if (n >= 160) document.documentElement.setAttribute("data-lum", "bright");
+  else if (n <= 120) document.documentElement.setAttribute("data-lum", "dark");
+  else document.documentElement.removeAttribute("data-lum");
+  return true;
+}
+
+function edSampleLum(url) {
+  if (!url || url === _edLumUrl) return;
+  _edLumUrl = url;
+  const ctx = _edLumCanvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return;
+  const img = new Image();
+  img.onload = function () {
+    try {
+      ctx.drawImage(img, 0, 0, _edLumCanvas.width, _edLumCanvas.height);
+      const d = ctx.getImageData(0, 0, _edLumCanvas.width,
+        _edLumCanvas.height).data;
+      let sum = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+      }
+      edSetLum(sum / (d.length / 4));
+    } catch (e) { /* canvas failure: keep the dark fallback */ }
+  };
+  img.src = url;
+}
+
+window._setBackdrop = function (url, lum) {
+  const back = document.getElementById("sh-backdrop");
+  if (!back) return;
+  back.style.backgroundImage = url ? 'url("' + url + '")' : "";
+  if (!url) {
+    document.documentElement.removeAttribute("data-lum");
+    _edLumUrl = "";
+    return;
+  }
+  if (!edSetLum(lum)) edSampleLum(url);
+};
+
+window.addEventListener("storage", function (ev) {
+  if (ev.key === "appearance" || ev.key === "wallpaper-rev") {
+    edApplyAppearance();
+  }
+});
 window.addEventListener("pywebviewready", function () {
   edApplyAppearance();
   edLoad();

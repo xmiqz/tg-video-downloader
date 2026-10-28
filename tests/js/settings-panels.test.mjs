@@ -5,6 +5,7 @@
 // revealed an empty box while every row rendered into a detached node.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 function mkNode(tag) {
   const node = {
@@ -99,6 +100,22 @@ test("task export panel wires .tp-items into .tp-list", async () => {
   assert.ok(hasItems, ".tp-items 不在 DOM 树里（列表会是空的）");
 });
 
+test("task export actions wait for the bridge instead of racing it", async () => {
+  const src = await readFile(
+    new URL("../../web/js/views/settings.js", import.meta.url), "utf8");
+  for (const name of [
+    "toggleTaskPicker",
+    "exportSelectedTasks",
+    "importTaskBundle",
+  ]) {
+    const start = src.indexOf(`async function ${name}`);
+    assert.ok(start > 0, `缺少 ${name}`);
+    const block = src.slice(start, src.indexOf("\n}", start) + 2);
+    assert.match(block, /await ensureApi\(\)/,
+      `${name} 必须先等待 pywebviewready，不能直接读桥`);
+  }
+});
+
 test("wallpaper panel wires .wp-hist-list into .wp-hist", async () => {
   installDom();
   const mod = await import("../../web/js/views/settings.js");
@@ -117,13 +134,13 @@ test("wallpaper panel wires .wp-hist-list into .wp-hist", async () => {
 test("nasCompose emits valid, parseable compose structure", async () => {
   installDom();
   const mod = await import("../../web/js/views/settings.js");
-  const yaml = mod.nasCompose("9911", "ghcr.io/xmiqz/tg-video-downloader:v2.4.0-beta.1", "/vol1/tvg");
+  const yaml = mod.nasCompose("9911", "ghcr.io/xmiqz/tg-video-downloader:v2.4.0-beta.2", "/vol1/tvg");
   const lines = yaml.split("\n");
 
   assert.equal(lines[0], "services:");
   // Two-space nesting under services:, four under the service key.
   assert.match(yaml, /^ {2}tg-video-downloader:$/m);
-  assert.match(yaml, /^ {4}image: ghcr\.io\/xmiqz\/tg-video-downloader:v2\.4\.0-beta\.1$/m);
+  assert.match(yaml, /^ {4}image: ghcr\.io\/xmiqz\/tg-video-downloader:v2\.4\.0-beta\.2$/m);
   // The port the user typed must reach the published mapping, not a default.
   assert.match(yaml, /^ {6}- "9911:8787"$/m);
   // Data dir override must land in the volumes list.

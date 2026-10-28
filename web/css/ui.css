@@ -117,6 +117,35 @@
   -webkit-backdrop-filter: blur(var(--glass-card-blur)) saturate(var(--gl-sat));
   border: 1px solid var(--glass-card-border);
   box-shadow: var(--glass-card-shadow), var(--glass-card-hi);
+  /* Same lit-pane treatment as the settings cards: a diagonal specular sweep
+     across the top and a soft bottom reflection. Without it a translucent
+     fill over a photo reads as tinted plastic rather than glass. */
+  position: relative;
+  isolation: isolate;
+}
+.u-card > * { position: relative; z-index: 1; }
+.u-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    linear-gradient(155deg,
+      rgba(255, 255, 255, .26) 0%,
+      rgba(255, 255, 255, .09) 26%,
+      rgba(255, 255, 255, 0) 52%),
+    radial-gradient(120% 80% at 50% 0%,
+      rgba(255, 255, 255, .14) 0%,
+      rgba(255, 255, 255, 0) 60%);
+}
+:root[data-theme="wallpaper"][data-lum="bright"] .u-card::before {
+  background:
+    linear-gradient(155deg,
+      rgba(255, 255, 255, .52) 0%,
+      rgba(255, 255, 255, .16) 30%,
+      rgba(255, 255, 255, 0) 55%);
 }
 .u-card--flush { padding: 0; }
 .u-card-head {

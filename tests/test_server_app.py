@@ -299,3 +299,39 @@ def test_headless_folder_is_confined(tmp_path):
     )
     assert outside is None
     assert "允许范围" in error
+
+
+def test_headless_folder_browser_lists_only_allowed_directories(tmp_path):
+    import gui
+
+    allowed = tmp_path / "data"
+    allowed.mkdir()
+    (allowed / "zeta").mkdir()
+    (allowed / "alpha").mkdir()
+    (allowed / "note.txt").write_text("not a directory", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (allowed / "escape").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pass  # Windows without symlink privilege; containment is still tested.
+
+    api = gui.Api.__new__(gui.Api)
+    api.runtime_mode = "headless"
+    api.allowed_roots = (allowed,)
+    api.cfg = {"download_root": str(allowed)}
+
+    root = api.browse_folders("")
+    assert root["ok"] is True
+    assert root["path"] == str(allowed.resolve())
+    assert root["parent"] == ""
+    assert [item["name"] for item in root["dirs"]] == ["alpha", "zeta"]
+    assert root["roots"] == [{"name": "data", "path": str(allowed.resolve())}]
+
+    child = api.browse_folders(str(allowed / "alpha"))
+    assert child["ok"] is True
+    assert child["parent"] == str(allowed.resolve())
+
+    denied = api.browse_folders(str(outside))
+    assert denied["ok"] is False
+    assert "允许范围" in denied["error"]
