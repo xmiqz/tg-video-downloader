@@ -1,6 +1,6 @@
 services:
   tg-video-downloader:
-    image: ${TGVD_IMAGE:-ghcr.io/xmiqz/tg-video-downloader:dev}
+    image: ${TGVD_IMAGE:-ghcr.io/xmiqz/tg-video-downloader:v2.4.0}
     container_name: tg-video-downloader
     restart: unless-stopped
     # Run as the unprivileged uid directly: no CAP_SETUID/CAP_SETGID is needed,

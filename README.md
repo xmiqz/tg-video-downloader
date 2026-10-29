@@ -56,7 +56,7 @@ Telegram 频道视频批量下载工具。纯 Python 实现，基于 [Telethon](
 | Linux ARM64 | `TGVideoDownloader_linux_arm64` | 命令行版 |
 | macOS Intel | `TGVideoDownloader_mac_x64` | 命令行版（另附 `.command` 双击启动） |
 | macOS Apple Silicon | `TGVideoDownloader_mac_arm64` | 命令行版（另附 `.command` 双击启动） |
-| Docker amd64 / arm64 | `ghcr.io/xmiqz/tg-video-downloader` | v2.4 浏览器版，GHCR 开发镜像 |
+| Docker amd64 / arm64 | `ghcr.io/xmiqz/tg-video-downloader` | v2.4 浏览器版，GHCR 发布镜像 |
 
 **GUI 与 TUI 的区别**：Windows 图形界面版提供完整可视化操作（搜索预览、任务管理、实时进度面板、三种外观主题），适合不熟悉命令行的用户。控制台 TUI 版在终端中运行，提供 ANSI 彩色进度面板与键盘快捷键，适合远程操作或偏好命令行的用户。Linux 另提供源码或 Docker 浏览器版；macOS 提供命令行版。
 
@@ -127,7 +127,7 @@ docker compose up -d
 
 GHCR 镜像地址为 `ghcr.io/xmiqz/tg-video-downloader`，支持
 `linux/amd64` 与 `linux/arm64`。发布 tag 会同时推送同名镜像 tag，例如
-`v2.4.0-beta.2`；日常开发分支推送会生成 `dev-<sha>`。
+`v2.4.0`；日常开发分支推送会生成 `dev-<sha>`。
 
 NAS 的 Docker 管理器能否“检查到更新”，取决于它是否支持检测 GHCR 镜像
 摘要变化：
