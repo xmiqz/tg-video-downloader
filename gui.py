@@ -1955,10 +1955,9 @@ class Api:
         if new_norm == cur_norm:
             # 路径未变化：不写 folder、不建作业
             return {"ok": True, "warnings": []}
-        # 移动目录是写操作：登录闸门（任何写盘/建作业之前）
-        if self.client is None:
-            print("[GUI] need_login: edit_task")
-            return {"ok": False, "need_login": True}
+        # Folder changes are local file operations. They must stay available
+        # while Telegram is offline (notably after copying a data directory
+        # from another machine), so do not gate them behind login.
         # 状态闸：下载中禁搬 / 同任务防重复提交
         if task_id in core.ACTIVE_SESSIONS:
             return {"ok": False, "error": "该任务正在下载中，无法移动目录"}

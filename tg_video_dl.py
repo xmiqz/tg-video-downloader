@@ -59,6 +59,7 @@ CONFIG_PATH = DATA_DIR / "tg_config.json"
 SESSION_PATH = str(DATA_DIR / "tg_session")
 DEFAULT_DOWNLOAD_ROOT = DATA_DIR / "downloads"
 TASK_ROOT = DATA_DIR / "tasks"          # 任务清单（断点续传）
+_TASK_RELOCATION_DONE = False
 
 
 def configure_data_dir(path):
@@ -68,13 +69,14 @@ def configure_data_dir(path):
     「程序平级 TG视频下载器数据」的便携语义；无头服务与容器传入卷路径。
     """
     global DATA_DIR, CONFIG_PATH, SESSION_PATH
-    global DEFAULT_DOWNLOAD_ROOT, TASK_ROOT
+    global DEFAULT_DOWNLOAD_ROOT, TASK_ROOT, _TASK_RELOCATION_DONE
 
     DATA_DIR = pathlib.Path(path).expanduser().resolve()
     CONFIG_PATH = DATA_DIR / "tg_config.json"
     SESSION_PATH = str(DATA_DIR / "tg_session")
     DEFAULT_DOWNLOAD_ROOT = DATA_DIR / "downloads"
     TASK_ROOT = DATA_DIR / "tasks"
+    _TASK_RELOCATION_DONE = False
     return DATA_DIR
 
 
@@ -229,6 +231,74 @@ def get_download_root(cfg):
     return root
 
 
+def relocate_imported_tasks():
+    """Repair task folders after a data directory is copied to another machine.
+
+    Task JSON stores absolute paths, so a copied ``tasks`` directory can point
+    at a path that only existed on the source machine (for example
+    ``C:\\Users\\old\\...\\TG视频下载器数据\\downloads``). For every task whose
+    folder is missing, re-anchor it under this instance's current download
+    root while preserving the trailing channel folder when possible.
+
+    This is intentionally startup-only, conservative, and idempotent:
+    existing folders are never rewritten, and a missing task folder with no
+    recognizable name falls back to the current root instead of creating a
+    path from another machine.
+    """
+    global _TASK_RELOCATION_DONE
+    if _TASK_RELOCATION_DONE:
+        return []
+    _TASK_RELOCATION_DONE = True
+
+    cfg = load_config()
+    root = get_download_root(cfg)
+    changed = []
+    if not TASK_ROOT.exists():
+        return changed
+    for path in TASK_ROOT.glob("*.json"):
+        try:
+            task = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(task, dict) or not task.get("id"):
+            continue
+        raw = str(task.get("folder") or "").strip()
+        if not raw:
+            continue
+        old = pathlib.Path(raw).expanduser()
+        if old.exists():
+            continue
+        # Keep the last path component (usually the channel folder) when it
+        # is safe; otherwise use the current root. Parse both separators so a
+        # Windows task copied into a Linux/NAS data volume (and vice versa)
+        # does not turn the whole foreign path into one directory name.
+        leaf = raw.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        if leaf and leaf not in (".", ".."):
+            target = root / leaf
+        else:
+            target = root
+        # If the copied task still has an old folder on this machine, the
+        # leaf may already be a valid but unrelated sibling. Do not overwrite
+        # it: leave that task untouched so the user can choose the correct
+        # destination explicitly in the editor.
+        if target.exists():
+            continue
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            task["folder"] = str(target)
+            # force=True bypasses the startup write coalescer. A plain
+            # save_task here could leave the repaired path only in memory
+            # until the process exits, so a copied-data user would see the
+            # same bad folder on the next launch.
+            if save_task(task, force=True):
+                changed.append((task["id"], raw, str(target)))
+        except OSError:
+            continue
+    if changed:
+        print(f"[task] 已自动重定位 {len(changed)} 个迁移任务的保存目录")
+    return changed
+
+
 def setup_console_utf8():
     """Windows 控制台切到 UTF-8 代码页，避免中文乱码（真实窗口下生效）"""
     if os.name != "nt":
@@ -304,6 +374,11 @@ def ensure_dirs_and_migrate():
                 pass
     except OSError:
         pass
+
+    # Copied data directories retain absolute task folders from the source
+    # machine. Repair those once at startup so the task library/editor do not
+    # show unusable paths after moving the data directory between devices.
+    relocate_imported_tasks()
 
 
 # 内置凭证：Telegram 官方桌面客户端公开使用的 api_id/api_hash，

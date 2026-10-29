@@ -82,3 +82,20 @@ test("wallpaper theme rules are actually parsed (not inside a comment)", async (
     'shell.css 的 wallpaper 规则被注释吞掉了',
   );
 });
+
+test("task editor uses one scroll chain on desktop and mobile", async () => {
+  const css = (await readFile(path.join(CSS_DIR, "taskedit.css"), "utf8"))
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+
+  const appRule = css.match(/\.editor-app\s*\{([^}]*)\}/)?.[1] ?? "";
+  assert.match(appRule, /overflow-y\s*:\s*auto/,
+    "编辑器外层必须承接滚轮，不能只在表格区域滚动");
+  assert.match(appRule, /overscroll-behavior-y\s*:\s*contain/,
+    "编辑器滚动不应带动外层页面");
+
+  const mainRule = css.match(/\.editor-main\s*\{([^}]*)\}/)?.[1] ?? "";
+  assert.match(mainRule, /flex\s*:\s*none/,
+    "编辑表格应随页面自然流高，不能再次形成桌面专用内滚层");
+  assert.match(mainRule, /overflow\s*:\s*visible/,
+    "桌面表格容器不能吞掉鼠标滚轮");
+});

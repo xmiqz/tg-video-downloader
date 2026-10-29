@@ -39,3 +39,4 @@ __pycache__/
 *.pyc
 .venv*/
 .pytest_cache/
+.pytest-basetemp-*/

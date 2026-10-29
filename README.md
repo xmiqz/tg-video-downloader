@@ -95,6 +95,10 @@ docker compose exec tg-video-downloader cat /data/.setup-token
 只保护 Web 管理界面，不是 Telegram 两步验证密码；初始化成功后
 `.setup-token` 会自动删除。
 
+如果把另一台设备上的「TG视频下载器数据」目录整体复制过来，首次启动会自动
+把任务清单里失效的绝对保存路径重定位到本机下载根目录；仍可进入任务编辑页
+手动改为实际目录，目录修改本身不要求 Telegram 登录。
+
 如果要指定宿主机数据目录，先在 NAS 上创建目录并授权给容器用户：
 
 ```bash

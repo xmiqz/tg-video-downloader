@@ -815,7 +815,7 @@ function edSave() {
   api().editor_save(TASK_ID, fields).then((r) => {
     if (r && r.need_login) {
       unlock();
-      return alert("该功能需要登录，请在主窗口登录后重试");
+      return alert("该操作需要 Telegram 登录，请在主窗口登录后重试");
     }
     if (!r || !r.ok) {
       unlock();

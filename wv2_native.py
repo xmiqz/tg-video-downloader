@@ -338,6 +338,9 @@ kernel32.GetNativeSystemInfo.restype = None
 # （Win11 22H2+）。属性不被系统支持时 DwmSetWindowAttribute 返回失败
 # HRESULT，调用侧一律静默忽略（系统版本差异不阻塞建窗）。
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+DWMWA_BORDER_COLOR = 34
+DWMWA_CAPTION_COLOR = 35
+DWMWA_TEXT_COLOR = 36
 DWMWA_WINDOW_CORNER_PREFERENCE = 37
 DWMWA_SYSTEMBACKDROP_TYPE = 38
 
@@ -370,6 +373,15 @@ def set_immersive_caption(hwnd, dark, backdrop=True):
             pass
 
     _set(DWMWA_USE_IMMERSIVE_DARK_MODE, 1 if dark else 0)
+    # Immersive dark mode alone still follows the OS accent/theme in some
+    # Win11 builds, which made the owned task-editor window look like a light
+    # tab under a dark app. Pin caption/border/text colors to the app palette
+    # so every top-level window stays visually consistent.
+    caption = 0x000F0807 if dark else 0x00F5ECE9   # COLORREF #07080F / #E9ECF5
+    text = 0x00FFFFFF if dark else 0x002E1A10      # white / #101A2E
+    _set(DWMWA_BORDER_COLOR, caption)
+    _set(DWMWA_CAPTION_COLOR, caption)
+    _set(DWMWA_TEXT_COLOR, text)
     _set(DWMWA_WINDOW_CORNER_PREFERENCE, 2)      # DWMWCP_ROUND
     if backdrop:
         _set(DWMWA_SYSTEMBACKDROP_TYPE, 2)      # DWMSBT_MAINWINDOW（Mica）
