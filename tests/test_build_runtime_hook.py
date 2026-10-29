@@ -4,6 +4,15 @@ from __future__ import annotations
 import sys
 
 import build
+
+if sys.platform != "win32":
+    import pytest
+
+    pytest.skip(
+        "Windows WebView2 shell tests run only on Windows",
+        allow_module_level=True,
+    )
+
 import wv2_app
 
 
