@@ -2,6 +2,15 @@
 from __future__ import annotations
 
 import ctypes
+import sys
+
+import pytest
+
+if sys.platform != "win32":
+    pytest.skip(
+        "Windows caption integration runs only on Windows",
+        allow_module_level=True,
+    )
 
 import wv2_native
 
