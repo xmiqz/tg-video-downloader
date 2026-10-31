@@ -452,6 +452,36 @@
   .nw-wiz { max-width: 760px; }  /* 旧壳 680px + 桌面舒展余量（任务书 §2.1 放宽为舒展布局授权） */
 }
 
+/* ≥1280 宽屏（T61b）：结果页取消 760px 固定窄带、随可用宽度自适应；
+   用 :has 只放宽含结果列表的向导（步骤 1 条件卡保持 680—760 原宽）。
+   <1280 全部断点与单列形态零改动；卡片内跑马/行距沿用 §7 原值。 */
+@media (min-width: 1280px) {
+  .nw-wiz:has(.nw-list) { max-width: none; }
+  .nw-list {                     /* 由单列 flex 改双列栅格：gap 沿用 §7 var(--space-2) */
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;        /* 行高按内容，不拉伸末尾空行 */
+    max-height: 52vh;            /* 宽屏视口更高：44vh→52vh 让 1440×900 首屏坐满 4 行 */
+  }
+  .nw-row {
+    /* ≥768 的 4 列模板末列无对应子元素（现 DOM 为 勾选|信息|体积来源 三段），
+       多列卡片宽度收紧后改为 3 列，避免名称列被空列挤占 */
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+  .nw-toolbar { flex-wrap: nowrap; }        /* 工具条随容器一行铺开 */
+  .nw-searchbox { flex: 1 1 auto; max-width: 560px; }  /* 筛选框随宽度舒展，上限 560px */
+  .nw-selact { margin-left: auto; flex: none; }        /* 四个批量按钮右对齐到容器右缘 */
+}
+@media (min-width: 1600px) {
+  .nw-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (min-width: 1920px) {
+  .nw-list {                     /* 三列且单卡片不超 640px（多出宽度留白在右） */
+    grid-template-columns: repeat(3, minmax(0, 640px));
+    justify-content: start;
+  }
+}
+
 /* ---------- 9. 动效双套归零（终态保留不动画；任务书 §1.6） ---------- */
 @keyframes nw-rise {
   from { opacity: 0; transform: translateY(var(--space-2)); } /* 旧壳 rise 语义（style.css:550） */
