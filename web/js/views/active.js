@@ -43,6 +43,8 @@ import {
 } from "../gestures.js";
 // T64 动效节拍（620ms 四段缓出数字滚动；reduced-motion 直跳终值）
 import { createRoller } from "../motion/calm.js";
+// T65 弦：下载中概览按真实任务快照映射九态
+import { mountXian, xianStateFor } from "../motion/xian.js";
 
 export const path = "active";
 
@@ -438,9 +440,11 @@ let refreshBusy = false;          // refreshActive 防重入
 let rollPct = null;               // T64 总览百分比滚动器（mount 建）
 let rollSpeed = null;             // T64 总速度滚动器
 let rollEta = null;               // T64 剩余时间滚动器
+let ovXianApi = null;             // T65 概览弦实例（onLeave 归 idle 停拍）
 const deferTimers = new Set();    // 250/300/400ms 一次性补拉 timer（onLeave 全清）
 let offline = false;              // 断网 banner 态
 let hintText = "";                // acct_hint 限速提示行文案（空=不显示）
+let hintReason = "";              // T65 acct_hint 原始 reason（供弦状态映射）
 let ptr = { touching: false, startY: 0, top: 0, dy: 0, firing: false };
 let ptrX0 = 0; // T17 轴锁起点（横向占优让位滑动托盘）
 let winListeners = 0;             // window 监听计数（onLeave 归零探针）
@@ -571,6 +575,7 @@ export function onLeave() {
   if (rollPct) rollPct.stop();
   if (rollSpeed) rollSpeed.stop();
   if (rollEta) rollEta.stop();
+  if (ovXianApi) ovXianApi.setState("idle");   // ⑨弦归待机，停 rAF
 }
 
 // ---- window 事件绑定/解绑（计数对称；onLeave 归零）----
@@ -680,7 +685,7 @@ function buildDom() {
     hintTextEl,
     el("button", {
       class: "ac-hint-x", type: "button", "aria-label": "关闭", text: "✕",
-      onclick: function () { hintText = ""; syncHintUI(); },
+      onclick: function () { hintText = ""; hintReason = ""; syncHintUI(); },
     }),
   ]);
 
@@ -688,8 +693,12 @@ function buildDom() {
   const prog = createProgress({ determinate: true, value: 0 });
   const ovPct = el("span", { class: "ac-ov-pct", text: "0%" });
   const ovDetail = el("div", { class: "ac-ov-detail", text: "" });
+  const ovXian = el("div", { class: "ac-ov-xian xian-host", "aria-hidden": "true" });
   const ovCard1 = el("div", { class: "ac-ov-card ac-ov-card--main" }, [
-    el("div", { class: "ac-ov-label", text: "总体进度" }),
+    el("div", { class: "ac-ov-top" }, [
+      el("div", { class: "ac-ov-label", text: "总体进度" }),
+      ovXian,
+    ]),
     el("div", { class: "ac-ov-prog" }, [prog.el, ovPct]),
     ovDetail,
   ]);
@@ -702,6 +711,8 @@ function buildDom() {
     el("div", { class: "ac-ov-label", text: "剩余时间" }), ovEta,
   ]);
   const overview = el("div", { class: "ac-overview", hidden: true }, [ovCard1, ovCard2, ovCard3]);
+  // T65 弦：概览 34px 同源 XIAN（状态只由真实快照驱动；构造失败只是不显示）
+  ovXianApi = mountXian(ovXian, { size: 34, state: "idle", decorative: true });
 
   // —— T64 总览读数滚动（620ms 四段缓出）——
   // 事件帧（1s 轮询 / 状态事件）只改目标值，不重启计时、不重建 DOM；
@@ -872,6 +883,7 @@ async function refreshActive() {
 
   const running = states.length > 0;
   if (!running) {
+    if (ovXianApi) ovXianApi.setState("idle");
     // 空态收口（app.js:1112-1119）：清选择/隐藏概览与批量/清列表/显示空态
     selectionSetKeys([]);
     wrapSelClear(false);                    // app.js:1113 activeSel.clear()
@@ -907,6 +919,7 @@ async function refreshActive() {
   }
   refs.ovDetail.textContent = overviewDetailText(states);
   refs.sub.textContent = overviewSubText(states.length);
+  if (ovXianApi) ovXianApi.setState(xianStateFor(states, hintReason));
 
   // fetching 同源抓取行（app.js:1138-1146）
   refs.fetchBar.hidden = a.fetchDetails.length === 0;
@@ -1275,6 +1288,7 @@ function onAcctHintEvent(ev) {
   const h = normAcctHint(raw);
   if (!h || (h.reason !== "flood_wait" && h.reason !== "slow")) return; // app.js:3536-3538
   const hasAlt = altAccounts().length >= 1;
+  hintReason = h.reason;
   // 已有小号降级小字（app.js:3553-3558）；无小号大条文案（index.html:123）
   hintText = hasAlt
     ? "主号下载较慢（服务器限速）：任务可切换小号或保持自动分流"

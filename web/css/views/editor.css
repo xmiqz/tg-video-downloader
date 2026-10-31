@@ -33,6 +33,11 @@
 .ev-back {
   flex-shrink: 0;
 }
+.ev-xian {                       /* T65 弦：头部 44px 同源角色 */
+  flex: none;
+  width: 44px;
+  height: 44px;
+}
 .ev-task-info {
   flex: 1;
   min-width: 0;                 /* style.css:741 */

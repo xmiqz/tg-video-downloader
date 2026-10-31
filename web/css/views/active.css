@@ -145,6 +145,18 @@
   color: var(--color-text-faint);
   letter-spacing: .4px;          /* 旧壳 .ov-label 字距（style.css:383） */
 }
+.ac-ov-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;   /* T65 弦：标签左、弦右 */
+  gap: var(--space-3);
+}
+.ac-ov-top .ac-ov-label { margin-bottom: 0; }
+.ac-ov-xian {
+  flex: none;
+  width: 34px;                     /* 与 mountXian size 一致 */
+  height: 34px;
+}
 .ac-ov-prog {
   display: flex;
   align-items: center;

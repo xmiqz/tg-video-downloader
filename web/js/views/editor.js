@@ -18,6 +18,8 @@ import {
 import {
   attachEdgeBack, attachSwipeActions, attachFocusKeep, trayFromButtons,
 } from "../gestures.js";
+// T65 弦：任务详情头部同源 XIAN，状态由条目真实状态聚合
+import { mountXian } from "../motion/xian.js";
 
 export const path = "task/:id/edit";
 
@@ -186,6 +188,7 @@ const state = {
 let refs = null;
 let cached = null;
 let toaster = null;
+let evXianApi = null;     // T65 详情头部弦实例（按条目真实状态切换）
 let confirmOv = null;
 let refetchGen = 0;
 let moveSt = null;        // {jobId, dom, handler, lastTs, ended, onDone, onClose}
@@ -250,6 +253,7 @@ function buildDom() {
   });
   const metaChannel = el("span", { class: "ev-meta-item", text: "" });
   const metaCreated = el("span", { class: "ev-meta-item", text: "" });
+  const evXian = el("div", { class: "ev-xian xian-host", "aria-hidden": "true" });
 
   const folderInput = el("input", {
     class: "ev-folder-input", type: "text", readonly: true,
@@ -274,6 +278,7 @@ function buildDom() {
   const head = el("div", { class: "ev-head u-card" }, [
     el("div", { class: "ev-head-main" }, [
       btnBack,
+      evXian,
       el("div", { class: "ev-task-info" }, [
         titleInput,
         el("div", { class: "ev-meta" }, [metaChannel, metaCreated]),
@@ -370,6 +375,8 @@ function buildDom() {
   });
 
   root.append(head, toolbar, main, bulk.el);
+  // T65 弦：详情头部 44px 同源 XIAN（构造失败只是不显示，不影响编辑）
+  evXianApi = mountXian(evXian, { size: 44, state: "idle", decorative: true });
 
   refs = {
     root: root,
@@ -440,6 +447,20 @@ async function load() {
   else stopRefetch();
 }
 
+// T65 弦：条目真实状态聚合（有失败报 failed，仍有未下载则待机，全完成报 done）
+function xianStateFromItems(items) {
+  const arr = Array.isArray(items) ? items : [];
+  if (!arr.length) return "idle";
+  let failed = 0, pending = 0;
+  for (let i = 0; i < arr.length; i++) {
+    const s = arr[i] && arr[i].status;
+    if (s === "failed") failed++;
+    else if (s === "pending") pending++;
+  }
+  if (failed) return "failed";
+  return pending ? "idle" : "done";
+}
+
 function fillTask() {
   const t = state.task || {};
   refs.titleInput.value = t.channel_title || "";
@@ -447,6 +468,7 @@ function fillTask() {
   refs.metaCreated.textContent = "创建：" + (t.created || "");
   refs.folderInput.value = t.folder || "";
   refs.parallelInput.value = t.parallel || 1;
+  if (evXianApi) evXianApi.setState(xianStateFromItems(state.items));
   // move 勾选不回填（基线 edLoad 不设 #ed2-move，editor.js:61-91）
 }
 
@@ -464,8 +486,10 @@ function renderStatus() {
 function render() {
   if (!refs || state.loading || state.error) {
     renderStatus();
+    if (evXianApi) evXianApi.setState(state.error ? "failed" : "idle");
     return;
   }
+  if (evXianApi) evXianApi.setState(xianStateFromItems(state.items));
   state.q = refs.qInput.value;
   const rows = filterItems(state.items, state.filter, state.q);
   const frag = document.createDocumentFragment();
@@ -934,6 +958,7 @@ export function mount(container) {
   }
   refs.root.setAttribute("data-view-name", "editor");
   cached = refs.root;
+  if (evXianApi) evXianApi.setState("idle");
   return cached;
 }
 

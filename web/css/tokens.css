@@ -97,6 +97,8 @@
   /* linear() 弹簧曲线：分段阻尼震荡，给分段控件 thumb 用（时长无关） */
   --ease-spring-li: linear(0, .061, .216 15%, .463 25%, .741 35%,
       .943 45%, 1.03 55%, 1.058 65%, 1.05 75%, 1.02 85%, 1);
+  /* T65 弦待机漂移（唯一允许的纯循环；reduced-motion 归零） */
+  --dur-xian-idle: 6500ms;
 
   /* --- 1.8 z-index 层级 --- */
   --z-backdrop: 0; --z-base: 1; --z-sticky: 10; --z-nav: 20;
@@ -277,6 +279,7 @@
     --dur-progress: 0ms; --dur-indet: 0ms; --dur-ambient: 0ms;
     --dur-spin: 0ms; --dur-pulse: 0ms; --dur-pulse-fast: 0ms;
     --dur-pulse-quick: 0ms; --dur-pulse-slow: 0ms;
+    --dur-xian-idle: 0ms;
     --ease-standard: linear; --ease-out: linear; --ease-spring: linear;
     --ease-spring-li: linear;
   }

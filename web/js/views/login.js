@@ -19,6 +19,8 @@
 // ============================================================
 
 import { el, createCard, createOverlay, createToaster } from "../ui/index.js";
+// T65 弦：登录徽章与壳品牌位同源（构造失败回退文字徽标）
+import { mountXian } from "../motion/xian.js";
 
 // ------------------------------------------------------------
 // ① 契约导出（t8_contract.md §1 恰五员）
@@ -671,7 +673,9 @@ function buildDom() {
 
   // 登录卡（2.1 .login-card 解剖逐序：logo-badge→h1→sub→三步→err→notice→
   // #guest-btn；旧壳 index.html:40-67。步骤指示点/lg-note 为 2.1 所无，不设）
-  const logoBadge = el("div", { class: "lg-logo-badge", "aria-hidden": "true", text: "TG" });
+  // T65 弦：徽章内挂同源 XIAN（构造失败回退文字徽标，降级不白屏）
+  const logoBadge = el("div", { class: "lg-logo-badge xian-host", "aria-hidden": "true" });
+  if (!mountXian(logoBadge, { size: 40, state: "idle", decorative: true })) logoBadge.textContent = "TG";
   const cardTitle = el("h1", { class: "lg-title", text: "TG 视频下载器" });
   const cardSub = el("p", { class: "lg-sub", text: "登录后开始下载频道视频" });
 

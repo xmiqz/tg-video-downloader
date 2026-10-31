@@ -1,0 +1,51 @@
+/* ============================================================
+   xian.css — T65 弦 XIAN 角色样式（从 xian-v2.html 提炼）
+   1) 绘制层由 xian.js 生成（恰 3 层），本文件只负责状态色与降级；
+   2) 所有时长/曲线走 --dur-* / --ease-* 令牌，不写裸值；
+   3) reduced-motion 与 #sh-root[data-v22-rm="on"] 双路归零，终态保留。
+   ============================================================ */
+
+.xian-svg {
+  display: block;
+  overflow: visible;
+  /* 待机漂移是唯一允许的纯循环：6.5s、幅度 <1px，reduced-motion 归零 */
+  animation: xian-idle-drift var(--dur-xian-idle) var(--ease-standard) infinite;
+}
+
+/* 状态色只染前缘亮边与光弦，不改形体、不加绘制层 */
+.xian-svg[data-xian-state="scanning"] .x-edge { stroke: var(--raw-brand-1); }
+.xian-svg[data-xian-state="downloading"] .x-edge { stroke: #8ADCF5; }
+.xian-svg[data-xian-state="sharding"] .x-edge { stroke: var(--raw-brand-2); }
+.xian-svg[data-xian-state="floodwait"] .x-edge { stroke: var(--raw-warn); }
+.xian-svg[data-xian-state="retrying"] .x-edge { stroke: var(--raw-warn); }
+.xian-svg[data-xian-state="failed"] .x-edge { stroke: var(--raw-danger); }
+.xian-svg[data-xian-state="done"] .x-edge,
+.xian-svg[data-xian-state="uploaded"] .x-edge { stroke: var(--raw-ok); }
+
+/* 小尺寸（≤48px）：前缘按比例加粗，保证品牌位/徽章/概览上的状态色可辨 */
+.xian-svg[data-xian-size="sm"] .x-edge { stroke-width: 3.2; }
+
+/* FloodWait：全部悬停、半透明，不坠落也不表现失败 */
+.xian-svg[data-xian-state="floodwait"] { opacity: .55; }
+.xian-svg[data-xian-state="failed"] { opacity: .85; }
+
+/* 光弦与节点仅在静态态显示（运动中零额外绘制层） */
+.xian-svg .x-static-only { opacity: 0; transition: opacity var(--dur-sm) var(--ease-standard); }
+.xian-svg[data-xian-state="idle"] .x-static-only,
+.xian-svg[data-xian-state="floodwait"] .x-static-only,
+.xian-svg[data-xian-state="done"] .x-static-only,
+.xian-svg[data-xian-state="uploaded"] .x-static-only { opacity: 1; }
+
+/* 宿主位：品牌位 / 登录徽章 / 概览 / 详情各由容器定尺寸 */
+.xian-host { display: inline-flex; align-items: center; justify-content: center; line-height: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .xian-svg { animation: none; }
+}
+#sh-root[data-v22-rm="on"] .xian-svg { animation: none; }
+
+@keyframes xian-idle-drift {
+  0%, 100% { transform: translate(0, 0); }
+  33% { transform: translate(.4px, -.3px); }
+  66% { transform: translate(-.3px, .2px); }
+}

@@ -348,6 +348,8 @@ html.liquid .u-toast {
   gap: var(--space-2);
 }
 .u-toast-mark { flex: none; font-size: var(--text-md); }
+/* T65 弦：完成 Toast 的 16px 同源派生（标记位定尺，不参与文字排版） */
+.u-toast-xian { width: 16px; height: 16px; }
 .u-toast--error .u-toast-mark { color: var(--color-danger); }
 .u-toast--ok .u-toast-mark { color: var(--color-success); }
 .u-toast--warn .u-toast-mark { color: var(--color-warning); }

@@ -25,6 +25,9 @@
 //   destroy：清除全部自动消失 timer、移除 host 与监听。
 // ============================================================
 
+// T65 弦：完成 Toast 与壳/登录徽章同源（构造失败回退 ✓）
+import { mountXian } from "../motion/xian.js";
+
 export function resolveToastTiming(type, duration) {
   const t = type === "error" || type === "warn" ? type : "ok";
   if (t === "error") return { auto: false, duration: 0 };
@@ -113,7 +116,13 @@ export function createToaster(opts) {
     const mark = doc.createElement("span");
     mark.className = "u-toast-mark";
     mark.setAttribute("aria-hidden", "true");
-    mark.textContent = type === "error" ? "⚠" : (type === "warn" ? "!" : "✓");
+    // T65 弦：完成态用同源 XIAN（16px 简化派生），构造失败回退 ✓
+    if (type === "ok") {
+      mark.classList.add("xian-host", "u-toast-xian");
+      if (!mountXian(mark, { size: 16, state: "done", decorative: true, win: null })) mark.textContent = "✓";
+    } else {
+      mark.textContent = type === "error" ? "⚠" : "!";
+    }
 
     const text = doc.createElement("span");
     text.className = "u-toast-text";

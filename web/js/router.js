@@ -31,6 +31,7 @@ import * as editorView from "./views/editor.js";
 import { mountJobDock } from "./jobdock.js";
 import { createScrollGuard } from "./motion/scroll-guard.js";
 import { markStill } from "./motion/calm.js";
+import { mountXian } from "./motion/xian.js";
 
 const views = {
   login: loginView,
@@ -501,7 +502,7 @@ function buildShellDom() {
     "</filter></defs></svg>" +
     // 侧边栏（≥1024）/窄栏（640–1023）
     '<aside class="sh-side" aria-label="主导航">' +
-    '<div class="sh-brand"><span class="sh-logo" aria-hidden="true">TG</span>' +
+    '<div class="sh-brand"><span class="sh-logo" aria-hidden="true" data-xian-brand>TG</span>' +
     '<span class="sh-brand-name">视频下载器</span></div>' +
     '<nav class="sh-side-nav">' + sideNav + "</nav>" +
     // 侧底 me-box（T19a 布局对标：2.1 index.html:91-111）
@@ -510,7 +511,7 @@ function buildShellDom() {
     // 抽屉（<640 汉堡展开）
     '<div class="sh-drawer-mask" id="sh-drawer-mask" hidden></div>' +
     '<aside class="sh-drawer" id="sh-drawer" aria-label="导航抽屉" aria-hidden="true">' +
-    '<div class="sh-drawer-head"><span class="sh-logo" aria-hidden="true">TG</span>' +
+    '<div class="sh-drawer-head"><span class="sh-logo" aria-hidden="true" data-xian-brand>TG</span>' +
     '<span class="sh-brand-name">视频下载器</span></div>' +
     '<nav class="sh-drawer-nav">' + sideNav + "</nav>" +
     // 抽屉脚同款 me-box（T19b：手机形态「边栏」与 2.1 侧底一致——
@@ -547,7 +548,7 @@ export async function boot() {
   // 视图层样式按约定路径引导（shell/tokens 由 index.html head 静态引入）
   // 页面级版本戳：升级后浏览器不得复用旧 CSS（否则宽屏布局改动"看不出区别"）
   const cssv = "?v=" + Date.now();
-  ["login", "new", "active", "tasks", "settings", "editor"].forEach(function (n) {
+  ["login", "new", "active", "tasks", "settings", "editor", "xian"].forEach(function (n) {
     const l = doc.createElement("link");
     l.rel = "stylesheet";
     l.href = "css/views/" + n + ".css" + cssv;
@@ -718,6 +719,15 @@ export async function boot() {
   if (noFrost) root.setAttribute("data-v22-nofrost", "on");
   const reducedMotion = !!(win.matchMedia && win.matchMedia("(prefers-reduced-motion: reduce)").matches);
   if (reducedMotion) root.setAttribute("data-v22-rm", "on");
+
+  // T65 弦：壳品牌位与全局状态同源（侧栏 + 抽屉各一实例）。
+  // 构造失败保留原文字徽标——降级不白屏、不报错。
+  root.querySelectorAll("[data-xian-brand]").forEach(function (host) {
+    host.textContent = "";
+    if (!mountXian(host, {
+      size: 30, state: "idle", reduced: reducedMotion, win: win, doc: doc, decorative: true,
+    })) host.textContent = "TG";
+  });
 
   // —— 断点形态：matchMedia 订阅，旋转/拖窗实时切换（不刷新页面）——
   const mqBar = win.matchMedia("(max-width: 639.98px)");
