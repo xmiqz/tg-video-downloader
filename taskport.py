@@ -67,6 +67,9 @@ def export_task(task, root, *, keep_status=True):
             "date": str(ti.get("date") or ""),
             "duration": ti.get("duration", 0),
             "text": str(ti.get("text") or "")[:400],
+            # 引用文本属文本元数据（reply/album/fwd 外部命中），不含媒体与
+            # 路径；带上它导入后才能继续拟名（T61c）
+            "ref_text": str(ti.get("ref_text") or "")[:120],
             # "done" means "the file was on the old machine" and is
             # meaningless after import, so it is reset to pending.
             "status": ("pending"
@@ -131,6 +134,7 @@ def parse_bundle(payload):
                 "status": "pending",     # 导入后一律重新下载
                 "src": str(ti.get("src") or ""),
                 "text": str(ti.get("text") or ""),
+                "ref_text": str(ti.get("ref_text") or "")[:120],
                 "duration": ti.get("duration", 0),
             })
         if not items:

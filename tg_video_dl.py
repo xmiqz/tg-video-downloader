@@ -3810,6 +3810,9 @@ def make_task_item(record):
         "date": f"{m.date:%Y-%m-%d}", "status": "pending",
         "src": record.get("src", SRC_CHANNEL),
         "text": record.get("text", "") or "",
+        # T61c：reply/album/fwd 外部命中时消息自身无正文，引用文本随条目
+        # 落盘，否则编辑页与导出导入都会丢掉拟名依据（顶层键仍 7 个）
+        "ref_text": _clip_ref_text(record.get("ref_text") or ""),
         "duration": doc_duration(record.get("doc")),
     }
 

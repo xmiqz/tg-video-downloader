@@ -39,8 +39,10 @@ def test_export_contains_no_absolute_folder(tmp_path):
 def test_export_never_carries_media_bytes(tmp_path):
     b = taskport.build_bundle([task()], "/data/downloads")
     item = b["tasks"][0]["items"][0]
+    # 9 键：ref_text 是文本元数据（引用命中原文），与 text 同类，
+    # 不含媒体字节、不含文件路径
     assert set(item) == {"msg", "src", "name", "size", "date",
-                         "duration", "text", "status"}
+                         "duration", "text", "ref_text", "status"}
     assert "path" not in item and "file" not in item
 
 

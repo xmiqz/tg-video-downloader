@@ -191,6 +191,10 @@ function edRender() {
     const isOpen = state.expanded.has(k);
     const [stText, stCls] = STATUS_LABEL[ti.status] || [ti.status, ""];
     const text = ti.text || "";
+    // T61c：reply/album/fwd 外部命中时正文为空，退用引用文本，避免空列
+    const ref = String(ti.ref_text || "");
+    const cellText = text || (ref ? "引用：" + ref : "");
+    const hasText = !!(text || ref);
 
     html.push(`
       <tr class="ed-row ${checked ? "checked" : ""}" data-k="${esc(k)}">
@@ -199,9 +203,9 @@ function edRender() {
                onclick="edToggle('${esc(k)}')">${checked ? "✓" : ""}</div>
         </td>
         <td class="c-name" title="${esc(ti.name)}">${esc(ti.name)}</td>
-        <td class="c-msg ${text ? "" : "empty"}"
+        <td class="c-msg ${hasText ? "" : "empty"}"
             onclick="edToggleExpand('${esc(k)}')">
-          <span class="msg-line">${esc(text) || "（无消息文本，点击仍可展开）"}</span>
+          <span class="msg-line">${esc(cellText) || "（无消息文本，点击仍可展开）"}</span>
         </td>
         <td class="c-dur">${fmtDur(ti.duration)}</td>
         <td class="c-date">${esc(ti.date || "—")}</td>
@@ -227,6 +231,8 @@ function edRender() {
                 TG 消息原文 · #${ti.msg}${ti.error ? " · 失败原因：" + esc(ti.error) : ""}
               </div>
               <pre class="ed-detail-text">${esc(text) || "（该条目没有保存消息文本）"}</pre>
+              ${ref ? `<div class="ed-detail-label">引用文本</div>
+              <pre class="ed-detail-text">${esc(ref)}</pre>` : ""}
             </div>
           </td>
         </tr>`);

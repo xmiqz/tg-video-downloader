@@ -2307,7 +2307,8 @@ class Api:
                 continue
             it2 = dict(ti)
             sug = core.smart_name_for(ti.get("text", "") or "", q,
-                                      ti.get("name", ""), wide=wide)
+                                      ti.get("name", ""),
+                                      ti.get("ref_text"), wide=wide)
             if sug:
                 it2["rename"] = sug
             items_out.append(it2)

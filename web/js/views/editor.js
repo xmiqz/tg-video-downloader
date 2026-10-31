@@ -476,6 +476,9 @@ function render() {
     const isOpen = state.expanded.has(k);
     const st = statusLabel(ti.status);
     const text = ti.text || "";
+    // T61c：reply/album/fwd 外部命中时正文为空，单元格退用引用文本
+    const ref = String(ti.ref_text || "");
+    const cellText = text || (ref ? "引用：" + ref : "");
 
     const cbox = el("button", {
       class: "ev-cbox" + (checked ? " is-on" : ""), type: "button",
@@ -485,13 +488,13 @@ function render() {
       onclick: function () { toggleSelect(k); },
     });
     const msgCell = el("div", {
-      class: "ev-cell ev-c-msg" + (text ? "" : " is-empty"),
+      class: "ev-cell ev-c-msg" + (cellText ? "" : " is-empty"),
       role: "cell", tabindex: "0",
       onclick: function () { toggleExpand(k); },
       onkeydown: function (e) {
         if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleExpand(k); }
       },
-    }, [el("span", { class: "ev-msg-line", text: text || "（无消息文本，点击仍可展开）" })]);
+    }, [el("span", { class: "ev-msg-line", text: cellText || "（无消息文本，点击仍可展开）" })]);
 
     const row = el("div", {
       class: "ev-row" + (checked ? " is-checked" : ""), role: "listitem",
@@ -532,14 +535,19 @@ function render() {
     frag.appendChild(row);
 
     if (isOpen) {
-      // 详情行（editor.js:187-200）
-      frag.appendChild(el("div", { class: "ev-detail", role: "listitem" }, [
+      // 详情行（editor.js:187-200）；引用文本另起一行（T61c）
+      const detail = [
         el("div", { class: "ev-detail-label" },
           "TG 消息原文 · #" + ti.msg +
           (ti.error ? " · 失败原因：" + ti.error : "")),
         el("pre", { class: "ev-detail-text",
           text: text || "（该条目没有保存消息文本）" }),
-      ]));
+      ];
+      if (ref) {
+        detail.push(el("div", { class: "ev-detail-label" }, "引用文本"));
+        detail.push(el("pre", { class: "ev-detail-text", text: ref }));
+      }
+      frag.appendChild(el("div", { class: "ev-detail", role: "listitem" }, detail));
     }
   }
 
