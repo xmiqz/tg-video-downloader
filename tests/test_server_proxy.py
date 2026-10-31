@@ -5,7 +5,7 @@
 
 1. ``TGDL_TRUST_PROXY=1`` + 默认白名单（仅回环 127.0.0.1 / ::1）：
    回环直连的 X-Forwarded-For 参与限速键，其余直连来源一律忽略转发头；
-2. 显式 ``TGDL_TRUSTED_PROXIES`` 取代默认回环集合；
+2. 显式 ``TGDL_TRUSTED_PROXIES`` 与默认回环集合取并集（回环永远可信，T61b 裁决 2）；
 3. ``TGDL_TRUST_PROXY=0`` 时转发头完全不看（无论白名单）；
 4. Cookie Secure = TGDL_COOKIE_SECURE OR（可信来源的 X-Forwarded-Proto=https）。
 """
@@ -157,21 +157,25 @@ def test_t61fu_trusted_proxy_host_default_matrix(host, expected):
     assert is_trusted_proxy_host(host) is expected
 
 
-def test_t61fu_trusted_proxy_host_whitelist_replaces_default():
+def test_t61fu_trusted_proxy_host_whitelist_unions_loopback():
     proxies = ("192.168.2.50", "10.0.0.0/8")
-    # 命中白名单（单 IP 与 CIDR 均可，显式白名单取代默认回环）
+    # 命中白名单（单 IP 与 CIDR 均可）
     assert is_trusted_proxy_host("192.168.2.50", proxies) is True
     assert is_trusted_proxy_host("10.0.0.7", proxies) is True
     # 未命中 / 公网 / 非 IP → False
     assert is_trusted_proxy_host("192.168.2.51", proxies) is False
-    assert is_trusted_proxy_host("127.0.0.1", proxies) is False
     assert is_trusted_proxy_host("203.0.113.5", proxies) is False
     assert is_trusted_proxy_host("localhost", proxies) is False
+    # T61b 裁决 2：显式白名单与回环取并集，回环永远可信
+    assert is_trusted_proxy_host("127.0.0.1", proxies) is True
+    assert is_trusted_proxy_host("::1", proxies) is True
+    assert is_trusted_proxy_host("127.255.255.254", proxies) is False
     # 规范化后的 /32、/128 形式同样可用
     assert is_trusted_proxy_host("203.0.113.5", ("203.0.113.5/32",)) is True
     assert is_trusted_proxy_host("2001:db8::1", ("2001:db8::/64",)) is True
-    # 非法白名单条目按不可信处理，不抛错
-    assert is_trusted_proxy_host("127.0.0.1", ("garbage",)) is False
+    # 非法白名单条目：不可信的白名单条目被忽略，但回环仍可信
+    assert is_trusted_proxy_host("203.0.113.5", ("garbage",)) is False
+    assert is_trusted_proxy_host("127.0.0.1", ("garbage",)) is True
 
 
 # ---------- 向后兼容调用形状 ----------
@@ -242,6 +246,18 @@ def test_t61fu_rate_limit_key_whitelisted_source_uses_xff(
         trust_proxy=True, trusted_proxies=("192.168.2.50",),
     )
     with TestClient(app, client=("192.168.2.50", 50000)) as client:
+        assert _fail_once(client) == 401
+    assert set(auth._failures) == {"1.2.3.4|/auth/login"}
+
+
+def test_t61fu_rate_limit_key_loopback_still_trusted_with_whitelist(
+        tmp_path, monkeypatch):
+    """T61b 裁决 2：配置 LAN 白名单后，同机回环反代仍可采信 XFF。"""
+    app, auth = _configured(
+        tmp_path, monkeypatch,
+        trust_proxy=True, trusted_proxies=("192.168.2.50",),
+    )
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
         assert _fail_once(client) == 401
     assert set(auth._failures) == {"1.2.3.4|/auth/login"}
 
@@ -349,8 +365,8 @@ def test_t61fu_setup_cookie_honours_secure_semantics(tmp_path, monkeypatch):
     ("http", " HTTPS ,http", True, (), True),     # 第一段、去空白、大小写
     ("http", "http,https", True, (), False),     # 第一段不是 https
     ("http", "  ", True, (), False),             # 空白头
-    ("http", "https", True, ("192.168.2.50",), False),  # 白名单取代默认
-    ("http", "https", True, ("192.168.2.50",) * 0 + ("10.0.0.0/8",), False),
+    ("http", "https", True, ("192.168.2.50",), True),   # 白名单与回环取并集
+    ("http", "https", True, ("192.168.2.50",) * 0 + ("10.0.0.0/8",), True),
     ("http", "https", False, ("127.0.0.1",), False),    # 开关关白名单无效
 ])
 def test_t61fu_request_is_https_matrix(scheme, xfp, trust, proxies, expected):

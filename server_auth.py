@@ -595,16 +595,19 @@ def is_trusted_proxy_host(host, trusted_proxies=()):
 
     Without a configured whitelist the default loopback set applies
     (127.0.0.1/32 and ::1/128 only - no hostnames, no "localhost",
-    no other loopback addresses). With a whitelist, the whitelist fully
-    replaces the default - including the degenerate case where every
-    entry fails to parse, which must NOT silently fall back to loopback
-    (that would trust a peer the operator explicitly scoped away).
+    no other loopback addresses). With a whitelist the configured entries
+    are UNIONed with the loopback default: a co-located reverse proxy on
+    127.0.0.1 must stay trusted while the operator whitelists a LAN peer.
     Non-IP input, empty values and ``None`` all resolve to False.
     """
+    base = _proxy_networks(DEFAULT_TRUSTED_PROXIES)
     if not trusted_proxies:
-        networks = _proxy_networks(DEFAULT_TRUSTED_PROXIES)
+        networks = base
     else:
-        networks = _proxy_networks(trusted_proxies)
+        networks = base + tuple(
+            net for net in _proxy_networks(trusted_proxies)
+            if net not in base
+        )
     if not networks:
         return False
     try:
