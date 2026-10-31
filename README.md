@@ -134,12 +134,12 @@ docker compose up -d
 
 GHCR 镜像地址为 `ghcr.io/xmiqz/tg-video-downloader`，支持
 `linux/amd64` 与 `linux/arm64`。发布 tag 会同时推送同名镜像 tag，例如
-`v2.4.0`；日常开发分支推送会生成 `dev-<sha>`。
+`v2.4.1`；日常开发分支推送会生成 `dev-<sha>`。
 
 NAS 的 Docker 管理器能否“检查到更新”，取决于它是否支持检测 GHCR 镜像
 摘要变化：
 
-- 固定版本（例如 `:v2.4.0-beta.2`）不会自动提示新版本，需手动改 tag。
+- 固定版本（例如 `:v2.4.1`）不会自动提示新版本，需手动改 tag。
 - 若管理器支持“检查镜像更新”，可先使用明确 tag 验证，再按需切换；
   不要依赖不可变的 `:latest` 判断版本。
 - 最可靠的更新方式是本页给出的 `docker compose pull && docker compose up -d`，
