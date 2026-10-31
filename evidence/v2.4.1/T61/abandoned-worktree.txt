@@ -1,0 +1,48 @@
+﻿=== 归档时间: 2026-11-01 02:57:15 ===
+=== git log --oneline -3 (abandoned worktree tgvd-v25-t61) ===
+ce91391 test(compose): lock container contract and document backup/rollback (T63)
+6522dd4 fix(auth): persist remember-me sessions across restarts (T60)
+f1923a2 release(v2.4): publish final cross-platform build
+
+=== git status --short ===
+ M README.md
+ M server_app.py
+ M server_auth.py
+?? docs/nas-reverse-proxy.md
+?? evidence/v2.4.1/T61/
+?? tests/test_server_proxy.py
+
+=== git diff --stat (uncommitted) ===
+ README.md      |  4 +++
+ server_app.py  | 52 +++++++++++++++++++++++++++++-------
+ server_auth.py | 84 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++--
+ 3 files changed, 129 insertions(+), 11 deletions(-)
+
+=== git diff --stat HEAD vs v2.5-dev ===
+ README.md                                          |   4 +
+ docs/nas-backup-restore.md                         |   5 +
+ docs/nas-reverse-proxy.md                          | 172 +++++++++
+ .../v2.4.1/T60-followup/T60-followup_result.md     | 102 +++++
+ evidence/v2.4.1/T60-followup/node.log              |  84 ++++
+ evidence/v2.4.1/T60-followup/pytest.log            |  51 +++
+ .../v2.4.1/T61-followup/T61-followup_result.md     | 139 +++++++
+ evidence/v2.4.1/T61-followup/node.log              |  85 +++++
+ evidence/v2.4.1/T61-followup/pytest.log            |  50 +++
+ evidence/v2.4.1/T61b/after-1440x900.png            | Bin 0 -> 113605 bytes
+ evidence/v2.4.1/T61b/after-1920x1080.png           | Bin 0 -> 186916 bytes
+ evidence/v2.4.1/T61b/after-390x844.png             | Bin 0 -> 56623 bytes
+ evidence/v2.4.1/T61b/before-1440x900.png           | Bin 0 -> 92005 bytes
+ evidence/v2.4.1/T61b/before-1920x1080.png          | Bin 0 -> 106600 bytes
+ evidence/v2.4.1/T61b/before-390x844.png            | Bin 0 -> 56623 bytes
+ evidence/v2.4.1/T61b/layout-evidence.md            |  38 ++
+ server_app.py                                      |  77 ++--
+ server_auth.py                                     | 243 ++++++++++--
+ server_config.py                                   |  40 ++
+ tests/_v1_support.py                               |   2 +
+ tests/test_server_auth.py                          | 417 ++++++++++++++++++--
+ tests/test_server_proxy.py                         | 422 +++++++++++++++++++++
+ tests/test_v1_auth.py                              |   4 +-
+ tests/test_v1_config.py                            |  11 +-
+ web/css/views/new.css                              |  30 ++
+ web/setup.html                                     |   2 +-
+ 26 files changed, 1883 insertions(+), 95 deletions(-)
