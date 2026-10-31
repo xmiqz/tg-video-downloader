@@ -43,6 +43,18 @@ def _remote_app(tmp_path):
     ), auth
 
 
+def test_favicon_is_served_from_the_web_root(tmp_path):
+    # T67：页面 favicon 直接由 web/ 静态目录下发，不是另存一份副本
+    app = _desktop_app(tmp_path, token="desk-token-ascii")
+
+    with TestClient(app) as client:
+        response = client.get("/favicon.svg")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/svg+xml")
+    assert response.content.startswith(b'<svg xmlns="http://www.w3.org/2000/svg"')
+
+
 def test_rpc_rejects_non_ascii_bearer_without_500(tmp_path):
     app = _desktop_app(tmp_path, token="desk-token-ascii")
 

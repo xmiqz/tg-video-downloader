@@ -133,6 +133,9 @@ def build_windows_gui(dist):
         # system .NET compiler, so the shim has to sit beside gui.py inside the
         # bundle. Without it, 浏览 dies with "缺少 folderpicker.cs".
         "--add-data", os.path.join(HERE, "folderpicker.cs") + os.pathsep + ".",
+        # 窗口类图标与 exe 图标同一母版；冻结态由 wv2_native 从 assets/ 载入
+        "--add-data", os.path.join(HERE, "build", "tvg.ico") + os.pathsep + "assets",
+        "--icon", os.path.join(HERE, "build", "tvg.ico"),
         # 见 _write_stdio_runtime_hook：修复 windowed 态 stdout=None 崩溃
         "--runtime-hook", rthook,
         "--collect-submodules", "telethon",
@@ -164,6 +167,7 @@ def build_windows_tui(dist):
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--onefile", "--console",
         "--name", name,
+        "--icon", os.path.join(HERE, "build", "tvg.ico"),
         "--collect-submodules", "telethon",
         "--collect-data", "certifi",
         "--runtime-hook", _write_stdio_runtime_hook(),

@@ -25,6 +25,10 @@ build_tmp/
 build_pyi/
 dist/
 build/
+# 应用图标是源资产（x64 与 ARM64 两套 Windows 构建共用同一枚），随仓库分发
+!build/
+build/*
+!build/tvg.ico
 *.spec
 
 # ARM64 打包时自动下载的 .NET 8 运行时（可重新生成，勿入库）
