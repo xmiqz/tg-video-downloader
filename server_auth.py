@@ -348,14 +348,12 @@ class AuthManager:
         token = f"{REMEMBER_PREFIX}{expires_at}.{ua8}.{signature}"
         return LoginResult(True, session_token=token, expires_at=expires_at)
 
-    def _remember_parts(self, token, user_agent=""):
-        """Return (expires_at, ua8, signature) for a valid r2 token, else None.
+    def _remember_signed(self, token):
+        """Return (expires_at, ua8) when the r2 signature verifies, else None.
 
-        The embedded ``ua8`` must match the fingerprint recomputed from the
-        CURRENT request UA, and the HMAC-SHA256 signature over
-        ``r2.<expires_at>.<ua8>`` must verify. Legacy ``r1.*`` tokens,
-        malformed / overlong / non-ASCII input, tampered values and UA
-        mismatches all resolve to None; this helper never raises.
+        Signature/format only - no UA binding. Logout uses this so that a
+        legitimate session can always be revoked, even from a browser whose
+        User-Agent changed after the cookie was minted (宽进严出).
         """
         if not isinstance(token, str) or not token.startswith(REMEMBER_PREFIX):
             return None
@@ -370,19 +368,34 @@ class AuthManager:
         key = self._session_key_bytes()
         if not key:
             return None
-        # Malformed UA values (non-str) can never match a token.
-        expected_ua8 = _ua_fingerprint(user_agent)
-        if expected_ua8 is None:
-            return None
-        if not tokens_equal(ua8, expected_ua8):
-            return None
         expected = hmac.new(
             key, f"{REMEMBER_PREFIX}{expires_at}.{ua8}".encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
         if not tokens_equal(signature, expected):
             return None
-        return expires_at, ua8, signature
+        return expires_at, ua8
+
+    def _remember_parts(self, token, user_agent=""):
+        """Return (expires_at, ua8, signature) for a valid r2 token, else None.
+
+        The embedded ``ua8`` must match the fingerprint recomputed from the
+        CURRENT request UA, and the HMAC-SHA256 signature over
+        ``r2.<expires_at>.<ua8>`` must verify. Legacy ``r1.*`` tokens,
+        malformed / overlong / non-ASCII input, tampered values and UA
+        mismatches all resolve to None; this helper never raises.
+        """
+        signed = self._remember_signed(token)
+        if signed is None:
+            return None
+        expires_at, ua8 = signed
+        # Malformed UA values (non-str) can never match a token.
+        expected_ua8 = _ua_fingerprint(user_agent)
+        if expected_ua8 is None:
+            return None
+        if not tokens_equal(ua8, expected_ua8):
+            return None
+        return expires_at, ua8, token.rsplit(".", 1)[1]
 
     def _revocation_active(self, token_id, now):
         """True when token_id is revoked; prune stale entries in passing."""
@@ -412,17 +425,18 @@ class AuthManager:
             self._persist_record(updated)
         return revoked
 
-    def _revoke_remember(self, token, user_agent=""):
+    def _revoke_remember(self, token):
         """Persist the revocation of a well-formed r2 token (id only).
 
-        Only tokens whose signature AND UA fingerprint verify against the
-        current request get an entry, so a hijacker replaying a stolen
-        cookie from a different browser cannot scrub the victim's logout.
+        Signature-only check (no UA binding): a session that is valid for
+        some browser must always be revocable by its owner, even if the
+        User-Agent changed since the cookie was minted. Unauthenticated
+        callers cannot forge a signature, so this stays 宽进严出.
         """
-        parsed = self._remember_parts(token, user_agent)
-        if parsed is None:
+        signed = self._remember_signed(token)
+        if signed is None:
             return
-        expires_at = parsed[0]
+        expires_at = signed[0]
         now = int(self._clock())
         token_id = hashlib.sha256(token.encode("utf-8")).hexdigest()
         record = self._record
@@ -482,6 +496,8 @@ class AuthManager:
     def logout(self, token, user_agent=""):
         """Drop the in-memory session and revoke the r2 token (if any).
 
+        ``user_agent`` is accepted for call-site compatibility but is
+        deliberately NOT used here: revocation is 宽进严出, signature-only.
         Malformed tokens are ignored; they can be neither an in-memory
         key nor a signable remember token.
         """
@@ -489,7 +505,7 @@ class AuthManager:
             if not isinstance(token, str):
                 return
             self._sessions.pop(token, None)
-            self._revoke_remember(token, user_agent)
+            self._revoke_remember(token)
 
     def cookie_kwargs(self, max_age=None, secure=None):
         """Cookie attributes; keyword-only overrides stay opt-in.

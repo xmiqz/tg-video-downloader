@@ -563,15 +563,22 @@ def test_T60_followup_logout_revocation_and_rebuild(tmp_path):
     assert hashlib.sha256(
         a2.session_token.encode("utf-8")).hexdigest() not in ids
 
-    # A logout attempted from a mismatched UA writes no revocation entry.
+    # T61b 裁决 1「宽进严出」：登出只验签名与过期，不校验 UA。
+    # 因此从 Bob 的 UA 登出同样会吊销 Alice 的令牌。
     manager.logout(a2.session_token, UA_BOB)
-    assert manager.session_valid(a2.session_token, UA_ALICE) is True
+    assert manager.session_valid(a2.session_token, UA_ALICE) is False
     ids_after = [entry["id"] for entry in json.loads(
         manager.auth_path.read_text(encoding="utf-8"))["revoked_sessions"]]
-    assert ids_after == ids
+    assert hashlib.sha256(
+        a2.session_token.encode("utf-8")).hexdigest() in ids_after
+    assert len(ids_after) == len(ids) + 1
 
+    # 重复登出是幂等的：不再新增吊销条目。
     manager.logout(a2.session_token, UA_ALICE)
     assert manager.session_valid(a2.session_token, UA_ALICE) is False
+    ids_again = [entry["id"] for entry in json.loads(
+        manager.auth_path.read_text(encoding="utf-8"))["revoked_sessions"]]
+    assert ids_again == ids_after
 
     # Simulated restart over the same auth.json keeps the revocations.
     restarted = AuthManager(tmp_path, iterations=1000, clock=lambda: now[0])
@@ -661,6 +668,7 @@ def test_T60_followup_end_to_end_ua_mismatch_returns_401(tmp_path, monkeypatch):
 
 
 def test_T60_followup_end_to_end_logout_binding(tmp_path, monkeypatch):
+    """T61b 裁决 1：登录 → 改 UA → 登出 → 用原 UA 访问 = 401。"""
     now = [50_000.0]
     app, auth = make_remote_app(tmp_path, monkeypatch, clock=lambda: now[0])
     assert auth.setup(auth.bootstrap_token(), GOOD_PASSWORD).ok
@@ -672,31 +680,27 @@ def test_T60_followup_end_to_end_logout_binding(tmp_path, monkeypatch):
         )
         assert login.status_code == 200
         token = client.cookies.get(server_auth.COOKIE_NAME)
+    assert token and token.startswith("r2.")
 
     app2, _auth2 = make_remote_app(tmp_path, monkeypatch, clock=lambda: now[0])
     with TestClient(app2) as client:
-        # Logging out from Bob's browser cannot revoke Alice's token.
+        alice_before = client.post(
+            "/rpc",
+            json={"method": "login_state", "params": []},
+            headers={"cookie": f"{server_auth.COOKIE_NAME}={token}",
+                     "user-agent": UA_ALICE},
+        )
+        assert alice_before.status_code == 200
+
+        # 从 Bob 的 UA 登出：只验签名与过期，签名合法即写入吊销表。
         bob_logout = client.post(
             "/auth/logout",
             headers={"cookie": f"{server_auth.COOKIE_NAME}={token}",
                      "user-agent": UA_BOB},
         )
         assert bob_logout.status_code == 200
-        still_valid = client.post(
-            "/rpc",
-            json={"method": "login_state", "params": []},
-            headers={"cookie": f"{server_auth.COOKIE_NAME}={token}",
-                     "user-agent": UA_ALICE},
-        )
-        assert still_valid.status_code == 200
 
-        # Logging out from Alice's own browser revokes it.
-        alice_logout = client.post(
-            "/auth/logout",
-            headers={"cookie": f"{server_auth.COOKIE_NAME}={token}",
-                     "user-agent": UA_ALICE},
-        )
-        assert alice_logout.status_code == 200
+        # 换回原 UA 访问：吊销已生效 → 401（严格校验仍然保留）。
         revoked = client.post(
             "/rpc",
             json={"method": "login_state", "params": []},
@@ -705,7 +709,7 @@ def test_T60_followup_end_to_end_logout_binding(tmp_path, monkeypatch):
         )
         assert revoked.status_code == 401
 
-    # The revocation survives the simulated restart.
+    # 吊销记录落在 auth.json，重启后仍然 401。
     app3, _auth3 = make_remote_app(tmp_path, monkeypatch, clock=lambda: now[0])
     with TestClient(app3) as client:
         after_restart = client.post(
@@ -715,3 +719,16 @@ def test_T60_followup_end_to_end_logout_binding(tmp_path, monkeypatch):
                      "user-agent": UA_ALICE},
         )
         assert after_restart.status_code == 401
+
+        # 非法的令牌（签名损坏）登出不得写入任何吊销条目，也不得抛错。
+        forged = token[:-1] + ("0" if token[-1] != "0" else "1")
+        forged_logout = client.post(
+            "/auth/logout",
+            headers={"cookie": f"{server_auth.COOKIE_NAME}={forged}",
+                     "user-agent": UA_ALICE},
+        )
+        assert forged_logout.status_code == 200
+    data = json.loads(auth.auth_path.read_text(encoding="utf-8"))
+    ids = [entry["id"] for entry in data["revoked_sessions"]]
+    assert hashlib.sha256(token.encode("utf-8")).hexdigest() in ids
+    assert hashlib.sha256(forged.encode("utf-8")).hexdigest() not in ids
