@@ -489,10 +489,12 @@ export async function boot() {
   const win = window;
 
   // 视图层样式按约定路径引导（shell/tokens 由 index.html head 静态引入）
+  // 页面级版本戳：升级后浏览器不得复用旧 CSS（否则宽屏布局改动"看不出区别"）
+  const cssv = "?v=" + Date.now();
   ["login", "new", "active", "tasks", "settings", "editor"].forEach(function (n) {
     const l = doc.createElement("link");
     l.rel = "stylesheet";
-    l.href = "css/views/" + n + ".css";
+    l.href = "css/views/" + n + ".css" + cssv;
     doc.head.appendChild(l);
   });
   // T10 组件库样式（t8_contract.md §7 R4-① 预授权的同型引导；随新壳
