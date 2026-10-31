@@ -113,6 +113,9 @@ chown -R 10001:10001 /vol1/1000/docker/tg-video-downloader-data
       - /vol1/1000/docker/tg-video-downloader-data:/data
 ```
 
+备份 / 升级 / 回滚的完整操作手册（含数据兼容边界）见
+[docs/nas-backup-restore.md](./docs/nas-backup-restore.md)。
+
 升级时先备份数据卷，再拉取新镜像并重建容器：
 
 ```bash
