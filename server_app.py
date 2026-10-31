@@ -264,10 +264,11 @@ def _asset_authorized(request, config, token, auth):
                 and server_auth.tokens_equal(query_token, token))
 
 
-def _set_session_cookie(response, auth, session_token):
+def _set_session_cookie(response, auth, session_token, *, max_age=None):
+    """Set the session cookie; ``max_age=None`` keeps the session TTL default."""
     response.set_cookie(
         value=session_token,
-        **auth.cookie_kwargs(),
+        **auth.cookie_kwargs(max_age=max_age),
     )
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -393,15 +394,20 @@ def create_app(config, *, engine, api, token="", auth=None):
         body = await _read_json_object(request)
         if isinstance(body, JSONResponse):
             return body
+        # Only a JSON boolean ``true`` enables the 30-day cookie; any other
+        # value keeps the regular session TTL.
+        remember = body.get("remember") is True
         result = auth.login(
             body.get("password", ""),
             server_auth.client_key(request, config.trust_proxy),
+            remember=remember,
         )
         if not result.ok:
             status = 429 if result.retry_after else 401
             return _json_error(result.error, status, result.retry_after)
         return _set_session_cookie(
-            JSONResponse({"ok": True}), auth, result.session_token
+            JSONResponse({"ok": True}), auth, result.session_token,
+            max_age=auth.remember_seconds if remember else auth.session_seconds,
         )
 
     @app.post("/auth/logout")

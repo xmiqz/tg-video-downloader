@@ -148,6 +148,24 @@ code {
   color: var(--color-text);
 }
 
+.setup-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -5px 0 18px;
+  font-size: var(--text-sm);
+}
+
+.setup-check-row input[type="checkbox"] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--color-primary);
+}
+
 .setup-hint {
   margin: -5px 0 18px;
   color: var(--color-text-faint);

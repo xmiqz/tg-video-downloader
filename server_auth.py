@@ -27,6 +27,22 @@ MAX_FAILURES = 5
 FAILURE_WINDOW_SECS = 600
 MAX_BLOCK_SECS = 900
 
+# T60: persistent "remember this device" sessions.
+REMEMBER_DAYS = 30
+REMEMBER_PREFIX = "r1."
+REMEMBER_KEY_BYTES = 32
+
+
+def _valid_session_key(value):
+    """A remember-signing key must be a 64-char hex string of 32 bytes."""
+    if not isinstance(value, str) or len(value) != REMEMBER_KEY_BYTES * 2:
+        return False
+    try:
+        bytes.fromhex(value)
+    except ValueError:
+        return False
+    return True
+
 
 @dataclass(frozen=True)
 class LoginResult:
@@ -47,6 +63,7 @@ class AuthManager:
             bootstrap_token_file or self.data_dir / ".setup-token"
         ).resolve()
         self.session_seconds = int(session_hours) * 3600
+        self.remember_seconds = REMEMBER_DAYS * 86400
         self.cookie_secure = bool(cookie_secure)
         self.iterations = int(iterations)
         self._clock = clock or time.time
@@ -55,6 +72,8 @@ class AuthManager:
         self._failures = {}
         self._record = self._load_record()
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        if self._record is not None:
+            self._ensure_remember_fields()
         self._sync_bootstrap_token()
 
     @property
@@ -117,16 +136,8 @@ class AuthManager:
             "sha256", password.encode("utf-8"), salt, int(iterations)
         )
 
-    def _write_record(self, password):
-        salt = secrets.token_bytes(16)
-        digest = self._derive(password, salt, self.iterations)
-        record = {
-            "version": AUTH_VERSION,
-            "salt": salt.hex(),
-            "iterations": self.iterations,
-            "digest": digest.hex(),
-            "created_at": int(self._clock()),
-        }
+    def _persist_record(self, record):
+        """Atomically persist the full auth record, preserving every key."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
         tmp = self.auth_path.with_name(self.auth_path.name + ".tmp")
         tmp.write_text(
@@ -138,6 +149,40 @@ class AuthManager:
         if os.name != "nt":
             os.chmod(self.auth_path, 0o600)
         self._record = record
+
+    def _ensure_remember_fields(self):
+        """Backfill remember-me keys into an existing auth.json.
+
+        Only runs when auth.json already exists. Missing or malformed
+        session_key/revoked_sessions values are (re)created in place with a
+        read-modify-write that keeps every pre-existing field untouched.
+        """
+        record = self._record
+        if record is None:
+            return
+        updated = None
+        if not _valid_session_key(record.get("session_key")):
+            updated = dict(record)
+            updated["session_key"] = secrets.token_bytes(
+                REMEMBER_KEY_BYTES).hex()
+        if not isinstance(record.get("revoked_sessions"), list):
+            updated = updated or dict(record)
+            updated["revoked_sessions"] = []
+        if updated is not None:
+            self._persist_record(updated)
+
+    def _write_record(self, password):
+        salt = secrets.token_bytes(16)
+        digest = self._derive(password, salt, self.iterations)
+        self._persist_record({
+            "version": AUTH_VERSION,
+            "salt": salt.hex(),
+            "iterations": self.iterations,
+            "digest": digest.hex(),
+            "created_at": int(self._clock()),
+            "session_key": secrets.token_bytes(REMEMBER_KEY_BYTES).hex(),
+            "revoked_sessions": [],
+        })
         try:
             self.token_file.unlink()
         except FileNotFoundError:
@@ -182,7 +227,7 @@ class AuthManager:
             state["blocked_until"] = 0
         return state
 
-    def login(self, password, client_key):
+    def login(self, password, client_key, remember=False):
         with self._lock:
             state = self._failure_state(client_key)
             now = self._clock()
@@ -198,6 +243,11 @@ class AuthManager:
                 self._record_failure(client_key)
                 return LoginResult(False, "密码错误")
             self._failures.pop(client_key, None)
+            # A remembered login needs a persisted signing key; without one
+            # (never expected after backfill) fall back to a plain session
+            # instead of minting tokens signed with an empty key.
+            if remember and self._session_key_bytes():
+                return self._new_remember_session()
             return self._new_session()
 
     def _verify(self, password):
@@ -232,6 +282,125 @@ class AuthManager:
         self._prune_sessions()
         return LoginResult(True, session_token=token, expires_at=expires_at)
 
+    def _session_key_bytes(self):
+        """The persisted remember-signing key, or b"" when unavailable."""
+        record = self._record
+        if not isinstance(record, dict):
+            return b""
+        value = record.get("session_key")
+        if not _valid_session_key(value):
+            return b""
+        return bytes.fromhex(value)
+
+    def _new_remember_session(self):
+        """Mint a stateless ``r1.<expires_at>.<hmac>`` long-lived token.
+
+        The token is never stored server-side; validity is recomputed from
+        the persisted ``session_key`` plus the revocation list, so it
+        survives service restarts.
+        """
+        expires_at = int(self._clock() + self.remember_seconds)
+        signature = hmac.new(
+            self._session_key_bytes(),
+            f"{REMEMBER_PREFIX}{expires_at}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        token = f"{REMEMBER_PREFIX}{expires_at}.{signature}"
+        return LoginResult(True, session_token=token, expires_at=expires_at)
+
+    def _remember_parts(self, token):
+        """Return (expires_at, signature) for a signed r1 token, else None.
+
+        Any malformed input or bad signature resolves to None; this helper
+        never raises.
+        """
+        if not isinstance(token, str) or not token.startswith(REMEMBER_PREFIX):
+            return None
+        parts = token.split(".")
+        if len(parts) != 3 or parts[0] != "r1":
+            return None
+        _, expires_raw, signature = parts
+        try:
+            expires_at = int(expires_raw)
+        except ValueError:
+            return None
+        key = self._session_key_bytes()
+        if not key:
+            return None
+        expected = hmac.new(
+            key, f"{REMEMBER_PREFIX}{expires_at}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        if not tokens_equal(signature, expected):
+            return None
+        return expires_at, signature
+
+    def _revocation_active(self, token_id, now):
+        """True when token_id is revoked; prune stale entries in passing."""
+        record = self._record
+        entries = record.get("revoked_sessions")
+        if not isinstance(entries, list) or not entries:
+            return False
+        keep = []
+        revoked = False
+        changed = False
+        for entry in entries:
+            if (isinstance(entry, dict)
+                    and isinstance(entry.get("id"), str)
+                    and isinstance(entry.get("expires_at"), int)):
+                if entry["expires_at"] <= now:
+                    changed = True
+                    continue
+                keep.append({"id": entry["id"],
+                             "expires_at": entry["expires_at"]})
+                if entry["id"] == token_id:
+                    revoked = True
+            else:
+                changed = True
+        if changed:
+            updated = dict(record)
+            updated["revoked_sessions"] = keep
+            self._persist_record(updated)
+        return revoked
+
+    def _revoke_remember(self, token):
+        """Persist the revocation of a well-formed r1 token (id only)."""
+        parsed = self._remember_parts(token)
+        if parsed is None:
+            return
+        expires_at, _signature = parsed
+        now = int(self._clock())
+        token_id = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        record = self._record
+        entries = []
+        raw = record.get("revoked_sessions")
+        for entry in raw if isinstance(raw, list) else []:
+            if not (isinstance(entry, dict)
+                    and isinstance(entry.get("id"), str)
+                    and isinstance(entry.get("expires_at"), int)):
+                continue
+            if entry["expires_at"] <= now:
+                continue
+            if entry["id"] == token_id:
+                return  # already revoked; do not rewrite the file
+            entries.append({"id": entry["id"],
+                             "expires_at": entry["expires_at"]})
+        entries.append({"id": token_id, "expires_at": expires_at})
+        updated = dict(record)
+        updated["revoked_sessions"] = entries
+        self._persist_record(updated)
+
+    def _remember_token_valid(self, token):
+        parsed = self._remember_parts(token)
+        if parsed is None:
+            return False
+        expires_at, _signature = parsed
+        now = int(self._clock())
+        if expires_at <= now:
+            return False
+        token_id = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        return not self._revocation_active(token_id, now)
+
     def _prune_sessions(self):
         now = self._clock()
         for token, expiry in list(self._sessions.items()):
@@ -243,22 +412,29 @@ class AuthManager:
             return False
         with self._lock:
             expires = self._sessions.get(token, 0)
-            if expires <= self._clock():
-                self._sessions.pop(token, None)
-                return False
-            return True
+            if expires > self._clock():
+                return True
+            self._sessions.pop(token, None)
+            return self._remember_token_valid(token)
 
     def logout(self, token):
         with self._lock:
             self._sessions.pop(token or "", None)
+            if isinstance(token, str):
+                self._revoke_remember(token)
 
-    def cookie_kwargs(self):
+    def cookie_kwargs(self, max_age=None, secure=None):
+        """Cookie attributes; keyword-only overrides stay opt-in.
+
+        Called without arguments this returns exactly the pre-T60 shape so
+        every existing call site keeps its behaviour.
+        """
         return {
             "key": COOKIE_NAME,
             "httponly": True,
             "samesite": "strict",
-            "secure": self.cookie_secure,
-            "max_age": self.session_seconds,
+            "secure": self.cookie_secure if secure is None else bool(secure),
+            "max_age": self.session_seconds if max_age is None else int(max_age),
             "path": "/",
         }
 

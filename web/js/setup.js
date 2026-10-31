@@ -150,7 +150,10 @@ $("login-form").addEventListener("submit", async (event) => {
   const form = event.currentTarget;
   busy(form, true, "登录中…");
   try {
-    await jsonFetch("/auth/login", { password: $("login-password").value });
+    await jsonFetch("/auth/login", {
+      password: $("login-password").value,
+      remember: $("login-remember").checked,
+    });
     $("login-password").value = "";
     location.replace("/");
   } catch (e) {
