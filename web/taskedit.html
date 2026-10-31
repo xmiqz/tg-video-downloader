@@ -89,9 +89,11 @@
           <button class="btn glass-btn sm" onclick="edRenameAll(false)">命名全不选</button>
           <button class="btn primary sm" onclick="edRenameApply(this)">应用命名</button>
           <button class="btn glass-btn sm" onclick="edRenameRestore(this)">还原命名</button>
-          <label class="check-line"><input id="ed2-rn-wide" type="checkbox"
-            onchange="edRenameWideToggle()"> 更宽上下文命名</label>
-          <span class="ed-rn-note">勾选=参与操作；取消勾选=使用原文件名；还原作用于勾选条目（支持多选）</span>
+          <label class="check-line"><input type="radio" name="ed2-rn-tier"
+            value="rename" checked onchange="edRenameTier('rename')"> 改名</label>
+          <label class="check-line"><input type="radio" name="ed2-rn-tier"
+            value="wide" onchange="edRenameTier('wide')"> 更宽上下文命名</label>
+          <span class="ed-rn-note">勾选=参与命名；取消勾选=使用原文件名；未下载条目下载完成即按此命名</span>
         </div>
         <div id="ed2-rn-rows"></div>
       </div>

@@ -91,9 +91,8 @@ async function edLoad() {
 
   edRender();
   edRenameSync();
-  // 2.3：命名上下文档位默认跟随任务建档档位
-  const rnWide = document.getElementById("ed2-rn-wide");
-  if (rnWide) rnWide.checked = String((r.task && r.task.name_wide) || "") === "1";
+  // 2.3：命名上下文档位默认跟随任务建档档位（T64b 改为互斥两档单选）
+  edRenameTierSync(String((r.task && r.task.name_wide) || "") === "1" ? "wide" : "rename");
 
   if (_edNeedEnrich()) _edRefetchStart();
 }
@@ -401,11 +400,19 @@ function edRenameSync() {
   if (p && !p.classList.contains("hidden")) edRenameRender();
 }
 
-// 2.3「更宽上下文命名」开关：按新档位重取拟名建议（用户已编辑内容保留）
-async function edRenameWideToggle() {
-  const on = document.getElementById("ed2-rn-wide").checked;
+// 2.3「改名 / 更宽上下文命名」互斥两档（T64b 与新建页同文案同顺序）：
+// 切换档位按新档位重取拟名建议（用户已编辑内容保留）
+function edRenameTierSync(mode) {
+  const radios = document.querySelectorAll('input[name="ed2-rn-tier"]');
+  for (let i = 0; i < radios.length; i++) {
+    radios[i].checked = radios[i].value === mode;
+  }
+}
+
+async function edRenameTier(mode) {
+  const wide = mode === "wide";
   try {
-    const r = await api().editor_data(TASK_ID, false, on);
+    const r = await api().editor_data(TASK_ID, false, wide);
     if (r && r.ok) {
       state.items = r.items || state.items;
       edRender();
@@ -426,6 +433,9 @@ function edRenameRender() {
     const k = keyOf(ti);
     const eff = rnEff(k, ti);
     const on = !rnState.off.has(k) && eff !== "";
+    // T64b 两态：文件已落盘=已改名（已下载）；否则=已登记（未下载）
+    const stDone = ti.status === "done" || ti.status === "exists";
+    const stText = stDone ? "已改名（已下载）" : "已登记（未下载）";
     return `<div class="rn-row">
       <input type="checkbox" class="rn-check" data-k="${esc(k)}"${on ? " checked" : ""}
         title="是否重命名（取消勾选=使用并展示原文件名）"
@@ -435,6 +445,7 @@ function edRenameRender() {
       <input class="rn-input" data-k="${esc(k)}"
         value="${esc(on ? eff : ti.name)}" placeholder="留空不改"${on ? "" : " disabled"}
         oninput="edRenameInput('${esc(k)}', this)">
+      <span class="rn-state${stDone ? " is-on" : ""}">${stText}</span>
     </div>`;
   }).join("") : `<div class="rn-empty">没有可处理的条目</div>`;
 }

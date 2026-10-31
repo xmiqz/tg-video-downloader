@@ -31,6 +31,12 @@ import {
   el, append, createCard, createProgress, createSegmented, createToaster,
 } from "../ui/index.js";
 
+// T64b 命名区共用模块（与任务编辑页同源文案/档位语义）
+import {
+  NAMING_COPY, createNamingBar, effectiveName, isRenameOn, nameWideParam,
+  normalizeMode, participates, rowNameStateText, tierChanged,
+} from "../naming.js";
+
 // T17 手势增量（边缘返回/聚焦保持；见 evidence/T17/t17_diff_list.md）
 import { attachEdgeBack, attachFocusKeep } from "../gestures.js";
 
@@ -247,6 +253,9 @@ let previewData = { items: [], channel: "", title: "", meta: {}, job_id: "" };
 let selected = new Set();
 let renameEdits = {};        // 2.3 智能重命名：行内编辑的拟用新名（key → 名；空=保持原名）
 let renameOff = new Set();   // 2.3：显式取消勾选的 key（使用并展示原文件名）
+let nameMode = "off";        // T64b 命名档位：off|rename|wide（默认不改名）
+let scannedMode = "off";     // 本次搜索结果所用的档位（档位切换提示判据）
+let namingBar = null;        // 命名区组件引用（列表上方常驻）
 let expandedKeys = new Set(); // 2.3：高级详情展开的 key
 let arrivedKeys = new Set();
 let searchJob = null;        // {job_id, streaming}（app.js:154）
@@ -389,11 +398,6 @@ function buildDom() {
     id: "nw-deepscan", type: "checkbox",
     "aria-label": "深度扫描（可突破 5000 条）",
   });
-  // 2.3「更宽上下文命名」开关：拟用名取更宽的前后文（100 字档）
-  const nameWide = el("input", {
-    id: "nw-namewide", type: "checkbox",
-    "aria-label": "更宽上下文命名",
-  });
 
   // 三个 segmented（选项/默认值严格对齐 index.html:229-244/269-273）
   const modeSeg = createSegmented([
@@ -459,10 +463,6 @@ function buildDom() {
       el("div", { class: "nw-field nw-field--small" }, [
         el("span", { class: "nw-label", text: "深度扫描（可突破 5000 条）" }),
         deepScan,
-      ]),
-      el("div", { class: "nw-field nw-field--small" }, [
-        el("span", { class: "nw-label", text: "更宽上下文命名" }),
-        nameWide,
       ]),
     ]),
   ]);
@@ -536,18 +536,19 @@ function buildDom() {
     class: "u-btn u-btn--ghost", type: "button", text: "清空",
     onclick: function () { selectAll(false); },
   });
-  // 2.3：命名一键全选/取消全选（作用于当前筛选可见集）
-  const rnAllBtn = el("button", {
-    class: "u-btn u-btn--ghost", type: "button", text: "命名全选",
-    title: "所有行启用重命名（使用拟用新名）",
-    onclick: function () { renameAll(true); },
-  });
-  const rnNoneBtn = el("button", {
-    class: "u-btn u-btn--ghost", type: "button", text: "命名全不选",
-    title: "所有行取消重命名（使用并展示原文件名）",
-    onclick: function () { renameAll(false); },
-  });
+  // T64b：命名整块（开关 + 互斥档位 + 命名全选/全不选）迁至结果列表上方，
+  // 与任务编辑页共用同一组件与文案（naming.js）。默认不改名。
   const list = el("div", { class: "nw-list", "aria-label": "搜索结果" });
+  namingBar = createNamingBar(el, {
+    mode: nameMode,
+    note: NAMING_COPY.note,
+    onModeChange: function (mode) {
+      nameMode = normalizeMode(mode);
+      refreshNamingNote();
+      renderPreview();          // 档位变化只影响行的命名呈现，不重排列表
+    },
+    onSelectAll: function (v) { renameAll(v); },
+  });
 
   const backBtn = el("button", {
     class: "u-btn u-btn--ghost", type: "button", text: "上一步",
@@ -566,9 +567,10 @@ function buildDom() {
         el("span", { class: "nw-search-ico", "aria-hidden": "true", text: "⌕" }),
         vsearch,
       ]),
-      el("div", { class: "nw-selact" }, [selAllBtn, clearBtn, rnAllBtn, rnNoneBtn]),
+      el("div", { class: "nw-selact" }, [selAllBtn, clearBtn]),
       el("label", { class: "nw-sr-only", for: "nw-search", text: "在结果中筛选" }),
     ]),
+    namingBar.el,
     list,
     el("div", { class: "nw-actions nw-actions--between" }, [
       backBtn,
@@ -582,7 +584,7 @@ function buildDom() {
     root: root, step1: step1, step2: step2, wiz1: wiz1, wiz2: wiz2,
     channel: channel, keywords: keywords, limit: limit, parallel: parallel,
     minMb: minMb, maxMb: maxMb, dateFrom: dateFrom, dateTo: dateTo,
-    deepScan: deepScan, nameWide: nameWide,
+    deepScan: deepScan,
     advBtn: advBtn, advPanel: advPanel,
     searchBtn: searchBtn, errBox: errBox, noteBox: noteBox,
     modeSeg: modeSeg, scopeSeg: scopeSeg, sortSeg: sortSeg,
@@ -677,8 +679,9 @@ async function doPreview() {
   // 2.3 FIX5K P1：deep_scan 扩展键——S1 契约 params 恰 10 键冻结面不动
   // （run_seams S1-8），收集后按 T52 扩展键模式并入下发参数
   r0.params.deep_scan = refs.deepScan && refs.deepScan.checked ? 1 : 0;
-  // 2.3：name_wide 扩展键（更宽上下文命名档位）同款并入
-  r0.params.name_wide = refs.nameWide && refs.nameWide.checked ? 1 : 0;
+  // T64b：命名档位并入既有 name_wide 参数（RPC 签名不变）
+  r0.params.name_wide = nameWideParam(nameMode);
+  scannedMode = normalizeMode(nameMode);
   await cancelSearchJobQuietly();            // app.js:749 T48 旧作业先取消
   refs.noteBox.textContent =
     "正在扫描频道历史消息，频道消息较多时可能需要等待几十秒…"; // app.js:750-751
@@ -734,14 +737,14 @@ function clearList() {
 
 // 2.3 智能重命名：行内候选名（编辑优先，空=保持原名）
 function rnEffective(k, it) {
-  return (((k in renameEdits) ? renameEdits[k] : (it && it.rename) || "")).trim();
+  return effectiveName(renameEdits, k, it);
 }
 
 function buildRow(it) {
   const k = keyOf(it.src, it.mid);
   const on = selected.has(k);
   const eff = rnEffective(k, it);
-  const useRn = !renameOff.has(k) && eff !== "";
+  const useRn = participates(nameMode, renameOff, k, eff);
   const nameWrap = el("div", { class: "nw-name" });
   if (it.match_in && it.match_in !== "self") {
     nameWrap.append(el("span", {
@@ -765,11 +768,13 @@ function buildRow(it) {
       nameText.nodeValue = rnCheck.checked
         ? (rnInput.value.trim() || String(it.name || ""))
         : String(it.name || "");
+      stateTag.textContent = rnCheck.checked ? rowNameStateText(it) : "不改名";
+      stateTag.classList.toggle("is-on", rnCheck.checked);
     },
   });
   const rnInput = el("input", {
     class: "nw-rn-input", type: "text", value: eff,
-    placeholder: "留空=保持原名", disabled: !useRn,
+    placeholder: NAMING_COPY.placeholderKeep, disabled: !useRn,
     title: "拟用新名（可编辑；任务创建后下载完成即按此命名）",
     onclick: function (ev) { ev.stopPropagation(); },
     onkeydown: function (ev) { ev.stopPropagation(); }, // 防空格/回车触发行勾选
@@ -783,6 +788,8 @@ function buildRow(it) {
       nameText.nodeValue = rnCheck.checked
         ? (rnInput.value.trim() || String(it.name || ""))
         : String(it.name || "");
+      stateTag.textContent = rnCheck.checked ? rowNameStateText(it) : "不改名";
+      stateTag.classList.toggle("is-on", rnCheck.checked);
     },
   });
   // 高级详情展开钮（2.3：完整文件名/正文/引用）
@@ -801,12 +808,20 @@ function buildRow(it) {
       rowByKey.set(k, fresh);
     },
   });
-  const rnWrap = el("div", { class: "nw-rename" }, [
-    rnCheck,
-    el("span", { class: "nw-rename-label", text: "拟命名" }),
-    rnInput,
-    detBtn,
-  ]);
+  // T64b：行内两态标签（已改名（已下载）/ 已登记（未下载））
+  const stateTag = el("span", {
+    class: "nw-rn-state" + (useRn ? " is-on" : ""),
+    text: useRn ? rowNameStateText(it) : "不改名",
+  });
+  // T64b：命名档位关闭时不渲染行内命名控件（默认不改名，行只读原名）；
+  // 详情钮始终保留（不随命名档位消失）
+  const rnWrap = el("div", { class: "nw-rename" });
+  if (isRenameOn(nameMode)) {
+    rnWrap.append(rnCheck,
+      el("span", { class: "nw-rename-label", text: NAMING_COPY.fieldLabel }),
+      rnInput, stateTag);
+  }
+  rnWrap.append(detBtn);
   const sub = el("div", { class: "nw-sub" });
   if (it.ref_text) sub.title = String(it.ref_text);       // title 全文悬浮 app.js:903
   sub.append(document.createTextNode(
@@ -880,6 +895,7 @@ function renderEmpty(state) {
 
 function renderPreview() {
   if (!refs) return;
+  refreshNamingNote();                 // T64b：档位/提示随结果集刷新
   const q = refs.vsearch.value.trim().toLowerCase(); // app.js:788
   const streamingEmpty = !previewData.items.length && searchJob && searchJob.streaming;
   if (streamingEmpty) {
@@ -956,13 +972,23 @@ function selectAll(v) {
 }
 
 // 2.3：命名一键全选/取消全选（可见集语义；取消=使用并展示原文件名）
+// T64b：档位关闭（默认不改名）时按钮禁用，此函数同时兜底早退。
 function renameAll(v) {
+  if (!isRenameOn(nameMode)) return;
   const rows = filterRows(previewData.items, refs.vsearch.value.trim().toLowerCase());
   for (let i = 0; i < rows.length; i++) {
     const k = keyOf(rows[i].src, rows[i].mid);
     if (v) renameOff.delete(k); else renameOff.add(k);
   }
   renderPreview();
+}
+
+// T64b：命名区提示——档位与本次搜索档位不同（且已有结果）时提示需重新搜索
+function refreshNamingNote() {
+  if (!namingBar) return;
+  namingBar.setMode(nameMode);
+  const stale = previewData.items.length > 0 && tierChanged(nameMode, scannedMode);
+  namingBar.setNote(stale ? NAMING_COPY.staleTier : NAMING_COPY.note);
 }
 
 // ============================================================
@@ -1222,7 +1248,7 @@ async function doStart() {
   // 2.3 智能重命名：拟用新名（行内编辑优先，默认 it.rename 算句结果；
   // 显式取消勾选的行不下发=保持原名；空/与原名相同不下发）
   const renames = [];
-  selected.forEach(function (k) {
+  if (isRenameOn(nameMode)) selected.forEach(function (k) {
     if (renameOff.has(k)) return;
     const i = k.indexOf("|");
     const it = previewData.items.find(function (x) { return keyOf(x.src, x.mid) === k; });

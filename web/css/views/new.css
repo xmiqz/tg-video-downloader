@@ -532,10 +532,72 @@
 @media (max-width: 767.98px) {
   .nw-rn-input { min-height: 44px; }
 }
-/* 深度扫描/更宽命名勾选框基础盒（T19h ③ 同口径 16px；FIX5K P1 / 2.3） */
-#nw-deepscan, #nw-namewide { width: 16px; height: 16px; cursor: pointer; }
+/* 深度扫描勾选框基础盒（T19h ③ 同口径 16px；FIX5K P1） */
+#nw-deepscan { width: 16px; height: 16px; cursor: pointer; }
 /* 是否重命名勾选（2.3：取消勾选=使用并展示原文件名） */
 .nw-rn-check { width: 16px; height: 16px; flex: none; cursor: pointer; }
+
+/* ---------- 10b. T64b 命名区（结果列表上方；与任务编辑页同源文案） ---------- */
+/* 整块从「选项」区迁出：开关 + 互斥两档（改名 / 更宽上下文命名）+
+   命名全选/全不选。默认不改名（开关关=按钮与档位禁用）。 */
+.nw-naming {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunk);
+  border: var(--line-1) solid var(--color-border);
+}
+.nw-naming-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.nw-naming-toggle {                      /* 智能重命名（高级）开关 */
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.nw-rn-toggle { width: 16px; height: 16px; cursor: pointer; }
+.nw-naming-tiers {                       /* 互斥两档（原生 radio，语义单一） */
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.nw-naming-tier {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.nw-naming-tier input { width: 14px; height: 14px; cursor: pointer; }
+.nw-naming-tier input:disabled,
+.nw-naming-tier input:disabled + span { opacity: .55; cursor: default; }
+.nw-naming-acts {                        /* 命名全选 / 命名全不选 */
+  display: flex;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+.nw-naming-note {                        /* 说明/重新搜索提示（空值隐藏） */
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
+.nw-naming-note[hidden] { display: none; }
+.nw-rn-state {                           /* 行内两态：已改名（已下载）/ 已登记（未下载） */
+  flex: none;
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
+.nw-rn-state.is-on { color: var(--color-primary-strong); }
 /* 高级详情钮（行内右侧小钮） */
 .nw-det-btn {
   flex: none;
