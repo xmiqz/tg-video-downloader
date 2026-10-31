@@ -275,11 +275,19 @@ def _asset_authorized(request, config, token, auth):
                 and server_auth.tokens_equal(query_token, token))
 
 
-def _set_session_cookie(response, auth, session_token, *, max_age=None):
-    """Set the session cookie; ``max_age=None`` keeps the session TTL default."""
+def _set_session_cookie(response, auth, session_token, *, max_age=None,
+                         secure=None):
+    """Set the session cookie; ``max_age=None`` keeps the session TTL default.
+
+    ``secure=None`` keeps the pre-T61-followup behaviour (the manager
+    default, i.e. TGDL_COOKIE_SECURE). Remote call sites pass
+    ``config.cookie_secure or request_is_https(...)`` so an HTTPS
+    reverse proxy behind a trusted address can also mark the cookie
+    Secure without the explicit override.
+    """
     response.set_cookie(
         value=session_token,
-        **auth.cookie_kwargs(max_age=max_age),
+        **auth.cookie_kwargs(max_age=max_age, secure=secure),
     )
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -298,6 +306,11 @@ def create_app(config, *, engine, api, token="", auth=None):
         effective_methods = RPC_METHODS
 
     shared = {"hub": None}
+
+    def _effective_cookie_secure(request):
+        """TGDL_COOKIE_SECURE=1 OR a trusted proxy reporting an HTTPS hop."""
+        return config.cookie_secure or server_auth.request_is_https(
+            request, config.trust_proxy, config.trusted_proxies)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -392,7 +405,8 @@ def create_app(config, *, engine, api, token="", auth=None):
         if not result.ok:
             return _json_error(result.error, 400, result.retry_after)
         return _set_session_cookie(
-            JSONResponse({"ok": True}), auth, result.session_token
+            JSONResponse({"ok": True}), auth, result.session_token,
+            secure=_effective_cookie_secure(request),
         )
 
     @app.post("/auth/login")
@@ -409,7 +423,8 @@ def create_app(config, *, engine, api, token="", auth=None):
         remember = body.get("remember") is True
         result = auth.login(
             body.get("password", ""),
-            server_auth.client_key(request, config.trust_proxy),
+            server_auth.client_key(
+                request, config.trust_proxy, config.trusted_proxies),
             remember=remember,
             user_agent=request.headers.get("user-agent", ""),
         )
@@ -419,6 +434,7 @@ def create_app(config, *, engine, api, token="", auth=None):
         return _set_session_cookie(
             JSONResponse({"ok": True}), auth, result.session_token,
             max_age=auth.remember_seconds if remember else auth.session_seconds,
+            secure=_effective_cookie_secure(request),
         )
 
     @app.post("/auth/logout")
@@ -849,7 +865,10 @@ def run_blocking(config):
         if config.auth_required and not config.cookie_secure:
             print(
                 "[server_app] 警告：远程访问当前使用 HTTP。跨不可信网络访问时"
-                "请置于 HTTPS 反向代理之后并设置 TGDL_COOKIE_SECURE=1"
+                "请置于 HTTPS 反向代理之后并设置 TGDL_COOKIE_SECURE=1；"
+                "若由反代提供 HTTPS，也可设置 TGDL_TRUST_PROXY=1 与"
+                " TGDL_TRUSTED_PROXIES=<反代地址>，由服务按 X-Forwarded-Proto "
+                "自动加 Secure"
             )
 
         uv_config = uvicorn.Config(

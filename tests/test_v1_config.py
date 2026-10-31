@@ -19,8 +19,8 @@ from server_config import (
 def clean_env(tmp_path, monkeypatch):
     for name in [
         "TGDL_HOST", "TGDL_PORT", "TGDL_ALLOWED_ROOTS", "TGDL_TRUST_PROXY",
-        "TGDL_COOKIE_SECURE", "TGDL_SESSION_HOURS", "TGDL_SETUP_TOKEN_FILE",
-        "TGDL_CONFIG",
+        "TGDL_TRUSTED_PROXIES", "TGDL_COOKIE_SECURE", "TGDL_SESSION_HOURS",
+        "TGDL_SETUP_TOKEN_FILE", "TGDL_CONFIG",
     ]:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("TGDL_DATA_DIR", str(tmp_path / "data"))
@@ -196,7 +196,12 @@ def test_tr12_trust_proxy_affects_client_key(clean_env, monkeypatch):
         headers={"x-forwarded-for": "203.0.113.9, 10.0.0.5"},
         url=SimpleNamespace(path="/auth/login"),
     )
-    assert client_key(request, trust_proxy=True).startswith("203.0.113.9|")
+    # T61-followup: 默认白名单仅回环，10.0.0.5 不可信 → 不使用 XFF；
+    # 显式列入白名单后才使用 XFF。
+    assert client_key(request, trust_proxy=True).startswith("10.0.0.5|")
+    assert client_key(
+        request, trust_proxy=True, trusted_proxies=("10.0.0.5",)
+    ).startswith("203.0.113.9|")
     assert client_key(request, trust_proxy=False).startswith("10.0.0.5|")
 
 

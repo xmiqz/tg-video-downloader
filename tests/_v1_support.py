@@ -81,6 +81,7 @@ def make_remote_app(
     monkeypatch,
     *,
     trust_proxy=False,
+    trusted_proxies=(),
     clock=None,
     session_hours=168,
     cookie_secure=False,
@@ -93,6 +94,7 @@ def make_remote_app(
         port=8787,
         allowed_roots=(data_dir,),
         trust_proxy=trust_proxy,
+        trusted_proxies=trusted_proxies,
         cookie_secure=cookie_secure,
         session_hours=session_hours,
     ).normalized()

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import pathlib
@@ -506,13 +507,95 @@ class AuthManager:
         }
 
 
-def client_key(request, trust_proxy=False):
+def client_key(request, trust_proxy=False, trusted_proxies=()):
+    """Per-client rate-limit key for the login endpoint.
+
+    T61-followup: the ``X-Forwarded-For`` header only contributes to the
+    key when the operator opted in (``TGDL_TRUST_PROXY=1``) AND the
+    *direct* peer is on the trusted proxy whitelist (loopback by
+    default), so a public client can never spoof its own rate-limit
+    identity. The returned ``"<ip>|<path>"`` shape is unchanged.
+    """
     host = request.client.host if request.client else "unknown"
-    if trust_proxy:
+    if trust_proxy and is_trusted_proxy_host(host, trusted_proxies):
         forwarded = request.headers.get("x-forwarded-for", "")
         if forwarded:
             host = forwarded.split(",", 1)[0].strip() or host
     return f"{host}|{request.url.path}"
+
+
+def request_is_https(request, trust_proxy=False, trusted_proxies=()):
+    """True when the request is known to be HTTPS (Cookie Secure input).
+
+    A direct HTTPS connection always wins. Otherwise ``X-Forwarded-Proto``
+    is consulted only when the operator opted in AND the direct peer is
+    a trusted proxy; the first comma-separated value must equal ``https``
+    after stripping whitespace, case-insensitively. Everything else -
+    a missing/empty header, a non-trusted peer, a plain HTTP request -
+    resolves to False without raising.
+    """
+    url = getattr(request, "url", None)
+    if str(getattr(url, "scheme", "") or "").lower() == "https":
+        return True
+    if not trust_proxy:
+        return False
+    host = request.client.host if request.client else ""
+    if not is_trusted_proxy_host(host, trusted_proxies):
+        return False
+    forwarded = request.headers.get("x-forwarded-proto", "")
+    first = forwarded.split(",", 1)[0].strip().lower() if forwarded else ""
+    return first == "https"
+
+
+# T61-followup: peers whose X-Forwarded-* headers are honoured.
+# Empty whitelist = "not configured" and falls back to this loopback set;
+# an explicit TGDL_TRUSTED_PROXIES *replaces* it (add 127.0.0.1 explicitly
+# when the reverse proxy runs on the same machine).
+DEFAULT_TRUSTED_PROXIES = ("127.0.0.1/32", "::1/128")
+
+
+def _proxy_networks(trusted_proxies):
+    """Parse whitelist entries into ip_network objects; bad ones are dropped.
+
+    This runs on the request hot path, so a mistyped whitelist entry must
+    degrade to "that peer is untrusted" instead of raising a 500. The
+    hard validation lives in server_config._as_trusted_proxies, which
+    rejects bad values at startup with a ValueError.
+    """
+    out = []
+    for item in trusted_proxies or ():
+        if isinstance(item, (ipaddress.IPv4Network, ipaddress.IPv6Network)):
+            out.append(item)
+            continue
+        try:
+            out.append(ipaddress.ip_network(str(item).strip(), strict=False))
+        except ValueError:
+            continue
+    return tuple(out)
+
+
+def is_trusted_proxy_host(host, trusted_proxies=()):
+    """True iff ``host`` is an IP address inside the trusted proxy set.
+
+    Without a configured whitelist the default loopback set applies
+    (127.0.0.1/32 and ::1/128 only - no hostnames, no "localhost",
+    no other loopback addresses). With a whitelist, the whitelist fully
+    replaces the default - including the degenerate case where every
+    entry fails to parse, which must NOT silently fall back to loopback
+    (that would trust a peer the operator explicitly scoped away).
+    Non-IP input, empty values and ``None`` all resolve to False.
+    """
+    if not trusted_proxies:
+        networks = _proxy_networks(DEFAULT_TRUSTED_PROXIES)
+    else:
+        networks = _proxy_networks(trusted_proxies)
+    if not networks:
+        return False
+    try:
+        addr = ipaddress.ip_address(str(host or "").strip())
+    except ValueError:
+        return False
+    return any(addr in net for net in networks)
 
 
 def same_origin(request):

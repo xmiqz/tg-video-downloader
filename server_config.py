@@ -61,6 +61,37 @@ def is_loopback_host(host):
         return False
 
 
+def _as_trusted_proxies(value):
+    """逗号分隔（或列表）的 IP / CIDR → 规范化字符串元组。
+
+    规范化用 ``ipaddress.ip_network(..., strict=False)``：单 IP 变成
+    ``<ip>/32``（IPv6 为 ``/128``），网段保留网段。非法条目抛
+    ``ValueError``；错误信息不回显原始输入（运维可能把主机名或内网
+    规划写进去，日志/异常不应携带）。空条目与全空白输入一律得到
+    空元组 = “未显式配置白名单”。
+    """
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        raw = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        raw = value
+    else:
+        raise ValueError("trusted_proxies 必须是逗号分隔的 IP 或 CIDR 列表")
+    out = []
+    for item in raw:
+        text = str(item).strip()
+        if not text:
+            continue
+        try:
+            out.append(str(ipaddress.ip_network(text, strict=False)))
+        except ValueError as exc:
+            raise ValueError(
+                "trusted_proxies 含无法解析的 IP 或 CIDR"
+            ) from exc
+    return tuple(dict.fromkeys(out))
+
+
 @dataclass(frozen=True)
 class RuntimeConfig:
     data_dir: pathlib.Path
@@ -69,6 +100,7 @@ class RuntimeConfig:
     allowed_roots: tuple[pathlib.Path, ...] = field(default_factory=tuple)
     cookie_secure: bool = False
     trust_proxy: bool = False
+    trusted_proxies: tuple[str, ...] = ()
     desktop_mode: bool = False
     session_hours: int = 168
     bootstrap_token_file: pathlib.Path | None = None
@@ -107,6 +139,7 @@ class RuntimeConfig:
             allowed_roots=tuple(dict.fromkeys(roots)),
             cookie_secure=self.cookie_secure,
             trust_proxy=self.trust_proxy,
+            trusted_proxies=_as_trusted_proxies(self.trusted_proxies),
             desktop_mode=self.desktop_mode,
             session_hours=self.session_hours,
             bootstrap_token_file=token_file,
@@ -213,6 +246,12 @@ def load_runtime_config(argv=None):
         trust_proxy = _as_bool(
             os.environ.get("TGDL_TRUST_PROXY"), file_cfg.get("trust_proxy", False))
 
+    # T61-followup: 显式信任的反代地址白名单。空 = 未配置，此时信任
+    # 语义退回默认回环集合（见 server_auth.is_trusted_proxy_host）。
+    trusted_proxies_raw = os.environ.get(
+        "TGDL_TRUSTED_PROXIES", file_cfg.get("trusted_proxies")
+    )
+
     cookie_secure = args.cookie_secure
     if cookie_secure is None:
         cookie_secure = _as_bool(
@@ -240,6 +279,7 @@ def load_runtime_config(argv=None):
         allowed_roots=_as_roots(roots_raw, data_dir),
         cookie_secure=bool(cookie_secure),
         trust_proxy=bool(trust_proxy),
+        trusted_proxies=_as_trusted_proxies(trusted_proxies_raw),
         session_hours=session_hours,
         bootstrap_token_file=token_file,
         config_file=config_path,

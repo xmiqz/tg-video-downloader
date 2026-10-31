@@ -126,7 +126,9 @@ def test_tr8_rate_limit_is_per_client(tmp_path, monkeypatch):
         clock=lambda: now[0],
         trust_proxy=True,
     )
-    with TestClient(app) as client:
+    # T61-followup: 默认信任白名单只含回环，把 TestClient 的直连端
+    # 设为回环，XFF 才会参与限速键。
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
         for _ in range(server_auth.MAX_FAILURES):
             bad = client.post(
                 "/auth/login",
