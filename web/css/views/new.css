@@ -452,22 +452,16 @@
   .nw-wiz { max-width: 760px; }  /* 旧壳 680px + 桌面舒展余量（任务书 §2.1 放宽为舒展布局授权） */
 }
 
-/* ≥1024（桌面/大屏）：结果页取消 760px 固定窄带，列数随可用宽度自动加密；
+/* ≥1024（桌面/大屏）：结果页取消 760px 固定窄带，保持单列、每行铺满可用宽度
+   （不切多列卡片），名称/拟命名/摘要随行宽显示更多内容，右侧标签贴容器右缘。
    用 :has 只放宽含结果列表的向导（步骤 1 条件卡保持 680—760 原宽）。
    <1024 全部断点与单列形态零改动；卡片内跑马/行距沿用 §7 原值。 */
 @media (min-width: 1024px) {
   .nw-wiz:has(.nw-list) { max-width: none; }
-  .nw-list {
-    display: grid;
-    /* 自适应列数：单卡下限 340px（保证标题与元信息不被截断），
-       1024 宽≈2 列、1450 宽≈3 列、1920 宽≈4 列，永不留下右侧空白 */
-    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-    align-content: start;        /* 行高按内容，不拉伸末尾空行 */
-    max-height: 52vh;            /* 44vh→52vh：900p 首屏坐满 4 行 */
-  }
+  .nw-list { max-height: 52vh; }   /* 单列内滚（44vh→52vh：900p 首屏多显示 1 行） */
   .nw-row {
     /* ≥768 的 4 列模板末列无对应子元素（现 DOM 为 勾选|信息|体积来源 三段），
-       多列卡片宽度收紧后改为 3 列，避免名称列被空列挤占 */
+       改 3 列让信息列吃满行宽 */
     grid-template-columns: auto minmax(0, 1fr) auto;
   }
   .nw-toolbar { flex-wrap: nowrap; }        /* 工具条随容器一行铺开 */
