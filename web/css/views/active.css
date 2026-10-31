@@ -83,7 +83,7 @@
   height: 8px;
   border-radius: var(--radius-pill);
   background: var(--color-danger);
-  animation: ac-pulse 1.6s var(--ease-standard) infinite; /* 同 .dl-phase-dot 周期（style.css:1149） */
+  animation: ac-pulse var(--dur-pulse) var(--ease-standard) infinite; /* 同 .dl-phase-dot 周期；时长走 --dur-pulse */
 }
 .ac-offline[hidden] { display: none; }
 
@@ -193,7 +193,7 @@
   flex: none;
   border-radius: var(--radius-pill);
   background: var(--color-primary);
-  animation: ac-pulse 1.2s var(--ease-standard) infinite; /* fetching 期脉冲（style.css:1156） */
+  animation: ac-pulse var(--dur-pulse-fast) var(--ease-standard) infinite; /* fetching 期脉冲；时长走 --dur-pulse-fast */
 }
 
 /* ---------- 5. PTR 下拉刷新指示（本波基本实现；T17 强化） ---------- */
@@ -304,7 +304,7 @@
   flex: none;
   border-radius: var(--radius-pill);
   background: var(--color-primary-strong);  /* style.css:1148 --brand-2 */
-  animation: ac-pulse 1.6s var(--ease-standard) infinite; /* style.css:1149 */
+  animation: ac-pulse var(--dur-pulse) var(--ease-standard) infinite; /* 阶段点呼吸；时长走 --dur-pulse */
 }
 .ac-phase-text {
   min-width: 0;
@@ -323,13 +323,13 @@
 .ac-phase[data-phase="preparing"],
 .ac-phase[data-phase="disk_check"] { color: var(--color-text-muted); }
 .ac-phase[data-phase="fetching"] { color: var(--color-primary); }       /* 旧 #6ea8fe（style.css:1154）*/
-.ac-phase[data-phase="fetching"] .ac-phase-dot { background: var(--color-primary); animation-duration: 1.2s; }
+.ac-phase[data-phase="fetching"] .ac-phase-dot { background: var(--color-primary); animation-duration: var(--dur-pulse-fast); }
 .ac-phase[data-phase="downloading"] { color: var(--color-success); }    /* 旧 --ok（style.css:1158）*/
-.ac-phase[data-phase="downloading"] .ac-phase-dot { background: var(--color-success); animation-duration: .9s; }
+.ac-phase[data-phase="downloading"] .ac-phase-dot { background: var(--color-success); animation-duration: var(--dur-pulse-quick); }
 .ac-phase[data-phase="refreshing"],
 .ac-phase[data-phase="flood_wait"] { color: var(--color-warning); }     /* 旧 --warn（style.css:1162/1166）*/
-.ac-phase[data-phase="refreshing"] .ac-phase-dot { background: var(--color-warning); animation-duration: 1.2s; }
-.ac-phase[data-phase="flood_wait"] .ac-phase-dot { background: var(--color-warning); animation-duration: 2s; }
+.ac-phase[data-phase="refreshing"] .ac-phase-dot { background: var(--color-warning); animation-duration: var(--dur-pulse-fast); }
+.ac-phase[data-phase="flood_wait"] .ac-phase-dot { background: var(--color-warning); animation-duration: var(--dur-pulse-slow); }
 .ac-phase[data-phase="done"] { color: var(--color-success); }
 .ac-phase[data-phase="done"] .ac-phase-dot { background: var(--color-success); animation: none; opacity: .55; }
 .ac-phase[data-phase="aborted"] { color: var(--color-text-faint); }     /* 旧 --ink-mute（style.css:1175）*/
@@ -515,11 +515,20 @@
   height: 100%;
   border-radius: inherit;
   background: var(--btn-primary-bg);        /* 旧 --brand-grad（style.css:424-425） */
-  transition: width 500ms var(--ease-standard); /* 旧 .5s（style.css:425）——reduce 由 §12 归零 */
+  transition: width var(--dur-progress) var(--ease-standard); /* 旧 .5s；时长走 --dur-progress */
 }
 .ac-cfill[data-state="done"] { background: var(--color-success); }   /* style.css:426 绿渐变→语义 token */
 .ac-cfill[data-state="fail"] { background: var(--color-danger); }    /* style.css:427 红渐变→语义 token */
 .ac-cfill[data-state="paused"] { background: var(--color-warning); } /* style.css:443 橙渐变→语义 token */
+
+/* T64 完成闪烁：条目首次落到 done 的那一帧给进度条一次 inset 成功色描边
+   + 浅色底，--dur-flash 播完由 JS 摘类释放动画对象（不常驻合成层）。 */
+.ac-cfill.is-flash { animation: ac-cfill-flash var(--dur-flash) var(--ease-out) 1; }
+@keyframes ac-cfill-flash {
+  0% { box-shadow: inset 0 0 0 1px var(--color-success); filter: brightness(1.35); }
+  30% { box-shadow: inset 0 0 0 1px var(--color-success); filter: brightness(1.1); }
+  100% { box-shadow: inset 0 0 0 0 transparent; filter: none; }
+}
 
 /* 脚注行（.dl-foot style.css:434-436） */
 .ac-cfoot {
@@ -584,7 +593,7 @@
   border-top-color: transparent;
   margin-right: var(--space-1);
   vertical-align: -1px;                     /* style.css:680 */
-  animation: ac-spin 0.8s linear infinite;
+  animation: ac-spin var(--dur-spin) linear infinite;
 }
 
 /* ============================================================
@@ -638,6 +647,7 @@
   .ac-cbox-mark,
   .ac-action,
   .ac-cfill,
+  .ac-cfill.is-flash,
   .ac-offline-dot,
   .ac-fetch-dot,
   .ac-phase-dot { animation: none; transition: none; }

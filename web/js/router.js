@@ -29,6 +29,8 @@ import * as tasksView from "./views/tasks.js";
 import * as settingsView from "./views/settings.js";
 import * as editorView from "./views/editor.js";
 import { mountJobDock } from "./jobdock.js";
+import { createScrollGuard } from "./motion/scroll-guard.js";
+import { markStill } from "./motion/calm.js";
 
 const views = {
   login: loginView,
@@ -132,6 +134,49 @@ function resolve(routes, path) {
   // 根路径与未匹配（404）一律回默认路由；由调用方以 replace 语义写入，
   // 不产生垃圾历史条目。
   return { name: DEFAULT_VIEW, params: {}, path: DEFAULT_ROUTE };
+}
+
+// T64：布局变形能力探测（无 startViewTransition 的引擎直接切换）
+export function canViewTransition(doc) {
+  return !!(doc && typeof doc.startViewTransition === "function");
+}
+
+// T64：在视图切换点包一层 startViewTransition。update 内只做 DOM 替换，
+// 引擎缺席/抛错时同步执行 update 再返回 null（终态一致，不白屏）。
+export function runViewTransition(doc, update) {
+  const fn = typeof update === "function" ? update : function () {};
+  if (!canViewTransition(doc)) { fn(); return null; }
+  try {
+    return doc.startViewTransition(function () { fn(); });
+  } catch (e) {
+    console.debug("[router] startViewTransition 不可用，直切：", e);
+    fn();
+    return null;
+  }
+}
+
+// T64：无 VT 引擎时的直切淡入。动画播完摘类释放动画对象（红线：
+// 进场动画 fill: backwards，播完不得留动画对象）；离线桩无事件面时跳过。
+function fadeInView(node) {
+  node.classList.remove("u-view-enter");
+  node.classList.add("u-view-enter");
+  if (typeof node.addEventListener === "function") {
+    node.addEventListener("animationend", function () {
+      node.classList.remove("u-view-enter");
+    }, { once: true });
+  }
+}
+
+// T64：给滚动守卫开一次读者窗口（路由主动复位滚动时用），避免复位被
+// 守卫当成非读者位移还原；守卫未安装（boot 前/离线桩）时为空操作。
+function authorizeScrollReset(win) {
+  try {
+    const g = win && win.__t8ScrollGuard;
+    if (!g || !g.guard || typeof g.guard.noteReader !== "function") return;
+    const t = (win.performance && typeof win.performance.now === "function")
+      ? win.performance.now() : Date.now();
+    g.guard.noteReader(t);
+  } catch (e) { /* 守卫异常不阻塞路由 */ }
 }
 
 // ============ ② createRouter：路由引擎（依赖注入，可在 node 测） ============
@@ -252,11 +297,13 @@ export function createRouter(deps) {
     closeLoginOverlay();
     const token = ++navToken;
     const prev = state.currentView;
+    let pn = null;
     if (prev && prev !== name) {
       const pv = viewSet[prev];
       if (pv && typeof pv.onLeave === "function") pv.onLeave();
-      const pn = nodes.get(prev);
-      if (pn && pn.parentNode) pn.parentNode.removeChild(pn);
+      // T64：旧视图节点延迟到 swap 内摘除——期间 startViewTransition
+      // 仍能拿到旧快照，无 VT 引擎时等价于原来的立即移除。
+      pn = nodes.get(prev) || null;
     }
     const v = viewSet[name];
     if (!v || typeof v.mount !== "function") {
@@ -279,9 +326,18 @@ export function createRouter(deps) {
       nodes.set(name, node);
       mounts.delete(name);
     }
-    if (host && node && node.parentNode !== host) host.appendChild(node);
+    // T64：视图替换走 startViewTransition（壳三段已命名，不参与交叉淡出）；
+    // 无引擎时 runViewTransition 同步直切，再补一次 CSS 淡入（fill:backwards）。
+    const vt = runViewTransition(doc, function () {
+      if (pn && pn.parentNode) pn.parentNode.removeChild(pn);
+      if (host && node && node.parentNode !== host) host.appendChild(node);
+    });
+    if (!vt && node && node.classList) fadeInView(node);
     if (typeof v.onEnter === "function") v.onEnter(params || {});
     if (typeof v.title === "string" && v.title) doc.title = v.title;
+    // T64：路由复位属于读者授权的编程滚动，先给守卫开窗口，避免被当作
+    // 布局位移还原到旧位置（守卫缺席时为空操作）。
+    authorizeScrollReset(win);
     scroll.scrollTop = 0; // 滚动复位：每次进入视图均回到顶部（契约）
     state.current = path;
     state.currentView = name;
@@ -689,6 +745,14 @@ export async function boot() {
 
   // —— 折射层（滚动内容快照 + feDisplacementMap，自写实现）——
   const scrollEl = doc.getElementById("sh-scroll");
+  // T64：读者滚动守卫挂主滚动容器——只有读者输入窗口内的滚动被采信，
+  // 编程/布局/焦点三类滚动一律还原（点击后控件仍留在指针下）。
+  try {
+    const guard = createScrollGuard({ win: win, doc: doc });
+    if (scrollEl) guard.attach(scrollEl);
+    win.__t8ScrollGuard = guard;  // 浏览器级断言探针（只读）
+  } catch (e) { /* 守卫异常不阻塞启动 */ }
+  markStill(root, reducedMotion);  // reduced-motion：抑制弹簧滑行，终态保留
   const lensContent = doc.getElementById("sh-lens-content");
   const lensEl = root.querySelector(".sh-lens");
   let lensW = 0;

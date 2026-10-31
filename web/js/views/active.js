@@ -41,6 +41,8 @@ import {
 import {
   attachEdgeBack, attachSwipeActions, attachFocusKeep, trayFromButtons,
 } from "../gestures.js";
+// T64 动效节拍（620ms 四段缓出数字滚动；reduced-motion 直跳终值）
+import { createRoller } from "../motion/calm.js";
 
 export const path = "active";
 
@@ -308,6 +310,10 @@ function human(n) {
   return n.toFixed(n >= 100 || i === 0 ? 0 : 1) + " " + u[i];
 }
 const humanSpeed = (n) => human(n) + "/s";
+// T64 完成闪烁总时长（与 tokens.css --dur-flash 同值；reduced-motion 由
+// active.css §12 归零，终态保留）
+const FLASH_MS = 1200;
+
 function humanSec(s) {
   if (s == null || !isFinite(s)) return "--";
   s = Math.round(s);
@@ -429,6 +435,9 @@ let pollTimer = 0;
 let pollBusy = false;             // 防重叠（app.js:1623）
 let pollStopped = true;
 let refreshBusy = false;          // refreshActive 防重入
+let rollPct = null;               // T64 总览百分比滚动器（mount 建）
+let rollSpeed = null;             // T64 总速度滚动器
+let rollEta = null;               // T64 剩余时间滚动器
 const deferTimers = new Set();    // 250/300/400ms 一次性补拉 timer（onLeave 全清）
 let offline = false;              // 断网 banner 态
 let hintText = "";                // acct_hint 限速提示行文案（空=不显示）
@@ -558,6 +567,10 @@ export function onLeave() {
   // ⑧PTR 态复位
   ptr = { touching: false, startY: 0, top: 0, dy: 0, firing: false };
   setPtrUI(null);
+  // ⑨T64：停掉总览读数滚动（离页不留在途 rAF）
+  if (rollPct) rollPct.stop();
+  if (rollSpeed) rollSpeed.stop();
+  if (rollEta) rollEta.stop();
 }
 
 // ---- window 事件绑定/解绑（计数对称；onLeave 归零）----
@@ -689,6 +702,24 @@ function buildDom() {
     el("div", { class: "ac-ov-label", text: "剩余时间" }), ovEta,
   ]);
   const overview = el("div", { class: "ac-overview", hidden: true }, [ovCard1, ovCard2, ovCard3]);
+
+  // —— T64 总览读数滚动（620ms 四段缓出）——
+  // 事件帧（1s 轮询 / 状态事件）只改目标值，不重启计时、不重建 DOM；
+  // reduced-motion 直跳终值（终态一致，仅无运动）。
+  const rmMedia = (typeof window !== "undefined" && typeof window.matchMedia === "function")
+    ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+  rollPct = createRoller({
+    from: 0, media: rmMedia,
+    update: function (v) { ovPct.textContent = Math.round(v) + "%"; },
+  });
+  rollSpeed = createRoller({
+    from: 0, media: rmMedia,
+    update: function (v) { ovSpeed.textContent = humanSpeed(Math.max(0, v)); },
+  });
+  rollEta = createRoller({
+    from: 0, media: rmMedia,
+    update: function (v) { ovEta.textContent = humanSec(v); },
+  });
 
   // —— fetching 阶段同源抓取行（app.js:1138-1146 fetch-banner）——
   const fetchText = el("span", { class: "ac-fetch-text", text: "" });
@@ -863,12 +894,17 @@ async function refreshActive() {
   refs.selAllBtn.hidden = false;
   refs.bulkHint.hidden = true;
 
-  // 总览（app.js:1123-1157）
+  // 总览（app.js:1123-1157）；T64 读数走 620ms 四段缓出滚动
   const a = overviewAggregate(states);
   refs.prog.set(a.pct);
-  refs.ovPct.textContent = a.pct + "%";
-  refs.ovSpeed.textContent = humanSpeed(a.speed);
-  refs.ovEta.textContent = a.etaSec != null ? humanSec(a.etaSec) : "--"; // app.js:1152-1153，speed 0 → "--"
+  rollPct.set(a.pct);
+  rollSpeed.set(Number(a.speed) || 0);
+  if (a.etaSec != null) {
+    rollEta.set(a.etaSec);
+  } else {
+    rollEta.stop();                       // speed 0 → "--"（app.js:1152-1153）
+    refs.ovEta.textContent = "--";
+  }
   refs.ovDetail.textContent = overviewDetailText(states);
   refs.sub.textContent = overviewSubText(states.length);
 
@@ -1099,6 +1135,15 @@ function updateCard(card, tid, it, ck) {
   if (ab) ab.hidden = it.acct !== "alt1";
   // 动作按钮只在状态变化时重建（app.js:1488-1492），busy 回填同渲染
   const st = String(it.status || "");
+  // T64 完成闪烁：仅状态跃迁到 done 的那一拍触发（首帧已 done 不闪）；
+  // 播完摘类，动画对象随释放（document.getAnimations() 不留残留）。
+  const prevSt = card.getAttribute("data-st");
+  if (st === "done" && prevSt && prevSt !== "done" && fill) {
+    fill.classList.remove("is-flash");
+    void fill.offsetWidth;                  // 强制重排，允许同卡再次播放
+    fill.classList.add("is-flash");
+    setTimeout(function () { fill.classList.remove("is-flash"); }, FLASH_MS);
+  }
   if (card.getAttribute("data-st") !== st) {
     card.setAttribute("data-st", st);
     rebuildItemActions(card, tid, it, ck);

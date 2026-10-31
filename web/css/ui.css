@@ -383,7 +383,7 @@ html.liquid .u-toast {
   overflow-y: auto;
 }
 .u-toast-detail[hidden] { display: none; }
-.u-toast.is-out { opacity: 0; transform: translateY(-8px); transition: opacity 240ms var(--ease-standard), transform 240ms var(--ease-standard); } /* 离场：-8px=2×4px 栅格微位移；240ms 裸时长（短于 --dur-lg 免级联等待）——reduce 由 §9 显式归零 */
+.u-toast.is-out { opacity: 0; transform: translateY(-8px); transition: opacity var(--dur-toast-out) var(--ease-standard), transform var(--dur-toast-out) var(--ease-standard); } /* 离场：-8px=2×4px 栅格微位移；时长走 --dur-toast-out */
 
 /* ============================================================
    5. 空态（.u-empty，对齐旧壳 .empty-state style.css:595-599）
@@ -400,7 +400,7 @@ html.liquid .u-toast {
 .u-empty-ico {
   font-size: 48px; /* 与旧壳 .empty-ico 同尺寸（style.css:596 惯例，非色值） */
   margin-bottom: 16px; /* style.css:596 */
-  animation: u-empty-bob 3s var(--ease-standard) infinite alternate; /* 3s 循环对齐旧壳 .empty-ico bob（style.css:596）——reduce 由 §9 显式归零 */
+  animation: u-empty-bob var(--dur-ambient) var(--ease-standard) infinite alternate; /* 循环对齐旧壳 .empty-ico bob；时长走 --dur-ambient */
 }
 @keyframes u-empty-bob { to { transform: translateY(-8px); } /* 对齐旧壳 bob style.css:597（8px = 2×4px 栅格） */ }
 .u-empty-title {
@@ -441,12 +441,12 @@ html.liquid .u-toast {
   height: 100%;
   border-radius: inherit;
   background: var(--btn-primary-bg); /* 渐变经令牌派生（同旧壳 .ov-fill 渐变语义） */
-  transition: width 500ms var(--ease-standard); /* 对齐旧壳 .ov-fill width .5s（style.css:392） */
+  transition: width var(--dur-progress) var(--ease-standard); /* 对齐旧壳 .ov-fill width .5s；时长走 --dur-progress */
 }
 .u-progress[data-determinate="false"] .u-progress-fill {
   position: absolute;
   width: 38%;   /* 组件固有常量：对齐旧壳 .job-fill.indet（style.css:986） */
-  animation: u-progress-indet 1.15s var(--ease-standard) infinite alternate; /* 对齐 .job-fill.indet 1.15s（style.css:986） */
+  animation: u-progress-indet var(--dur-indet) var(--ease-standard) infinite alternate; /* 对齐 .job-fill.indet；时长走 --dur-indet */
   transition: none;
 }
 @keyframes u-progress-indet { from { left: -38%; } to { left: 100%; } /* 同 .jobindet（style.css:987） */ }
@@ -472,6 +472,7 @@ html.liquid .u-toast {
   border: 1px solid var(--color-border);
 }
 .u-seg-scroll {
+  position: relative;
   display: flex;
   gap: var(--space-1);
   overflow-x: auto;
@@ -500,11 +501,46 @@ html.liquid .u-toast {
     background var(--dur-sm) var(--ease-standard);
 }
 .u-seg-item.is-active {
-  background: var(--color-surface-raise);
+  background: transparent;   /* T64：底色由独立 thumb 承担，文字单独提亮 */
   color: var(--color-text-strong);
   font-weight: 600;
-  box-shadow: var(--shadow-1), var(--glass-card-hi);
 }
+/* T64 弹簧高亮：选中态独立 thumb。thumb 为 scrub 层，控件重绘只更新
+   transform/width，元素本身不重建 → 连续 glide 不跳回起点。 */
+.u-seg-thumb {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  z-index: 0;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-raise);
+  box-shadow: var(--shadow-1), var(--glass-card-hi);
+  pointer-events: none;
+  opacity: 0;
+  transition: transform var(--dur-md) var(--ease-spring-li),
+    width var(--dur-md) var(--ease-spring-li),
+    opacity var(--dur-sm) var(--ease-standard);
+}
+.u-seg-thumb.is-on { opacity: 1; }
+.u-seg-item { position: relative; z-index: 1; }
+/* .still：抑制弹簧滑行（reduced-motion / 无 VT 引擎 / 舞台飞行中） */
+.still .u-seg-thumb { transition: none; }
+
+/* ============================================================
+   7b. 布局变形（T64 FR-29 ①）：视图切换的共享元素命名
+   router.js 在 document.startViewTransition 内做视图替换；命名过的
+   壳三段不参与交叉淡出，只跟随布局变化。无 VT 引擎时不生效（直切）。
+   ============================================================ */
+.sh-side { view-transition-name: sh-side; }
+.sh-bottombar { view-transition-name: sh-bottombar; }
+.sh-viewhost { view-transition-name: sh-viewhost; }
+
+/* 7c. 无 VT 引擎的直切淡入（router.fadeInView 挂类；fill: backwards，
+   动画播完由 animationend 摘类，不留动画对象） */
+@keyframes u-view-enter { from { opacity: 0; } to { opacity: 1; } }
+.u-view-enter { animation: u-view-enter var(--dur-md) var(--ease-out) 1 backwards; }
 
 /* ============================================================
    8. 底部动作条（.u-actionbar，对齐旧壳 .bulk-bar style.css:696-703；
@@ -546,12 +582,10 @@ html.liquid .u-toast {
 /* ============================================================
    9. 消减动效（prefers-reduced-motion: reduce）— fix2 spec-J2
       双路归零口径（本块为第二路；第一路见 tokens.css §5.1）：
-      第一路（tokens.css §5.1，--dur-xs/sm/md/lg→0ms）覆盖本文件全部
-        经 --dur-* / --sheet-transition / --toast-transition 的动效
-        （弹层过渡、按钮/分段/关闭钮反馈、toast 进场等）；
-      第二路（本块）显式归零四个未走 --dur-* 的裸时长动效：
-        空态 bob 3s（§5）、不定进度 u-progress-indet 1.15s（§6）、
-        toast 离场 .is-out 240ms（§4）、确定进度 width 500ms（§6）。
+      第一路（tokens.css §5.1，--dur-* →0ms）覆盖本文件全部经令牌的动效
+        （弹层过渡、按钮/分段/关闭钮反馈、toast 进退场等）；
+      第二路（本块）显式关停四个循环/过渡动效（空态 bob、不定进度、
+        toast 离场、确定进度 width），终态一律保留。
       视觉终态保留（停运动不消形）：空态图标/进度条/toast 照常渲染，
       离场与关闭直接跳终态、无中间帧动画。
    ============================================================ */

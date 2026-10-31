@@ -79,6 +79,25 @@
   --ease-out: cubic-bezier(0,0,.2,1);
   --ease-spring: cubic-bezier(.34,1.45,.48,1);
 
+  /* --- 1.9 动效扩展（T64 动效框架）---
+     数字滚动 620ms 四段缓出；完成闪烁 1.200s；其余承接 ui.css/active.css
+     原有裸值（toast 离场 / 确定进度 / 不定进度 / 空态呼吸 / 状态脉冲）
+     ——组件层一律 var()，禁裸写时长与曲线。 */
+  --dur-count: 620ms;      /* 数字滚动总时长（四段缓出） */
+  --dur-flash: 1200ms;     /* 条目完成闪烁（播完释放动画对象） */
+  --dur-toast-out: 240ms;  /* toast 离场 */
+  --dur-progress: 500ms;   /* 确定进度 width */
+  --dur-indet: 1150ms;     /* 不定进度往复 */
+  --dur-ambient: 3000ms;   /* 空态呼吸循环 */
+  --dur-spin: 800ms;       /* 加载旋转 */
+  --dur-pulse: 1600ms;     /* 阶段点呼吸 */
+  --dur-pulse-fast: 1200ms;
+  --dur-pulse-quick: 900ms;
+  --dur-pulse-slow: 2000ms;
+  /* linear() 弹簧曲线：分段阻尼震荡，给分段控件 thumb 用（时长无关） */
+  --ease-spring-li: linear(0, .061, .216 15%, .463 25%, .741 35%,
+      .943 45%, 1.03 55%, 1.058 65%, 1.05 75%, 1.02 85%, 1);
+
   /* --- 1.8 z-index 层级 --- */
   --z-backdrop: 0; --z-base: 1; --z-sticky: 10; --z-nav: 20;
   /* T19f 修：sheet/toast 300/400→5400/6200。凡挂 body 的弹层（ui
@@ -254,7 +273,12 @@
 @media (prefers-reduced-motion: reduce) {
   :root {
     --dur-xs: 0ms; --dur-sm: 0ms; --dur-md: 0ms; --dur-lg: 0ms;
+    --dur-count: 0ms; --dur-flash: 0ms; --dur-toast-out: 0ms;
+    --dur-progress: 0ms; --dur-indet: 0ms; --dur-ambient: 0ms;
+    --dur-spin: 0ms; --dur-pulse: 0ms; --dur-pulse-fast: 0ms;
+    --dur-pulse-quick: 0ms; --dur-pulse-slow: 0ms;
     --ease-standard: linear; --ease-out: linear; --ease-spring: linear;
+    --ease-spring-li: linear;
   }
 }
 

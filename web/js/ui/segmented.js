@@ -70,6 +70,13 @@ export function createSegmented(items, opts) {
   scroll.className = "u-seg-scroll";
   scroll.setAttribute("role", "presentation");
 
+  // T64 弹簧高亮：选中态由独立 thumb 承担。thumb 元素常驻不重建，
+  // 只更新 transform/width → 重绘后接着 glide，不会跳回起点。
+  const thumb = doc.createElement("div");
+  thumb.className = "u-seg-thumb";
+  thumb.setAttribute("aria-hidden", "true");
+  scroll.append(thumb);
+
   const btns = [];
   for (let i = 0; i < list.length; i++) {
     (function (item, idx) {
@@ -90,6 +97,21 @@ export function createSegmented(items, opts) {
   }
   root.append(scroll);
 
+  function syncThumb() {
+    const active = current != null ? String(current) : null;
+    let target = null;
+    for (let i = 0; i < btns.length; i++) {
+      if (active !== null && btns[i].dataset.value === active) { target = btns[i]; break; }
+    }
+    if (!target) { thumb.classList.remove("is-on"); return; }
+    // 先读后写（不读回自身样式，避免布局抖动）
+    const w = target.offsetWidth || 0;
+    const x = target.offsetLeft || 0;
+    thumb.style.width = w + "px";
+    thumb.style.transform = "translateX(" + x + "px)";
+    thumb.classList.add("is-on");
+  }
+
   function render() {
     const active = current != null ? String(current) : null;
     for (let i = 0; i < btns.length; i++) {
@@ -97,6 +119,7 @@ export function createSegmented(items, opts) {
       btns[i].classList.toggle("is-active", on);
       btns[i].setAttribute("aria-selected", on ? "true" : "false");
     }
+    syncThumb();
   }
 
   function nav(delta) {

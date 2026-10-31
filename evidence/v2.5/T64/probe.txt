@@ -1,0 +1,7 @@
+﻿owned-css-bare-durations: ui.css=0, views\active.css=0
+owned-css-bare-cubic-bezier: ui.css=0, views\active.css=0
+motion-tokens-declared: 30
+reduced-motion-zeroed: 15
+spring-linear-token: true
+still-suppresses-thumb: true
+view-transition-names: 3
