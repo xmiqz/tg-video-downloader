@@ -228,14 +228,26 @@ def _request_bearer(request):
     return ""
 
 
+def _session_valid(request, auth):
+    """Cookie-session check that binds remember tokens to the request UA.
+
+    The cookie shape is unchanged; validation now also passes the
+    request's User-Agent so ``AuthManager.session_valid`` can compare it
+    against the UA fingerprint embedded in r2 remember tokens (a stolen
+    cookie replayed from another browser no longer authenticates).
+    """
+    return auth.session_valid(
+        request.cookies.get(server_auth.COOKIE_NAME, ""),
+        request.headers.get("user-agent", ""),
+    )
+
+
 def _is_rpc_authorized(request, config, token, auth):
     bearer = _request_bearer(request)
     if bearer and token and server_auth.tokens_equal(bearer, token):
         return True
-    if auth is not None:
-        session = request.cookies.get(server_auth.COOKIE_NAME, "")
-        if auth.session_valid(session):
-            return server_auth.same_origin(request)
+    if auth is not None and _session_valid(request, auth):
+        return server_auth.same_origin(request)
     if config.loopback and not config.desktop_mode:
         return True
     return False
@@ -253,8 +265,7 @@ def _asset_authorized(request, config, token, auth):
     """
     if config.loopback and not config.desktop_mode:
         return True
-    if auth is not None and auth.session_valid(
-            request.cookies.get(server_auth.COOKIE_NAME, "")):
+    if auth is not None and _session_valid(request, auth):
         return True
     bearer = _request_bearer(request)
     if bearer and token and server_auth.tokens_equal(bearer, token):
@@ -346,9 +357,7 @@ def create_app(config, *, engine, api, token="", auth=None):
     async def auth_status(request: Request):
         authenticated = False
         if auth is not None:
-            authenticated = auth.session_valid(
-                request.cookies.get(server_auth.COOKIE_NAME, "")
-            )
+            authenticated = _session_valid(request, auth)
         elif config.loopback and not config.desktop_mode:
             authenticated = True
         bearer = _request_bearer(request)
@@ -378,6 +387,7 @@ def create_app(config, *, engine, api, token="", auth=None):
         result = auth.setup(
             body.get("bootstrap_token", ""),
             body.get("password", ""),
+            request.headers.get("user-agent", ""),
         )
         if not result.ok:
             return _json_error(result.error, 400, result.retry_after)
@@ -394,13 +404,14 @@ def create_app(config, *, engine, api, token="", auth=None):
         body = await _read_json_object(request)
         if isinstance(body, JSONResponse):
             return body
-        # Only a JSON boolean ``true`` enables the 30-day cookie; any other
-        # value keeps the regular session TTL.
+        # Only a JSON boolean ``true`` enables the 7-day remember cookie;
+        # any other value keeps the regular session TTL.
         remember = body.get("remember") is True
         result = auth.login(
             body.get("password", ""),
             server_auth.client_key(request, config.trust_proxy),
             remember=remember,
+            user_agent=request.headers.get("user-agent", ""),
         )
         if not result.ok:
             status = 429 if result.retry_after else 401
@@ -415,7 +426,10 @@ def create_app(config, *, engine, api, token="", auth=None):
         if not server_auth.same_origin(request):
             return _json_error("请求来源无效", 403)
         if auth is not None:
-            auth.logout(request.cookies.get(server_auth.COOKIE_NAME, ""))
+            auth.logout(
+                request.cookies.get(server_auth.COOKIE_NAME, ""),
+                request.headers.get("user-agent", ""),
+            )
         response = JSONResponse({"ok": True})
         response.delete_cookie(server_auth.COOKIE_NAME, path="/")
         response.headers["Cache-Control"] = "no-store"
@@ -426,8 +440,7 @@ def create_app(config, *, engine, api, token="", auth=None):
         if auth is not None:
             if not auth.configured:
                 return RedirectResponse("/setup", status_code=303)
-            if not auth.session_valid(
-                    request.cookies.get(server_auth.COOKIE_NAME, "")):
+            if not _session_valid(request, auth):
                 return RedirectResponse("/login", status_code=303)
         return FileResponse(os.path.join(web_dir, "index.html"))
 
@@ -445,7 +458,7 @@ def create_app(config, *, engine, api, token="", auth=None):
             return RedirectResponse("/", status_code=303)
         if not auth.configured:
             return RedirectResponse("/setup", status_code=303)
-        if auth.session_valid(request.cookies.get(server_auth.COOKIE_NAME, "")):
+        if _session_valid(request, auth):
             return RedirectResponse("/", status_code=303)
         return FileResponse(os.path.join(web_dir, "setup.html"))
 
@@ -486,7 +499,8 @@ def create_app(config, *, engine, api, token="", auth=None):
         authenticated = (
             (config.loopback and not config.desktop_mode)
             or (auth is not None and auth.session_valid(
-                ws.cookies.get(server_auth.COOKIE_NAME, "")))
+                ws.cookies.get(server_auth.COOKIE_NAME, ""),
+                ws.headers.get("user-agent", "")))
         )
         if not authenticated:
             try:

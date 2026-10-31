@@ -27,10 +27,39 @@ MAX_FAILURES = 5
 FAILURE_WINDOW_SECS = 600
 MAX_BLOCK_SECS = 900
 
-# T60: persistent "remember this device" sessions.
-REMEMBER_DAYS = 30
-REMEMBER_PREFIX = "r1."
+# T60: persistent "remember this device" sessions. T60-followup binds
+# the token to the issuing browser (User-Agent fingerprint) and shortens
+# the TTL from 30 days to 7 days; the prefix bump to "r2." forces every
+# pre-release "r1.*" token to re-login.
+REMEMBER_DAYS = 7
+REMEMBER_PREFIX = "r2."
 REMEMBER_KEY_BYTES = 32
+
+
+def _ua_fingerprint(user_agent):
+    """First 8 hex chars of sha256(user agent); an empty UA hashes '-'.
+
+    Every r2 remember token embeds this fingerprint so a leaked cookie
+    cannot be replayed from a different browser. Rules:
+
+    * ``""`` / ``None`` (a missing header) hash the literal "-" for both
+      minting and validation - they stay symmetric.
+    * a non-empty ``str`` hashes its raw utf-8 bytes.
+    * anything else (numbers, containers, ...) is malformed input and
+      returns ``None``, which matches NOTHING. Callers treat ``None`` as
+      "cannot validate", keeping every entry point exception-free.
+
+    Deterministic caveat: two logins from the same UA in the same second
+    mint the identical token - harmless, since they are indistinguishable
+    sessions anyway (the revocation list keys on that same value).
+    """
+    if user_agent is None:
+        raw = "-"
+    elif isinstance(user_agent, str):
+        raw = user_agent or "-"
+    else:
+        return None
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
 
 
 def _valid_session_key(value):
@@ -188,7 +217,7 @@ class AuthManager:
         except FileNotFoundError:
             pass
 
-    def setup(self, bootstrap_token, password):
+    def setup(self, bootstrap_token, password, user_agent=""):
         with self._lock:
             if self.configured:
                 return LoginResult(False, "管理员密码已经设置")
@@ -200,6 +229,9 @@ class AuthManager:
             if error:
                 return LoginResult(False, error)
             self._write_record(str(password))
+            # The setup session stays an ordinary in-memory session and is
+            # NOT UA-bound; user_agent is accepted only for call-site
+            # symmetry with login.
             return self._new_session()
 
     @staticmethod
@@ -227,7 +259,7 @@ class AuthManager:
             state["blocked_until"] = 0
         return state
 
-    def login(self, password, client_key, remember=False):
+    def login(self, password, client_key, remember=False, user_agent=""):
         with self._lock:
             state = self._failure_state(client_key)
             now = self._clock()
@@ -247,7 +279,7 @@ class AuthManager:
             # (never expected after backfill) fall back to a plain session
             # instead of minting tokens signed with an empty key.
             if remember and self._session_key_bytes():
-                return self._new_remember_session()
+                return self._new_remember_session(user_agent)
             return self._new_session()
 
     def _verify(self, password):
@@ -292,34 +324,44 @@ class AuthManager:
             return b""
         return bytes.fromhex(value)
 
-    def _new_remember_session(self):
-        """Mint a stateless ``r1.<expires_at>.<hmac>`` long-lived token.
+    def _new_remember_session(self, user_agent=""):
+        """Mint a stateless ``r2.<expires_at>.<ua8>.<hmac>`` long-lived token.
 
-        The token is never stored server-side; validity is recomputed from
-        the persisted ``session_key`` plus the revocation list, so it
-        survives service restarts.
+        ``ua8`` is the sha256 fingerprint of the issuing browser's
+        User-Agent, embedded in both the token payload and the HMAC
+        (signed over ``r2.<expires_at>.<ua8>``), so the cookie only
+        validates from the browser it was minted for. The token is never
+        stored server-side; validity is recomputed from the persisted
+        ``session_key`` plus the revocation list, so it survives service
+        restarts.
         """
         expires_at = int(self._clock() + self.remember_seconds)
+        # A malformed UA at mint time falls back to the empty-UA "-"
+        # fingerprint, so minting itself can never fail.
+        ua8 = _ua_fingerprint(user_agent) or "-"
         signature = hmac.new(
             self._session_key_bytes(),
-            f"{REMEMBER_PREFIX}{expires_at}".encode("utf-8"),
+            f"{REMEMBER_PREFIX}{expires_at}.{ua8}".encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
-        token = f"{REMEMBER_PREFIX}{expires_at}.{signature}"
+        token = f"{REMEMBER_PREFIX}{expires_at}.{ua8}.{signature}"
         return LoginResult(True, session_token=token, expires_at=expires_at)
 
-    def _remember_parts(self, token):
-        """Return (expires_at, signature) for a signed r1 token, else None.
+    def _remember_parts(self, token, user_agent=""):
+        """Return (expires_at, ua8, signature) for a valid r2 token, else None.
 
-        Any malformed input or bad signature resolves to None; this helper
-        never raises.
+        The embedded ``ua8`` must match the fingerprint recomputed from the
+        CURRENT request UA, and the HMAC-SHA256 signature over
+        ``r2.<expires_at>.<ua8>`` must verify. Legacy ``r1.*`` tokens,
+        malformed / overlong / non-ASCII input, tampered values and UA
+        mismatches all resolve to None; this helper never raises.
         """
         if not isinstance(token, str) or not token.startswith(REMEMBER_PREFIX):
             return None
         parts = token.split(".")
-        if len(parts) != 3 or parts[0] != "r1":
+        if len(parts) != 4 or parts[0] != "r2":
             return None
-        _, expires_raw, signature = parts
+        _, expires_raw, ua8, signature = parts
         try:
             expires_at = int(expires_raw)
         except ValueError:
@@ -327,13 +369,19 @@ class AuthManager:
         key = self._session_key_bytes()
         if not key:
             return None
+        # Malformed UA values (non-str) can never match a token.
+        expected_ua8 = _ua_fingerprint(user_agent)
+        if expected_ua8 is None:
+            return None
+        if not tokens_equal(ua8, expected_ua8):
+            return None
         expected = hmac.new(
-            key, f"{REMEMBER_PREFIX}{expires_at}".encode("utf-8"),
+            key, f"{REMEMBER_PREFIX}{expires_at}.{ua8}".encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
         if not tokens_equal(signature, expected):
             return None
-        return expires_at, signature
+        return expires_at, ua8, signature
 
     def _revocation_active(self, token_id, now):
         """True when token_id is revoked; prune stale entries in passing."""
@@ -363,12 +411,17 @@ class AuthManager:
             self._persist_record(updated)
         return revoked
 
-    def _revoke_remember(self, token):
-        """Persist the revocation of a well-formed r1 token (id only)."""
-        parsed = self._remember_parts(token)
+    def _revoke_remember(self, token, user_agent=""):
+        """Persist the revocation of a well-formed r2 token (id only).
+
+        Only tokens whose signature AND UA fingerprint verify against the
+        current request get an entry, so a hijacker replaying a stolen
+        cookie from a different browser cannot scrub the victim's logout.
+        """
+        parsed = self._remember_parts(token, user_agent)
         if parsed is None:
             return
-        expires_at, _signature = parsed
+        expires_at = parsed[0]
         now = int(self._clock())
         token_id = hashlib.sha256(token.encode("utf-8")).hexdigest()
         record = self._record
@@ -390,11 +443,11 @@ class AuthManager:
         updated["revoked_sessions"] = entries
         self._persist_record(updated)
 
-    def _remember_token_valid(self, token):
-        parsed = self._remember_parts(token)
+    def _remember_token_valid(self, token, user_agent=""):
+        parsed = self._remember_parts(token, user_agent)
         if parsed is None:
             return False
-        expires_at, _signature = parsed
+        expires_at = parsed[0]
         now = int(self._clock())
         if expires_at <= now:
             return False
@@ -407,21 +460,35 @@ class AuthManager:
             if expiry <= now:
                 self._sessions.pop(token, None)
 
-    def session_valid(self, token):
-        if not token:
+    def session_valid(self, token, user_agent=""):
+        """Accept an in-memory session or a UA-bound r2 remember token.
+
+        In-memory tokens (setup / remember=false logins) are exact-match
+        keys and are not UA-bound. r2 remember tokens additionally require
+        the current request UA to recompute to the same fingerprint.
+        Any malformed input (None, numbers, containers, non-ASCII) resolves
+        to False without raising.
+        """
+        if not isinstance(token, str) or not token:
             return False
         with self._lock:
             expires = self._sessions.get(token, 0)
             if expires > self._clock():
                 return True
             self._sessions.pop(token, None)
-            return self._remember_token_valid(token)
+            return self._remember_token_valid(token, user_agent)
 
-    def logout(self, token):
+    def logout(self, token, user_agent=""):
+        """Drop the in-memory session and revoke the r2 token (if any).
+
+        Malformed tokens are ignored; they can be neither an in-memory
+        key nor a signable remember token.
+        """
         with self._lock:
-            self._sessions.pop(token or "", None)
-            if isinstance(token, str):
-                self._revoke_remember(token)
+            if not isinstance(token, str):
+                return
+            self._sessions.pop(token, None)
+            self._revoke_remember(token, user_agent)
 
     def cookie_kwargs(self, max_age=None, secure=None):
         """Cookie attributes; keyword-only overrides stay opt-in.

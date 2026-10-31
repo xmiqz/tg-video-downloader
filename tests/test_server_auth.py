@@ -89,10 +89,10 @@ def test_setup_and_login_accept_non_ascii_password(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# T60: remember-me (30-day) persistent sessions
+# T60: remember-me persistent sessions; T60-followup: 7-day TTL + UA binding
 # ---------------------------------------------------------------------------
 
-REMEMBER_SECONDS = 30 * 86400
+REMEMBER_SECONDS = 7 * 86400
 
 
 def _configured_manager(tmp_path, now):
@@ -102,9 +102,9 @@ def _configured_manager(tmp_path, now):
 
 
 def test_remember_days_constant_and_manager_defaults(tmp_path):
-    assert server_auth.REMEMBER_DAYS == 30
+    assert server_auth.REMEMBER_DAYS == 7
     manager = AuthManager(tmp_path, iterations=1000)
-    assert manager.remember_seconds == 30 * 86400
+    assert manager.remember_seconds == 7 * 86400
     assert manager.session_seconds == 168 * 3600
 
 
@@ -115,8 +115,8 @@ def test_remember_login_survives_restart(tmp_path):
 
     assert result.ok
     token = result.session_token
-    assert token.startswith("r1.")
-    assert token.count(".") == 2
+    assert token.startswith("r2.")
+    assert token.count(".") == 3
     assert result.expires_at == int(now[0] + REMEMBER_SECONDS)
     assert manager.session_valid(token) is True
 
@@ -124,10 +124,10 @@ def test_remember_login_survives_restart(tmp_path):
     restarted = AuthManager(tmp_path, iterations=1000, clock=lambda: now[0])
     assert restarted.session_valid(token) is True
 
-    now[0] += 29 * 86400
+    now[0] += 6 * 86400
     assert restarted.session_valid(token) is True
 
-    now[0] += 1 * 86400 + 1  # past 30 days
+    now[0] += 1 * 86400 + 1  # past 7 days
     assert restarted.session_valid(token) is False
 
 
@@ -139,8 +139,8 @@ def test_plain_login_does_not_survive_restart(tmp_path):
 
     assert legacy_call.ok
     assert explicit_call.ok
-    assert not legacy_call.session_token.startswith("r1.")
-    assert not explicit_call.session_token.startswith("r1.")
+    assert not legacy_call.session_token.startswith("r2.")
+    assert not explicit_call.session_token.startswith("r2.")
     assert manager.session_valid(legacy_call.session_token) is True
     assert manager.session_valid(explicit_call.session_token) is True
 
@@ -177,12 +177,14 @@ def test_tampered_and_malformed_remember_tokens_fail(tmp_path):
     manager = _configured_manager(tmp_path, now)
     result = manager.login(GOOD_PASSWORD, "k", remember=True)
     token = result.session_token
-    _, expires, signature = token.split(".")
+    _, expires, ua8, signature = token.split(".")
 
     flipped = ("1" if signature[0] != "1" else "0") + signature[1:]
-    assert manager.session_valid(f"r1.{expires}.{flipped}") is False
-    assert manager.session_valid(f"r1.{int(expires) + 1}.{signature}") is False
-    assert manager.session_valid(f"r1.{int(expires) - 1}.{signature}") is False
+    assert manager.session_valid(f"r2.{expires}.{ua8}.{flipped}") is False
+    assert manager.session_valid(
+        f"r2.{int(expires) + 1}.{ua8}.{signature}") is False
+    assert manager.session_valid(
+        f"r2.{int(expires) - 1}.{ua8}.{signature}") is False
 
     other_dir = tmp_path / "other-instance"
     other = _configured_manager(other_dir, now)
@@ -194,26 +196,30 @@ def test_tampered_and_malformed_remember_tokens_fail(tmp_path):
     )
     forged_exp = int(now[0] + 86400)
     forged_sig = hmac.new(
-        other_key, f"r1.{forged_exp}".encode("utf-8"), hashlib.sha256
+        other_key, f"r2.{forged_exp}.{ua8}".encode("utf-8"), hashlib.sha256
     ).hexdigest()
-    assert manager.session_valid(f"r1.{forged_exp}.{forged_sig}") is False
+    assert manager.session_valid(
+        f"r2.{forged_exp}.{ua8}.{forged_sig}") is False
 
     for malformed in [
         None,
         "",
-        "r1",
-        "r1.",
-        "r1..",
-        "r1.abc.sig",
-        "r1.123",
-        "r1.123.",
-        "r1.123.456.789",
-        "r1.-1." + "a" * 64,
-        "r1.123." + "a" * 63,
-        "r1." + "9" * 400 + "." + "f" * 64,
-        "r1.123." + "é" * 64,
+        "r2",
+        "r2.",
+        "r2..",
+        "r2...",
+        "r2.abc.sig",
+        "r2.123",
+        "r2.123.",
+        "r2.123.456.789",
+        "r2.-1." + "a" * 8 + "." + "a" * 64,
+        "r2.123." + "a" * 63,
+        "r2." + "9" * 400 + "." + "f" * 8 + "." + "f" * 64,
+        "r2.123." + "é" * 8 + "." + "é" * 64,
+        "r2.123.abcd\u00e9" + "f" * 3 + "." + "a" * 64,
         "plain-opaque-token",
         123,
+        ["r2.123.abcdef01." + "f" * 64],
     ]:
         assert manager.session_valid(malformed) is False
 
@@ -300,12 +306,12 @@ def test_remember_cookie_end_to_end(tmp_path, monkeypatch):
         })
         assert login.status_code == 200
         set_cookie = login.headers["set-cookie"].lower()
-        assert "max-age=2592000" in set_cookie
+        assert "max-age=604800" in set_cookie
         assert "httponly" in set_cookie
         assert "samesite=strict" in set_cookie
         assert "path=/" in set_cookie
         token = client.cookies.get(server_auth.COOKIE_NAME)
-    assert token and token.startswith("r1.")
+    assert token and token.startswith("r2.")
 
     # Simulated restart over the same data_dir keeps the session alive.
     app2, _auth2 = make_remote_app(tmp_path, monkeypatch, clock=lambda: now[0])
@@ -317,7 +323,7 @@ def test_remember_cookie_end_to_end(tmp_path, monkeypatch):
         )
         assert rpc.status_code == 200
 
-    now[0] += 20 * 86400
+    now[0] += 6 * 86400
     app3, _auth3 = make_remote_app(tmp_path, monkeypatch, clock=lambda: now[0])
     with TestClient(app3) as client:
         rpc = client.post(
@@ -364,7 +370,7 @@ def test_plain_cookie_rejected_after_restart_end_to_end(tmp_path, monkeypatch):
         login = client.post("/auth/login", json={"password": GOOD_PASSWORD})
         assert login.status_code == 200
         token = client.cookies.get(server_auth.COOKIE_NAME)
-        assert token and not token.startswith("r1.")
+        assert token and not token.startswith("r2.")
         set_cookie = login.headers["set-cookie"].lower()
         assert "max-age=604800" in set_cookie
         assert "max-age=2592000" not in set_cookie
@@ -377,3 +383,335 @@ def test_plain_cookie_rejected_after_restart_end_to_end(tmp_path, monkeypatch):
             headers={"cookie": f"{server_auth.COOKIE_NAME}={token}"},
         )
         assert rpc.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# T60-followup: remember tokens are bound to the requesting browser (UA)
+# ---------------------------------------------------------------------------
+
+UA_ALICE = "Mozilla/5.0 (X11; Linux x86_64) alice/1.0"
+UA_BOB = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) bob/2.0"
+
+
+def test_T60_followup_remember_token_binds_user_agent(tmp_path):
+    now = [1_000.0]
+    manager = _configured_manager(tmp_path, now)
+
+    result = manager.login(
+        GOOD_PASSWORD, "k", remember=True, user_agent=UA_ALICE)
+    assert result.ok
+    token = result.session_token
+    _, expires, ua8, signature = token.split(".")
+    assert token.startswith("r2.")
+    assert ua8 == hashlib.sha256(
+        UA_ALICE.encode("utf-8")).hexdigest()[:8]
+    assert result.expires_at == int(now[0] + 7 * 86400)
+    # r2 tokens are deterministic: same UA + same second => same token
+    # (stateless design; they are indistinguishable sessions).
+    twin = manager.login(
+        GOOD_PASSWORD, "k", remember=True, user_agent=UA_ALICE)
+    assert twin.ok
+    assert twin.session_token == token
+
+    assert manager.session_valid(token, UA_ALICE) is True
+    assert manager.session_valid(token, UA_BOB) is False
+    assert manager.session_valid(token, "") is False  # "" hashes "-"
+    assert manager.session_valid(token) is False      # default UA is ""
+
+    # Empty UA mints with the literal "-" fingerprint, valid from any
+    # empty-UA request (mint and validation sides stay symmetric).
+    empty = manager.login(
+        GOOD_PASSWORD, "k", remember=True, user_agent="")
+    assert empty.ok
+    assert empty.session_token.split(".")[2] == (
+        hashlib.sha256(b"-").hexdigest()[:8])
+    assert manager.session_valid(empty.session_token, "") is True
+    assert manager.session_valid(empty.session_token, UA_ALICE) is False
+
+    # Non-str UA values are treated as empty; nothing ever raises.
+    none_ua = manager.login(
+        GOOD_PASSWORD, "k", remember=True, user_agent=None)
+    assert none_ua.ok
+    assert none_ua.session_token.split(".")[2] == (
+        hashlib.sha256(b"-").hexdigest()[:8])
+    assert manager.session_valid(none_ua.session_token, None) is True
+    assert manager.session_valid(none_ua.session_token, ["ua"]) is False
+
+    # Non-ASCII user agents hash deterministically and stay UA-bound.
+    kanji_ua = "浏览器/1.0 (测试代理)"
+    kanji = manager.login(
+        GOOD_PASSWORD, "k", remember=True, user_agent=kanji_ua)
+    assert kanji.ok
+    assert manager.session_valid(kanji.session_token, kanji_ua) is True
+    assert manager.session_valid(kanji.session_token, UA_ALICE) is False
+
+
+def test_T60_followup_remember_ttl_is_exactly_seven_days(tmp_path):
+    now = [1_000.0]
+    manager = _configured_manager(tmp_path, now)
+    result = manager.login(
+        GOOD_PASSWORD, "k", remember=True, user_agent=UA_ALICE)
+    token = result.session_token
+    expires_at = result.expires_at
+    assert expires_at - int(now[0]) == 7 * 86400
+
+    now[0] = expires_at - 1
+    assert manager.session_valid(token, UA_ALICE) is True
+
+    now[0] = expires_at  # exactly at expiry
+    assert manager.session_valid(token, UA_ALICE) is False
+
+    now[0] = expires_at + 1
+    assert manager.session_valid(token, UA_ALICE) is False
+
+
+def test_T60_followup_forged_and_tampered_tokens_fail(tmp_path):
+    now = [1_000.0]
+    manager = _configured_manager(tmp_path, now)
+    result = manager.login(
+        GOOD_PASSWORD, "k", remember=True, user_agent=UA_ALICE)
+    token = result.session_token
+    _, expires, ua8, signature = token.split(".")
+    key = bytes.fromhex(json.loads(
+        manager.auth_path.read_text(encoding="utf-8"))["session_key"])
+
+    # Forged expires_at (not re-signed) is invalid from every UA.
+    assert manager.session_valid(
+        f"r2.{int(expires) + 86400}.{ua8}.{signature}", UA_ALICE) is False
+    # Tampered ua8 (not re-signed) is invalid too.
+    assert manager.session_valid(
+        f"r2.{expires}.{ua8[::-1]}.{signature}", UA_ALICE) is False
+
+    # A perfectly self-consistent token signed with the real key but minted
+    # for Bob's browser does not validate from Alice's browser.
+    bob_ua8 = hashlib.sha256(UA_BOB.encode("utf-8")).hexdigest()[:8]
+    bob_sig = hmac.new(
+        key, f"r2.{expires}.{bob_ua8}".encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    bob_token = f"r2.{expires}.{bob_ua8}.{bob_sig}"
+    assert manager.session_valid(bob_token, UA_BOB) is True  # sanity
+    assert manager.session_valid(bob_token, UA_ALICE) is False
+
+    # Legacy r1 tokens (pre-2.4.1 format) are always invalid, even when
+    # correctly signed with this instance's own key.
+    r1_sig = hmac.new(
+        key, f"r1.{int(expires)}".encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    legacy = f"r1.{int(expires)}.{r1_sig}"
+    assert manager.session_valid(legacy) is False
+    assert manager.session_valid(legacy, UA_ALICE) is False
+
+
+def test_T60_followup_malformed_inputs_never_raise(tmp_path):
+    now = [1_000.0]
+    manager = _configured_manager(tmp_path, now)
+    result = manager.login(
+        GOOD_PASSWORD, "k", remember=True, user_agent=UA_ALICE)
+    token = result.session_token
+
+    for bad in [
+        None,
+        "",
+        123,
+        4.2,
+        ["r2.123.abcdef01." + "f" * 64],
+        ("r2", "123", "abcd1234", "f" * 64),
+        {"r2": 1},
+        token + "!",
+        token + "\x00",
+        "r2." + "9" * 4000 + ".abcd1234." + "f" * 64,
+        "r2.1234.abcd1234." + "é" * 64,
+        "r2.12 34.abcd1234." + "f" * 64,
+    ]:
+        assert manager.session_valid(bad, UA_ALICE) is False
+
+    assert manager._remember_parts(["r2.1.2.3"], UA_ALICE) is None
+    assert manager._remember_parts(None, UA_ALICE) is None
+
+    # Malformed UA values never raise either; they simply never match.
+    for weird_ua in [None, 123, ["ua"], {"a": 1}, "", "é-" * 200]:
+        assert manager.session_valid(token, weird_ua) is False
+
+
+def test_T60_followup_logout_revocation_and_rebuild(tmp_path):
+    now = [1_000.0]
+    manager = _configured_manager(tmp_path, now)
+    a1 = manager.login(
+        GOOD_PASSWORD, "k", remember=True, user_agent=UA_ALICE)
+    b1 = manager.login(
+        GOOD_PASSWORD, "k", remember=True, user_agent=UA_BOB)
+    assert a1.ok and b1.ok
+    assert a1.session_token != b1.session_token
+
+    # Same browser, a bit later: r2 tokens are deterministic per
+    # (UA, expires_at), so a different second mints a distinct token.
+    now[0] += 120
+    a2 = manager.login(
+        GOOD_PASSWORD, "k", remember=True, user_agent=UA_ALICE)
+    assert a2.ok
+    assert a2.session_token != a1.session_token
+
+    manager.logout(a1.session_token, UA_ALICE)
+    assert manager.session_valid(a1.session_token, UA_ALICE) is False
+    assert manager.session_valid(b1.session_token, UA_BOB) is True
+    assert manager.session_valid(a2.session_token, UA_ALICE) is True
+
+    data = json.loads(manager.auth_path.read_text(encoding="utf-8"))
+    ids = [entry["id"] for entry in data["revoked_sessions"]]
+    assert hashlib.sha256(
+        a1.session_token.encode("utf-8")).hexdigest() in ids
+    assert hashlib.sha256(
+        a2.session_token.encode("utf-8")).hexdigest() not in ids
+
+    # A logout attempted from a mismatched UA writes no revocation entry.
+    manager.logout(a2.session_token, UA_BOB)
+    assert manager.session_valid(a2.session_token, UA_ALICE) is True
+    ids_after = [entry["id"] for entry in json.loads(
+        manager.auth_path.read_text(encoding="utf-8"))["revoked_sessions"]]
+    assert ids_after == ids
+
+    manager.logout(a2.session_token, UA_ALICE)
+    assert manager.session_valid(a2.session_token, UA_ALICE) is False
+
+    # Simulated restart over the same auth.json keeps the revocations.
+    restarted = AuthManager(tmp_path, iterations=1000, clock=lambda: now[0])
+    assert restarted.session_valid(a1.session_token, UA_ALICE) is False
+    assert restarted.session_valid(a2.session_token, UA_ALICE) is False
+    assert restarted.session_valid(b1.session_token, UA_BOB) is True
+
+
+def test_T60_followup_plain_session_is_not_ua_bound(tmp_path):
+    now = [1_000.0]
+    manager = _configured_manager(tmp_path, now)
+    result = manager.login(
+        GOOD_PASSWORD, "k", remember=False, user_agent=UA_ALICE)
+    assert result.ok
+    token = result.session_token
+    assert not token.startswith("r2.")
+
+    # In-memory sessions are exact-match keys; the UA argument is irrelevant.
+    assert manager.session_valid(token, UA_ALICE) is True
+    assert manager.session_valid(token, UA_BOB) is True
+    assert manager.session_valid(token, "") is True
+
+    restarted = AuthManager(tmp_path, iterations=1000, clock=lambda: now[0])
+    assert restarted.session_valid(token, UA_ALICE) is False
+
+
+def test_T60_followup_end_to_end_ua_mismatch_returns_401(tmp_path, monkeypatch):
+    now = [50_000.0]
+    app, auth = make_remote_app(tmp_path, monkeypatch, clock=lambda: now[0])
+    assert auth.setup(auth.bootstrap_token(), GOOD_PASSWORD).ok
+
+    with TestClient(app) as client:
+        login = client.post(
+            "/auth/login",
+            json={"password": GOOD_PASSWORD, "remember": True},
+            headers={"user-agent": UA_ALICE},
+        )
+        assert login.status_code == 200
+        set_cookie = login.headers["set-cookie"].lower()
+        assert "max-age=604800" in set_cookie
+        assert "max-age=2592000" not in set_cookie
+        token = client.cookies.get(server_auth.COOKIE_NAME)
+    assert token and token.startswith("r2.")
+
+    # Same UA on a fresh app instance (simulated restart) stays authorized.
+    app2, _auth2 = make_remote_app(tmp_path, monkeypatch, clock=lambda: now[0])
+    with TestClient(app2) as client:
+        same = client.post(
+            "/rpc",
+            json={"method": "login_state", "params": []},
+            headers={"cookie": f"{server_auth.COOKIE_NAME}={token}",
+                     "user-agent": UA_ALICE},
+        )
+        assert same.status_code == 200
+
+        # The same cookie replayed from Bob's browser is rejected.
+        other = client.post(
+            "/rpc",
+            json={"method": "login_state", "params": []},
+            headers={"cookie": f"{server_auth.COOKIE_NAME}={token}",
+                     "user-agent": UA_BOB},
+        )
+        assert other.status_code == 401
+
+        # An empty UA header mismatches as well.
+        anon = client.post(
+            "/rpc",
+            json={"method": "login_state", "params": []},
+            headers={"cookie": f"{server_auth.COOKIE_NAME}={token}",
+                     "user-agent": ""},
+        )
+        assert anon.status_code == 401
+
+        # /auth/status reflects the same UA binding.
+        status_other = client.get(
+            "/auth/status",
+            headers={"user-agent": UA_BOB},
+            cookies={server_auth.COOKIE_NAME: token},
+        )
+        assert status_other.json()["authenticated"] is False
+        status_same = client.get(
+            "/auth/status",
+            headers={"user-agent": UA_ALICE},
+            cookies={server_auth.COOKIE_NAME: token},
+        )
+        assert status_same.json()["authenticated"] is True
+
+
+def test_T60_followup_end_to_end_logout_binding(tmp_path, monkeypatch):
+    now = [50_000.0]
+    app, auth = make_remote_app(tmp_path, monkeypatch, clock=lambda: now[0])
+    assert auth.setup(auth.bootstrap_token(), GOOD_PASSWORD).ok
+    with TestClient(app) as client:
+        login = client.post(
+            "/auth/login",
+            json={"password": GOOD_PASSWORD, "remember": True},
+            headers={"user-agent": UA_ALICE},
+        )
+        assert login.status_code == 200
+        token = client.cookies.get(server_auth.COOKIE_NAME)
+
+    app2, _auth2 = make_remote_app(tmp_path, monkeypatch, clock=lambda: now[0])
+    with TestClient(app2) as client:
+        # Logging out from Bob's browser cannot revoke Alice's token.
+        bob_logout = client.post(
+            "/auth/logout",
+            headers={"cookie": f"{server_auth.COOKIE_NAME}={token}",
+                     "user-agent": UA_BOB},
+        )
+        assert bob_logout.status_code == 200
+        still_valid = client.post(
+            "/rpc",
+            json={"method": "login_state", "params": []},
+            headers={"cookie": f"{server_auth.COOKIE_NAME}={token}",
+                     "user-agent": UA_ALICE},
+        )
+        assert still_valid.status_code == 200
+
+        # Logging out from Alice's own browser revokes it.
+        alice_logout = client.post(
+            "/auth/logout",
+            headers={"cookie": f"{server_auth.COOKIE_NAME}={token}",
+                     "user-agent": UA_ALICE},
+        )
+        assert alice_logout.status_code == 200
+        revoked = client.post(
+            "/rpc",
+            json={"method": "login_state", "params": []},
+            headers={"cookie": f"{server_auth.COOKIE_NAME}={token}",
+                     "user-agent": UA_ALICE},
+        )
+        assert revoked.status_code == 401
+
+    # The revocation survives the simulated restart.
+    app3, _auth3 = make_remote_app(tmp_path, monkeypatch, clock=lambda: now[0])
+    with TestClient(app3) as client:
+        after_restart = client.post(
+            "/rpc",
+            json={"method": "login_state", "params": []},
+            headers={"cookie": f"{server_auth.COOKIE_NAME}={token}",
+                     "user-agent": UA_ALICE},
+        )
+        assert after_restart.status_code == 401
