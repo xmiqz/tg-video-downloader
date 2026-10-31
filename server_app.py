@@ -35,7 +35,7 @@ import gui
 import server_auth
 import tg_video_dl as core
 import wallpaper
-from server_config import RuntimeConfig
+from server_config import RuntimeConfig, build_info
 
 
 log = logging.getLogger("server_app")
@@ -362,7 +362,7 @@ def create_app(config, *, engine, api, token="", auth=None):
     @app.get("/healthz")
     async def healthz():
         return JSONResponse(
-            {"ok": True, "service": "tg-video-downloader"},
+            {"ok": True, "service": "tg-video-downloader", **build_info()},
             headers={"Cache-Control": "no-store"},
         )
 
@@ -384,6 +384,7 @@ def create_app(config, *, engine, api, token="", auth=None):
                 "authenticated": authenticated,
                 "auth_required": bool(config.auth_required),
                 "desktop": bool(config.desktop_mode),
+                **build_info(),
             },
             headers={"Cache-Control": "no-store"},
         )

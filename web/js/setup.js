@@ -1,3 +1,5 @@
+import { buildLabel } from "./build-label.js";
+
 const $ = (id) => document.getElementById(id);
 const steps = {
   admin: "admin-form",
@@ -17,6 +19,16 @@ function showError(message) {
   const node = $("error");
   node.textContent = message || "";
   node.hidden = !message;
+}
+
+function renderFoot(status) {
+  const label = $("build-info");
+  if (label) label.textContent = buildLabel(status);
+  const link = $("project-link");
+  const project = status && status.project;
+  if (link && typeof project === "string" && project.startsWith("https://")) {
+    link.href = project;
+  }
 }
 
 function setPhase(next) {
@@ -97,7 +109,9 @@ async function init() {
   try {
     const resp = await fetch("/auth/status", { cache: "no-store" });
     status = await resp.json();
+    renderFoot(status);
   } catch (e) {
+    renderFoot(null);
     showError("无法连接服务，请刷新页面重试");
     return;
   }

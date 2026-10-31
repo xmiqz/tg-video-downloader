@@ -19,9 +19,39 @@ body {
 .setup-shell {
   min-height: 100vh;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 14px;
   padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+}
+
+.setup-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  max-width: 620px;
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.setup-foot-build {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.setup-foot-link {
+  color: var(--color-text-muted);
+  text-decoration: none;
+}
+
+.setup-foot-link:hover,
+.setup-foot-link:focus-visible {
+  color: var(--color-primary);
+  text-decoration: underline;
 }
 
 .setup-card {

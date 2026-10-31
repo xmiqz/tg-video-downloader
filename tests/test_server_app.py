@@ -206,7 +206,9 @@ def test_remote_setup_cookie_and_protected_rpc(tmp_path):
     )
 
     with TestClient(app) as client:
-        assert client.get("/healthz").json()["ok"] is True
+        health = client.get("/healthz").json()
+        assert health["ok"] is True
+        assert "version" in health and "build" in health
         denied = client.post("/rpc", json={"method": "login_state", "params": []})
         assert denied.status_code == 401
         setup_page = client.get("/setup")
@@ -215,6 +217,10 @@ def test_remote_setup_cookie_and_protected_rpc(tmp_path):
         assert "default-src 'self'" in setup_page.headers["content-security-policy"]
         status = client.get("/auth/status").json()
         assert status["setup_required"] is True
+        # 登录页页脚依赖这三个字段，缺失会渲染成空白。
+        assert status["project"] == "https://github.com/xmiqz/tg-video-downloader"
+        assert isinstance(status["version"], str) and status["version"]
+        assert isinstance(status["build"], str)
 
         token = (tmp_path / ".setup-token").read_text(encoding="utf-8").strip()
         setup = client.post("/auth/setup", json={

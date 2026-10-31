@@ -21,6 +21,31 @@ TRUE_VALUES = {"1", "true", "yes", "on"}
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
 
+# 构建元信息：由 Dockerfile 的 ARG/ENV 在构建时注入，手工运行时缺省为开发态。
+# 这两个 TGDL_* 变量名同时在 compose.yaml 里透传，compose 契约测试会逐字核对。
+PROJECT_URL = "https://github.com/xmiqz/tg-video-downloader"
+BUILD_SHA_LENGTH = 7
+
+
+def app_version():
+    """发布版本号；未注入（源码直跑）时返回 ``dev``。"""
+    return os.environ.get("TGDL_VERSION", "").strip() or "dev"
+
+
+def app_build():
+    """构建号 = 提交短 SHA；未注入时返回空串，由前端回退显示。"""
+    raw = os.environ.get("TGDL_BUILD", "").strip()
+    return raw[:BUILD_SHA_LENGTH] if raw else ""
+
+
+def build_info():
+    """登录页页脚与 /healthz 共用的一份构建信息。"""
+    return {
+        "version": app_version(),
+        "build": app_build(),
+        "project": PROJECT_URL,
+    }
+
 
 def _as_bool(value, default=False):
     if value is None:

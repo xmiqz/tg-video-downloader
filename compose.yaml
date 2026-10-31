@@ -8,6 +8,7 @@ services:
     user: "${PUID:-10001}:${PGID:-10001}"
     ports:
       - "${TGDL_PORT:-8787}:8787"
+    # 构建元信息：镜像内已含默认值，这里允许手工覆盖（留空回落 dev）。
     environment:
       TGDL_HOST: 0.0.0.0
       TGDL_PORT: "8787"
@@ -15,6 +16,8 @@ services:
       TGDL_ALLOWED_ROOTS: /data
       TGDL_COOKIE_SECURE: "${TGDL_COOKIE_SECURE:-0}"
       TGDL_TRUST_PROXY: "${TGDL_TRUST_PROXY:-0}"
+      TGDL_VERSION: "${TGDL_VERSION:-}"
+      TGDL_BUILD: "${TGDL_BUILD:-}"
       PUID: "${PUID:-10001}"
       PGID: "${PGID:-10001}"
     volumes:

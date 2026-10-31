@@ -18,6 +18,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOME=/data \
     TGDL_DATA_DIR=/data
 
+# 构建元信息由 CI 注入；手工 docker build 不给值时保持 dev。
+ARG TGDL_VERSION=dev
+ARG TGDL_BUILD=dev
+ENV TGDL_VERSION="${TGDL_VERSION}" \
+    TGDL_BUILD="${TGDL_BUILD}"
+
 RUN groupadd --gid 10001 tgdl \
     && useradd --uid 10001 --gid 10001 --home-dir /data --no-create-home \
        --shell /usr/sbin/nologin tgdl \
