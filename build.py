@@ -11,8 +11,10 @@ TG视频下载器 —— 跨平台一键打包脚本（PyInstaller）
 用法：
   python build.py [输出目录]
 """
+import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -36,8 +38,13 @@ os.environ["PYTHONIOENCODING"] = "utf-8"
 
 
 def is_arm64_windows():
-    return (platform.system() == "Windows"
-            and platform.machine().lower() in ("arm64", "aarch64"))
+    if platform.system() != "Windows":
+        return False
+    # platform.machine() 在 x64 模拟层会误报成物理 CPU 的 ARM64，
+    # 于是用 x64 解释器打出来的包也会叫「_ARM64」。改看解释器自身的平台串
+    # （win-arm64 / win-amd64），它随解释器架构走，模拟层下也准确。
+    import sysconfig
+    return "arm64" in sysconfig.get_platform().lower()
 
 
 def _write_stdio_runtime_hook():
@@ -115,6 +122,36 @@ def _ssl_data_args():
     return ["--add-data", pem + os.pathsep + "."] if pem else []
 
 
+def _project_version():
+    """发布版本：优先 TGDL_VERSION，其次 CHANGELOG 最新条目标题，最后 dev。"""
+    env = os.environ.get("TGDL_VERSION", "").strip()
+    if env:
+        return env
+    try:
+        with open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r"##\s*\[([^\]]+)\]", line)
+                if m and re.match(r"\d", m.group(1)):
+                    return "v" + m.group(1)
+    except OSError:
+        pass
+    return "dev"
+
+
+def _write_version_stamp():
+    """桌面包没有 Docker 的 TGDL_VERSION 注入，把版本写进 assets/version.json
+    随包带走；server_config.build_info() 在冻结态读它，登录页页脚才有版本号。"""
+    path = os.path.join(WORK, "assets", "version.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    data = {
+        "version": _project_version(),
+        "build": os.environ.get("TGDL_BUILD", "").strip()[:7],
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    return path
+
+
 def build_windows_gui(dist):
     arm64 = is_arm64_windows()
     name = "TG视频下载器_ARM64" if arm64 else "TG视频下载器"
@@ -135,6 +172,8 @@ def build_windows_gui(dist):
         "--add-data", os.path.join(HERE, "folderpicker.cs") + os.pathsep + ".",
         # 窗口类图标与 exe 图标同一母版；冻结态由 wv2_native 从 assets/ 载入
         "--add-data", os.path.join(HERE, "build", "tvg.ico") + os.pathsep + "assets",
+        # 版本戳：登录页页脚显示版本号（桌面端无 TGDL_VERSION 注入）
+        "--add-data", _write_version_stamp() + os.pathsep + "assets",
         "--icon", os.path.join(HERE, "build", "tvg.ico"),
         # 见 _write_stdio_runtime_hook：修复 windowed 态 stdout=None 崩溃
         "--runtime-hook", rthook,
@@ -160,8 +199,7 @@ def build_windows_gui(dist):
 
 
 def build_windows_tui(dist):
-    machine = platform.machine().lower()
-    name = ("TG视频下载器_TUI_ARM64" if machine in ("arm64", "aarch64")
+    name = ("TG视频下载器_TUI_ARM64" if is_arm64_windows()
             else "TG视频下载器_TUI")
     cmd = [
         sys.executable, "-m", "PyInstaller",

@@ -103,7 +103,7 @@ test("settings cards are separated, not fused edge to edge", async () => {
     `卡片间距过小（--space-${m[1]}），玻璃面会粘在一起`);
 });
 
-test("glass cards carry a specular highlight layer", async () => {
+test("glass cards stay flat (no specular pseudo layer)", async () => {
   for (const [name, selector] of [
     ["views/settings.css", ".st-card"],
     ["ui.css", ".u-card"],
@@ -111,21 +111,14 @@ test("glass cards carry a specular highlight layer", async () => {
     const cssText = await css(name);
     const card = rule(cssText, selector);
     assert.ok(card, `缺少 ${selector}`);
-    assert.match(card, /isolation:\s*isolate/,
-      `${selector} 需要独立层叠上下文来承载高光层`);
-
-    const i = cssText.indexOf(`${selector}::before {`);
-    assert.ok(i > 0, `${selector} 缺少高光伪元素`);
-    const glow = cssText.slice(i, cssText.indexOf("}", i) + 1);
-    assert.match(glow, /linear-gradient\(155deg/,
-      `${selector} 高光应为斜向镜面渐变`);
-    assert.match(glow, /pointer-events:\s*none/,
-      `${selector} 高光层不能拦截点击`);
-
-    // Content must paint above the highlight, or text is washed out.
-    assert.match(cssText, new RegExp(
-      `${selector.replace(".", "\\.")} > \\* \\{[^}]*z-index:\\s*1`),
-      `${selector} 的子元素需要在更高层`);
+    // v2.5 曾给卡片加 155° 镜面高光伪元素，卡片左缘会亮出一条竖直白带
+    // （用户裁决：2.5 设计里没有这层，回退到 2.4 的纯玻璃面）。
+    assert.ok(!cssText.includes(`${selector}::before`),
+      `${selector} 不应再有镜面高光伪元素`);
+    assert.ok(!cssText.includes(`${selector}::after`),
+      `${selector} 不应再有底部反光伪元素`);
+    assert.match(card, /background:\s*var\(--glass-card-bg\)/,
+      `${selector} 玻璃面应直接吃卡片令牌`);
   }
 });
 

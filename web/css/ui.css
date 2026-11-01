@@ -70,6 +70,7 @@
   font-size: 13px; /* 2.1 .btn style.css:189 */
   border-radius: var(--radius-pill); /* 2.1 .btn 999px style.css:188 */
   border: 1px solid transparent;
+  white-space: nowrap; /* 动作条里「恢复中…」被挤成两行是换行导致的，按钮不折行 */
   cursor: pointer;
   transition: background var(--dur-sm) var(--ease-standard),
     transform var(--dur-sm) var(--ease-spring);
@@ -113,39 +114,10 @@
   padding: var(--space-5);
   border-radius: var(--radius-lg);
   background: var(--glass-card-bg);
-  backdrop-filter: blur(var(--glass-card-blur)) saturate(var(--gl-sat));
-  -webkit-backdrop-filter: blur(var(--glass-card-blur)) saturate(var(--gl-sat));
+  backdrop-filter: blur(var(--glass-card-blur)) saturate(var(--gl-sat)) contrast(1.1);
+  -webkit-backdrop-filter: blur(var(--glass-card-blur)) saturate(var(--gl-sat)) contrast(1.1);
   border: 1px solid var(--glass-card-border);
   box-shadow: var(--glass-card-shadow), var(--glass-card-hi);
-  /* Same lit-pane treatment as the settings cards: a diagonal specular sweep
-     across the top and a soft bottom reflection. Without it a translucent
-     fill over a photo reads as tinted plastic rather than glass. */
-  position: relative;
-  isolation: isolate;
-}
-.u-card > * { position: relative; z-index: 1; }
-.u-card::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  z-index: 0;
-  background:
-    linear-gradient(155deg,
-      rgba(255, 255, 255, .26) 0%,
-      rgba(255, 255, 255, .09) 26%,
-      rgba(255, 255, 255, 0) 52%),
-    radial-gradient(120% 80% at 50% 0%,
-      rgba(255, 255, 255, .14) 0%,
-      rgba(255, 255, 255, 0) 60%);
-}
-:root[data-theme="wallpaper"][data-lum="bright"] .u-card::before {
-  background:
-    linear-gradient(155deg,
-      rgba(255, 255, 255, .52) 0%,
-      rgba(255, 255, 255, .16) 30%,
-      rgba(255, 255, 255, 0) 55%);
 }
 .u-card--flush { padding: 0; }
 .u-card-head {
@@ -538,6 +510,13 @@ html.liquid .u-toast {
 .sh-side { view-transition-name: sh-side; }
 .sh-bottombar { view-transition-name: sh-bottombar; }
 .sh-viewhost { view-transition-name: sh-viewhost; }
+/* 手机档取消视图具名：底部渐隐是 .sh-scroll 的 mask（祖先效果），
+   具名快照只截取元素自身、不带祖先遮罩 → 切页瞬间底部内容会亮一下再被
+   遮回去（用户：黑化遮挡切换瞬间不生效会闪）。取消具名后视图进入带遮罩
+   的根快照，渐隐全程连续；侧栏/底栏仍各自具名保持静止。 */
+@media (max-width: 639.98px) {
+  .sh-viewhost { view-transition-name: none; }
+}
 
 /* 7c. 无 VT 引擎的直切淡入（router.fadeInView 挂类；fill: backwards，
    动画播完由 animationend 摘类，不留动画对象） */
@@ -558,8 +537,8 @@ html.liquid .u-toast {
   margin: var(--space-2);
   border-radius: var(--radius-lg);
   background: var(--glass-nav-bg);
-  backdrop-filter: blur(var(--glass-nav-blur)) saturate(var(--gl-sat));
-  -webkit-backdrop-filter: blur(var(--glass-nav-blur)) saturate(var(--gl-sat));
+  /* GPU 占用优化：动作条是和底栏同宽的大面板，实时模糊每帧重采样成本高；
+     保留渐变底 + 描边 + 顶部高光 + 投影，去掉 backdrop-filter 不改变明暗观感。 */
   border: 1px solid var(--glass-nav-border);
   box-shadow: var(--glass-nav-shadow), var(--glass-nav-hi);
 }
@@ -573,7 +552,14 @@ html.liquid .u-toast {
     z-index: var(--z-sheet);
   }
 }
+/* <640：动作条抬到悬浮底栏之上（底栏 bottom 10 + 高 60 + 2px 间隙），
+   避免选中态动作条压住底栏；768 档没有底栏，保持 bottom:0。 */
+@media (max-width: 639.98px) {
+  .u-actionbar { bottom: calc(72px + env(safe-area-inset-bottom, 0px)); }
+}
 .u-actionbar[hidden] { display: none; }
+/* 手机贴底条按内容排：按钮不收缩，放不下就整体折行，决不让文字被压成两行 */
+.u-actionbar .u-btn { flex: 0 0 auto; }
 .u-actionbar-count {
   flex: 1 1 auto;
   min-width: 0;

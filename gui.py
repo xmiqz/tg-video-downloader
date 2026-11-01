@@ -17,6 +17,7 @@ import logging
 import os
 import pathlib
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -1008,19 +1009,31 @@ class Api:
         if self.client is None:
             print("[GUI] need_login: me")
             return {"ok": False, "need_login": True}
+        # 账号资料先吃池内缓存（_adopt_and_cache_me 登录就绪时已预热）：
+        # get_me 是一次真实网络往返，登录成功后再等它会把「获取账号资料中…」
+        # 挂在卡上好几秒（用户实测等待过长）。缓存命中直接返回，0 等待。
+        cached = self._pool.me_cache.get(core.ACCT_MAIN) or {}
+        if cached.get("name") or cached.get("username") or cached.get("phone"):
+            return {"ok": True, "cached": True,
+                    "name": cached.get("name", ""),
+                    "username": cached.get("username", ""),
+                    "phone": cached.get("phone", "")}
         async def _do():
-            u = await self.client.get_me()
-            return {"name": (u.first_name or ""), "username": u.username or "",
-                    "phone": u.phone or ""}
+            # 冷缓存：限时取一次；网络慢也不让登录卡无限转圈
+            return await asyncio.wait_for(self.client.get_me(), timeout=8)
         try:
-            r = self.engine.submit(_do())
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+            u = self.engine.submit(_do())
+        except Exception:
+            # 拿不到资料不该挡住登录成功：回退手机号（或空串），卡片不再转圈
+            phone = str(self.cfg.get("phone") or "")
+            return {"ok": True, "partial": True, "name": "", "username": "",
+                    "phone": phone}
         # T58 2.6：成功同步回填主号 me 缓存（account_list 只读该缓存）
         self._pool.me_cache[core.ACCT_MAIN] = {
-            "name": r["name"], "username": r["username"],
-            "phone": r["phone"]}
-        return {"ok": True, **r}
+            "name": u.first_name or "", "username": u.username or "",
+            "phone": u.phone or ""}
+        return {"ok": True, "name": u.first_name or "", "username": u.username or "",
+                "phone": u.phone or ""}
 
     # ---------- T51 账号池 RPC（5 个；除 account_list 外主号就绪+非游客闸门） ----------
 
@@ -2712,6 +2725,20 @@ class Api:
             "allowed_roots": roots,
             "can_open_local": self.runtime_mode != "headless",
             "can_choose_folder": self.runtime_mode != "headless",
+        }
+
+    def disk_space(self):
+        """保存位置（下载根目录）的剩余/总容量：舞台磁盘节点显示「剩余 x GB」。"""
+        try:
+            root = core.get_download_root(self.cfg)
+            usage = shutil.disk_usage(str(root))
+        except Exception:
+            return {"ok": False}
+        return {
+            "ok": True,
+            "path": str(root),
+            "free": int(usage.free),
+            "total": int(usage.total),
         }
 
     def set_download_root(self, path):

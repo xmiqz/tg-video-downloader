@@ -226,6 +226,32 @@ html.liquid .lg-login-card {
 .lg-card { animation: lg-pop .5s var(--ease-spring); }
 .lg-card[hidden] { display: none; }
 
+/* ---------- 6b. 壁纸主题下的登录/账号卡实底（T69） ----------
+   壁纸主题下 PC 档卡面不再实时取景模糊，只有 --glass-card-bg 的半透明渐变，
+   登录卡叠在下层页面上时照片与文字会透上来（用户实拍「登录框透明过了」）。
+   这里在玻璃层下面垫一层主题底色（88%），保留噪点/菲涅尔/内高光的玻璃感，
+   只把透光率压到看不穿下层文案的程度。深/亮壁纸各自取 --color-surface。 */
+html[data-theme="wallpaper"] .lg-view .lg-card {
+  background-color: color-mix(in srgb, var(--color-surface) 88%, transparent);
+}
+
+/* 页脚构建信息（版本号）：登录视图唯一的常驻文字位，卡片下方居中。 */
+.lg-build {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 14px;
+  text-align: center;
+  color: var(--color-text-faint);
+  font-size: 11.5px;
+  letter-spacing: .2px;
+  pointer-events: none;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .45);
+}
+html[data-lum="bright"] .lg-build {
+  text-shadow: 0 1px 3px rgba(255, 255, 255, .8), 0 0 10px rgba(255, 255, 255, .55);
+}
+
 /* ---------- 7. 减弱动效双路归零 ----------
    弹层节点挂 body（#sh-root 兄弟位），归零选择器两处齐配；
    视觉终态保留（G13 审计按 #sh-root[data-v22-rm="on"] 形式剥除）。 */

@@ -349,10 +349,18 @@ export function createXian(host, opts) {
   function startLoop() {
     if (loopStarted || cancelled || reduced || !win ||
       typeof win.requestAnimationFrame !== "function") return;
+    // GPU：idle 是纯展示姿态（翼面角恒 0），不要常驻 rAF——只保留已画好的
+    // 静态一帧。状态离开 idle 时才启动；回到 idle 后由 loop/setState 停掉。
+    if (current === "idle") return;
     loopStarted = true;
     const loop = (now) => {
       if (cancelled) return;
-      if (!xianVisual(current).airborne) {   // idle/floodwait/done/uploaded 无循环
+      if (current === "idle") {              // 回落 idle：立即停帧，不空转
+        loopStarted = false;
+        raf = 0;
+        return;
+      }
+      if (!xianVisual(current).airborne) {   // done/uploaded 无循环
         loopStarted = false;
         raf = 0;
         return;
@@ -415,7 +423,8 @@ export function createXian(host, opts) {
     },
   };
   root._xian = api;
-  if (!reduced && xianVisual(current).airborne &&
+  // 首帧：只有非 idle 的 airborne 状态才启动循环（startLoop 内也会拦 idle）。
+  if (!reduced && current !== "idle" && xianVisual(current).airborne &&
     win && typeof win.requestAnimationFrame === "function" && options.autoTick !== false) {
     startLoop();
   }

@@ -21,6 +21,8 @@
 import { el, createCard, createOverlay, createToaster } from "../ui/index.js";
 // T65 弦：登录徽章与壳品牌位同源（构造失败回退文字徽标）
 import { mountXian } from "../motion/xian.js";
+// 登录页页脚构建信息（与 /auth/status 同源；v2.5 起桌面登录视图也要显示）
+import { buildLabel } from "../build-label.js";
 
 // ------------------------------------------------------------
 // ① 契约导出（t8_contract.md §1 恰五员）
@@ -179,6 +181,7 @@ function goTasks() {
 // 受控提示暂存 pendingNotice，弹层重开时由 onEnter 消费（2.1 showLoginCard
 // app.js:360-369：phone 步起、清错误、notice 与错误互不残留）。
 let pendingNotice = "";
+let buildFootLoaded = false;    // 页脚构建信息只拉一次
 export function openLogin(notice) {
   pendingNotice = notice || "";
   const r = window.__t8router;
@@ -390,10 +393,28 @@ async function fetchMe(my) {
   }
 }
 
+// 账号卡首帧：先用 account_list 的 me 缓存（零触网）填资料，避免登录卡
+// 先挂一句「获取账号资料中…」等网络往返；fetchMe 回来再覆盖成最新值。
+async function renderCachedMe() {
+  try {
+    const al = await api().account_list();
+    const rows = (al && Array.isArray(al.accounts)) ? al.accounts : [];
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] || {};
+      if (row.id === "main" && row.me) {
+        const me = row.me;
+        if (me.name || me.username || me.phone) renderMeCard(me);
+        return;
+      }
+    }
+  } catch (e) { /* 缓存只是首帧加速，失败交给 fetchMe */ }
+}
+
 function showAccountCard() {
   $.loginCard.hidden = true;
   $.acctCard.el.hidden = false;
   renderMePending();
+  renderCachedMe();
 }
 
 function afterLoginAction() {
@@ -726,8 +747,9 @@ function buildDom() {
   submitLabels.set($.btnGuestEnter, "暂不登录（游客模式）");
 
   // 弹层根（2.1 .login-mask：fixed 遮罩盖在当前版面上，只含卡）
+  $.buildFoot = el("div", { class: "lg-build", "aria-label": "构建版本", text: "" });
   const view = el("div", { class: "lg-view", "data-view-name": "login" },
-    [$.loginCard, $.acctCard.el]);
+    [$.loginCard, $.acctCard.el, $.buildFoot]);
   return view;
 }
 
@@ -762,6 +784,19 @@ function resetTransient() {
   noticeShow("");
 }
 
+// 页脚构建信息：/auth/status 与首跑页同源（version/build），缺值为开发态。
+// 只在首次进入拉一次；失败保持空白，不影响登录流程。
+async function loadBuildFoot() {
+  if (buildFootLoaded || !$.buildFoot) return;
+  buildFootLoaded = true;
+  try {
+    const resp = await fetch("/auth/status", { cache: "no-store" });
+    if (!resp.ok) return;
+    const st = await resp.json();
+    $.buildFoot.textContent = buildLabel(st);
+  } catch (e) { /* 页脚只是附加信息 */ }
+}
+
 // onEnter：login_state 定初始态 → connect 复核（零发码，T58 2.2/3.1）。
 //   connected → 账号卡 + me；
 //   guest     → 受限提示条 + 登录卡 + “继续游客浏览”（不调 set_guest）；
@@ -771,6 +806,7 @@ function resetTransient() {
 //   已就绪 → 账号卡。guest 态卡片前台期间起 2s 轮询。
 export function onEnter(params) {
   resetTransient();
+  loadBuildFoot();
   // 受控提示消费（2.1 showLoginCard(notice) 口径：notice 与错误互不残留；
   // params.notice 经 router.navigate opts 直达，pendingNotice 兜 openLogin 入口）
   const notice = (params && params.notice) || pendingNotice;

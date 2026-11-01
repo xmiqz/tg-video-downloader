@@ -60,6 +60,27 @@ const PHASE_ID = Object.freeze(Object.fromEntries(
   STAGE_PHASES.map((p, i) => [p, i]),
 ));
 
+// 弦的线路表：九态 → 走哪条数据线 / 怎么走 / 飞完停在哪。
+//   fly  = 事件持续期间往返飞（下载/重试/分片）
+//   once = 事件切换的那一帧飞一次，落点固定（完成落磁盘、失败退回来源）
+//   hold = 停在锚点上不动（扫描停在 Telegram、限流停在账号池）
+const FLIGHT_PLAN = Object.freeze({
+  idle: Object.freeze({ path: "srcTask", mode: "hold", at: "start" }),
+  scanning: Object.freeze({ path: "srcTask", mode: "hold", at: "start" }),
+  downloading: Object.freeze({ path: "srcTask", mode: "fly" }),
+  sharding: Object.freeze({ path: "srcTask", mode: "fly" }),
+  floodwait: Object.freeze({ path: "acctTask", mode: "hold", at: "start" }),
+  retrying: Object.freeze({ path: "acctTask", mode: "fly" }),
+  failed: Object.freeze({
+    path: "srcTask", mode: "once", reverse: true,
+    park: Object.freeze({ path: "srcTask", at: "start" }),
+  }),
+  done: Object.freeze({
+    path: "taskDisk", mode: "once",
+    park: Object.freeze({ path: "taskDisk", at: "end" }),
+  }),
+});
+
 export function stageLayout(opts) {
   const o = opts || {};
   const concurrency = Math.max(1, Math.min(8, Number(o.concurrency) || 1));
@@ -96,21 +117,25 @@ export function stageLayout(opts) {
     };
   }
   if (o.mobile) {
+    // 单列：来源 → 账号池 → 任务舱 → 磁盘（同一列宽，四个框同宽同圆角）。
+    // 任务舱拿到 46.9% 的高度，才装得下队列条 + 卡片 + 读数行。
     const mobileNodes = {
-      src: { id: "src", x: 30, y: 22, w: 360, h: 72, label: "Telegram" },
-      acct: { id: "acct", x: 30, y: 116, w: 360, h: 72, label: "账号池" },
-      task: { id: "task", x: 30, y: 210, w: 360, h: 196, label: "任务舱" },
-      disk: { id: "disk", x: 30, y: 450, w: 360, h: 72, label: "本地磁盘" },
+      src: { id: "src", x: 30, y: 8, w: 360, h: 62, label: "Telegram" },
+      acct: { id: "acct", x: 30, y: 80, w: 360, h: 62, label: "账号池" },
+      task: { id: "task", x: 30, y: 164, w: 360, h: 300, label: "任务舱" },
+      disk: { id: "disk", x: 30, y: 478, w: 360, h: 62, label: "本地磁盘" },
     };
-    if (nas) mobileNodes.nas = { id: "nas", x: 30, y: 548, w: 360, h: 56, label: "NAS / WebDAV" };
+    if (nas) mobileNodes.nas = { id: "nas", x: 30, y: 548, w: 360, h: 62, label: "NAS / WebDAV" };
     return {
       viewBox: [0, 0, 420, 640],
       nodes: mobileNodes,
+      // 手机单列里不能画「来源直连任务舱」的长线：那条线会从账号池卡片中间穿过去
+      // （截图里账号池被一条竖线切成两半）。只画相邻两框之间的短接线。
       wires: {
-        srcTask: "M210 94 C210 150 210 170 210 210",
-        acctTask: "M210 188 C210 194 210 202 210 210",
-        taskDisk: "M210 406 C210 430 210 436 210 450",
-        ...(nas ? { diskNas: "M210 522 C210 534 210 540 210 548" } : {}),
+        srcTask: "M210 70 C210 73 210 77 210 80",
+        acctTask: "M210 142 C210 150 210 157 210 164",
+        taskDisk: "M210 464 C210 469 210 473 210 478",
+        ...(nas ? { diskNas: "M210 540 C210 542 210 546 210 548" } : {}),
       },
       compact: false,
       mobile: true,
@@ -123,19 +148,20 @@ export function stageLayout(opts) {
       lanes: lowEnd ? ["host"] : Array.from({ length: concurrency }, (_, i) => "lane" + i),
     };
   }
+  // 三框同宽（190×80）：框宽不一致是「大小不一致」观感的直接来源。
   const nodes = {
-    src: { id: "src", x: 40, y: 100, w: 170, h: 80, label: "Telegram" },
-    acct: { id: "acct", x: 40, y: 240, w: 170, h: 80, label: "账号池" },
+    src: { id: "src", x: 30, y: 100, w: 190, h: 80, label: "Telegram" },
+    acct: { id: "acct", x: 30, y: 240, w: 190, h: 80, label: "账号池" },
     task: { id: "task", x: 250, y: 28, w: 440, h: 320, label: "任务舱" },
-    disk: { id: "disk", x: 740, y: 100, w: 160, h: 80, label: "本地磁盘" },
+    disk: { id: "disk", x: 720, y: 100, w: 190, h: 80, label: "本地磁盘" },
   };
-  if (nas) nodes.nas = { id: "nas", x: 740, y: 250, w: 160, h: 60, label: "NAS / WebDAV" };
+  if (nas) nodes.nas = { id: "nas", x: 720, y: 250, w: 190, h: 60, label: "NAS / WebDAV" };
   const wires = {
-    srcTask: "M210 140 C 230 140 236 100 250 100",
-    acctTask: "M210 280 C 230 280 236 300 250 300",
-    taskDisk: "M690 140 C 715 140 720 140 740 140",
+    srcTask: "M220 140 C 236 140 240 100 250 100",
+    acctTask: "M220 280 C 236 280 240 300 250 300",
+    taskDisk: "M690 140 C 712 140 715 140 720 140",
   };
-  if (nas) wires.diskNas = "M820 180 C 860 215 860 235 820 250";
+  if (nas) wires.diskNas = "M815 180 C 860 215 860 235 815 250";
   return {
     viewBox: [0, 0, 940, 380],
     nodes,
@@ -409,6 +435,18 @@ export function formatStageSpeed(value) {
   return (n / 1048576).toFixed(1) + " MB/s";
 }
 
+// 保存位置剩余容量：二进制单位，≥10 的取整（「128 GB」不写成 128.4）。
+export function formatDiskFree(bytes) {
+  const n = Math.max(0, Number(bytes) || 0);
+  if (n <= 0) return "";
+  if (n >= 1099511627776) return (n / 1099511627776).toFixed(1) + " TB";
+  if (n >= 1073741824) {
+    const gb = n / 1073741824;
+    return (gb >= 10 ? gb.toFixed(0) : gb.toFixed(1)) + " GB";
+  }
+  return Math.max(1, Math.round(n / 1048576)) + " MB";
+}
+
 export function stagePhaseCopy(phase, scene) {
   const s = scene || {};
   const counts = s.counts || {};
@@ -546,6 +584,16 @@ export function createStage(host, opts) {
   const reduced = isReduced(win, options.reduced);
   const loopFlights = options.loop === true;
   const layout = stageLayout(options.layout || options);
+  // 同一宿主重复挂载（视图重进 / 档位重建）先清掉上一份舞台节点：
+  // 否则宿主里会叠出第二套 SVG 与气泡（截图里的「双框」与高度翻倍）。
+  if (host && host.children) {
+    const stale = Array.prototype.slice.call(host.children).filter(function (c) {
+      const cls = c && typeof c.getAttribute === "function"
+        ? String(c.getAttribute("class") || "") : "";
+      return cls.indexOf("xian-stage-") === 0;
+    });
+    stale.forEach(function (c) { if (typeof c.remove === "function") c.remove(); });
+  }
   if (host && typeof host.setAttribute === "function") {
     host.setAttribute("data-stage-layout", layoutName(layout));
   }
@@ -564,9 +612,6 @@ export function createStage(host, opts) {
   let bayLayer = null;
   let aggregateEl = null;
   let footEl = null;
-  let wbHeadEl = null;
-  let wbLabelEl = null;
-  let wbStatusEl = null;
   let currentEl = null;
   let bayCountEl = null;
   let pagerEl = null;
@@ -574,8 +619,20 @@ export function createStage(host, opts) {
   let railExpanded = false;
   let workbenchEl = null;
   let activeLayout = layout;
+  let sceneAccounts = [];
+  let accountsKey = "";
+  let diskKey = "";
+  let diskSub = "保存位置";
+  let diskTitle = "本地磁盘 · 保存位置";
+  let currentPlan = null;
+  let prevXianState = "";
+  // 单条视频落地：任务还在跑时，每完成一条就飞一次磁盘（任务整体完成仍走 done 计划）。
+  // 首次进入/切换主任务时把当前已完成数作为基线，不回放历史完成。
+  let doneSeen = 0;
+  let doneFocusId = "";
+  let pulseToken = 0;
   const flightDuration = readFlightDuration(host, win);
-  const samples = Object.fromEntries(
+  let samples = Object.fromEntries(
     Object.entries(layout.wires).map(([key, d]) => [key, sampleCubicPath(d, 8)]),
   );
   const svgRoot = doc && typeof doc.createElementNS === "function"
@@ -609,15 +666,15 @@ export function createStage(host, opts) {
     bayHead.className = "xian-stage-bay-head";
     const bayTitle = doc.createElement("div");
     bayTitle.className = "xian-stage-bay-title";
-    bayTitle.textContent = "任务舱";
+    // 舱名直接是焦点任务名（renderBay 每帧写入），不再写抽象的「任务舱」。
+    currentEl = doc.createElement("span");
+    currentEl.className = "xian-stage-bay-current";
     bayCountEl = doc.createElement("span");
     bayCountEl.className = "xian-stage-bay-count";
     bayCountEl.setAttribute("aria-hidden", "true");
+    bayTitle.appendChild(currentEl);
     bayTitle.appendChild(bayCountEl);
-    currentEl = doc.createElement("span");
-    currentEl.className = "xian-stage-bay-current";
     bayHead.appendChild(bayTitle);
-    bayHead.appendChild(currentEl);
     bayLayer.appendChild(bayHead);
     const body = doc.createElement("div");
     body.className = "xian-stage-bay-body";
@@ -652,15 +709,6 @@ export function createStage(host, opts) {
     const workbench = doc.createElement("section");
     workbench.className = "xian-stage-workbench";
     workbenchEl = workbench;
-    wbHeadEl = doc.createElement("div");
-    wbHeadEl.className = "xian-stage-workbench-head";
-    wbLabelEl = doc.createElement("span");
-    wbLabelEl.className = "xian-stage-workbench-label";
-    wbStatusEl = doc.createElement("span");
-    wbStatusEl.className = "xian-stage-workbench-status";
-    wbHeadEl.appendChild(wbLabelEl);
-    wbHeadEl.appendChild(wbStatusEl);
-    workbench.appendChild(wbHeadEl);
     cardsLayer.setAttribute("class", "xian-stage-cards xian-stage-video-grid");
     cardsLayer.setAttribute("aria-label", "活跃视频块");
     workbench.appendChild(cardsLayer);
@@ -679,13 +727,8 @@ export function createStage(host, opts) {
     bayLayer.appendChild(footEl);
     renderNodeOverlay();
   }
-  function buildStageSvg(d, box) {
+  function buildWireGroup(d, box) {
     const NS = "http://www.w3.org/2000/svg";
-    const svg = d.createElementNS(NS, "svg");
-    svg.setAttribute("class", "xian-stage-svg");
-    svg.setAttribute("viewBox", box.viewBox.join(" "));
-    svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
-    svg.setAttribute("aria-hidden", "true");
     const group = d.createElementNS(NS, "g");
     group.setAttribute("class", "xian-stage-wires");
     for (const key of Object.keys(box.wires)) {
@@ -694,7 +737,10 @@ export function createStage(host, opts) {
       path.setAttribute("d", box.wires[key]);
       group.appendChild(path);
     }
-    svg.appendChild(group);
+    return group;
+  }
+  function buildNodeGroup(d, box) {
+    const NS = "http://www.w3.org/2000/svg";
     const nodes = d.createElementNS(NS, "g");
     nodes.setAttribute("class", "xian-stage-nodes");
     for (const key of Object.keys(box.nodes)) {
@@ -731,7 +777,33 @@ export function createStage(host, opts) {
       }
       nodes.appendChild(node);
     }
-    svg.appendChild(nodes);
+    return nodes;
+  }
+  // 档位切换（桌面 ⇄ 平板 ⇄ 手机）时 SVG 里的节点矩形与数据线必须一起换，
+  // 只改 viewBox 会把旧几何缩放进新画布：手机上就看到右侧一多出来的深色面板。
+  function rebuildGeometry(box) {
+    if (!svgRoot || !doc || typeof doc.createElementNS !== "function") return;
+    const oldWires = svgRoot.querySelector(".xian-stage-wires");
+    const oldNodes = svgRoot.querySelector(".xian-stage-nodes");
+    if (oldWires && oldWires.remove) oldWires.remove();
+    if (oldNodes && oldNodes.remove) oldNodes.remove();
+    if (!svgRoot.appendChild) return;
+    svgRoot.appendChild(buildWireGroup(doc, box));
+    svgRoot.appendChild(buildNodeGroup(doc, box));
+    // 飞行体恒在最上层：几何组重建后把它挪回队尾（真实 DOM 会移动而非复制）
+    if (flightLayer && flightLayer.parentNode === svgRoot) {
+      svgRoot.appendChild(flightLayer);
+    }
+  }
+  function buildStageSvg(d, box) {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = d.createElementNS(NS, "svg");
+    svg.setAttribute("class", "xian-stage-svg");
+    svg.setAttribute("viewBox", box.viewBox.join(" "));
+    svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    svg.setAttribute("aria-hidden", "true");
+    svg.appendChild(buildWireGroup(d, box));
+    svg.appendChild(buildNodeGroup(d, box));
     const band = d.createElementNS(NS, "g");
     band.setAttribute("class", "xian-stage-band");
     const status = d.createElementNS(NS, "text");
@@ -777,6 +849,35 @@ export function createStage(host, opts) {
       flightXian = null;
     }
   }
+  // 线路 → 预采样表；缺表时退回主链，保证不会出现 undefined。
+  function planTable(plan) {
+    const key = plan && plan.path;
+    return (key && samples[key]) || samples.srcTask || [];
+  }
+  function planPoint(plan) {
+    const table = planTable(plan);
+    if (!table.length) return { x: 240, y: 150, ang: 0 };
+    // 线路端点就是气泡边缘：往里退 3 个采样点（约 24px），弦才停在两框之间的空档里，
+    // 而不是半截身子被气泡压住（截图里限流/完成的停靠点看不见）。
+    const atEnd = plan && plan.at === "end";
+    const last = table.length - 1;
+    const index = Math.max(0, Math.min(last, (atEnd ? last : 0) + (atEnd ? -3 : 3)));
+    const at = table[index];
+    return { x: at.x, y: at.y, ang: at.ang || 0 };
+  }
+  // 静止锚点：停在该事件该停的位置（停放点优先于线路起点）。
+  function anchorFor(plan) {
+    if (!plan) return null;
+    return planPoint(plan.park || plan);
+  }
+  function placeFlier(p, sy) {
+    if (!flier || !p) return;
+    const scale = Number(sy) > 0 ? Number(sy) : 1;
+    flier.setAttribute("transform",
+      "translate(" + p.x.toFixed(2) + " " + p.y.toFixed(2) + ") " +
+      "rotate(" + Number(p.ang || 0).toFixed(2) + ") " +
+      "scale(" + (2 - scale).toFixed(3) + " " + scale.toFixed(3) + ")");
+  }
   const stage = {
     layout,
     samples,
@@ -785,33 +886,86 @@ export function createStage(host, opts) {
       const s = scene || {};
       const phase = STAGE_PHASES.includes(s.phase) ? s.phase : "idle";
       current = phase;
-      const xianState = mapPhaseToXian(phase, { concurrency: layout.concurrency });
+      const counts = s.counts || {};
+      const xianState = mapPhaseToXian(phase, {
+        concurrency: layout.concurrency,
+        failed: phase === "error" || Number(counts.fail) > 0,
+        retrying: phase === "refreshing" || Number(counts.retrying) > 0,
+      });
+      const stateChanged = xianState !== prevXianState;
+      prevXianState = xianState;
       const itemExists = s.itemStatus === "exists";
-      const diskHold = phase === "flood_wait" || phase === "error" ||
-        phase === "done";
-      const isError = phase === "error";
-      const isDone = phase === "done";
+      // 单条落地计数：任务还在跑时「完成/已存在」每多一条，就补一次飞向磁盘。
+      let doneNow = 0;
+      const sceneItems = Array.isArray(s.items) ? s.items : [];
+      for (let i = 0; i < sceneItems.length; i++) {
+        const st = sceneItems[i] && sceneItems[i].status;
+        if (st === "完成" || st === "已存在") doneNow++;
+      }
+      const focusKey = String(s.focusId || "");
+      if (focusKey !== doneFocusId) {
+        doneFocusId = focusKey;          // 切主任务/首次进入：历史完成不回放
+        doneSeen = doneNow;
+      }
+      const pulse = doneNow > doneSeen && xianState !== "done";
+      if (pulse) pulseToken += 1;        // 每次落地都换飞行 key，tick 才会重新起飞
+      doneSeen = doneNow;
+      currentPlan = pulse ? FLIGHT_PLAN.done : (FLIGHT_PLAN[xianState] || null);
+      const isError = xianState === "failed";
       const held = phase === "flood_wait";
+      const isDone = xianState === "done";
       const pct = Math.max(0, Math.min(100, Number(s.pct) || 0));
       const phaseCopy = stagePhaseCopy(phase, s);
-      const flights = reduced || itemExists || diskHold || phase === "idle" ||
-        phase === "aborted" || phaseCopy.motion !== "transfer" ? 0 : 1;
+      // 弦按事件走固定线路：扫描停在 Telegram、下载在来源→任务舱、限流停在
+      // 账号池、重试从账号池进任务舱、失败原路退回、完成飞向磁盘。
+      // 手机单列时四框是上下堆叠的短距离，弦再沿曲线飞只会穿过卡片/气泡；
+      // 移动端只保留「停在事件对应的节点旁」，不做飞行。
+      const canFly = !reduced && !itemExists && !!currentPlan && !activeLayout.mobile;
+      const animate = canFly && (currentPlan.mode === "fly"
+        ? !!s.busy
+        : (currentPlan.mode === "once" && (stateChanged || pulse)));
+      if (canFly && !animate) placeFlier(anchorFor(currentPlan), 1);
       const result = {
         phase,
         xianState,
         reduced,
-        flights,
-        reverse: isError,
+        flights: animate ? 1 : 0,
+        reverse: !!(currentPlan && currentPlan.reverse),
         held,
         countdown: held ? Number(s.countdown) || 0 : null,
         pct,
         receiver: isDone ? "ready" : (isError ? "shake" : (held ? "hold" : "idle")),
-        busy: reduced ? false : !!(s.busy && flights),
+        busy: animate,
+        flightKey: pulse ? "pulse:" + pulseToken : xianState,
       };
       lastScene = result;
       busy = result.busy;
+      const accounts = Array.isArray(s.accounts) ? s.accounts : [];
+      const nextAccountsKey = accounts.map(function (a) {
+        return String(a && a.id || "") + ":" + String(a && a.name || "");
+      }).join("|");
+      if (nextAccountsKey !== accountsKey) {
+        accountsKey = nextAccountsKey;
+        sceneAccounts = accounts;
+        renderNodeOverlay();
+      }
+      // 保存位置剩余空间（后端 disk_space）：只带数字，格式化在舞台里做。
+      const freeText = formatDiskFree(s.disk && s.disk.free);
+      const totalText = formatDiskFree(s.disk && s.disk.total);
+      const nextDiskKey = freeText + "\u0000" + totalText;
+      if (nextDiskKey !== diskKey) {
+        diskKey = nextDiskKey;
+        diskSub = freeText ? "剩余 " + freeText : "保存位置";
+        diskTitle = freeText
+          ? "本地磁盘 · 剩余 " + freeText + (totalText ? "（共 " + totalText + "）" : "")
+          : "本地磁盘 · 保存位置";
+        renderNodeOverlay();
+      }
+      if (flightXian) {
+        try { flightXian.setState(xianState); } catch (e) { /* 视觉降级 */ }
+      }
       if (flightLayer) flightLayer.setAttribute("data-flight",
-        busy ? (isError ? "reverse" : "forward") : (held ? "hold" : "idle"));
+        !canFly ? "idle" : (animate ? (result.reverse ? "reverse" : "forward") : "hold"));
       if (svgRoot && svgRoot.setAttribute) {
         svgRoot.setAttribute("data-phase", phase);
         svgRoot.setAttribute("data-phase-tone", phaseCopy.tone);
@@ -823,7 +977,7 @@ export function createStage(host, opts) {
           statusEl.textContent += " · " + formatStageSpeed(s.speed);
         }
       }
-      const counts = s.counts || {};
+      if (bandStatusEl) bandStatusEl.textContent = phaseCopy.status;
       const activeCount = Math.max(0, Number(counts.active) || 0);
       const failedCount = Math.max(0, Number(counts.fail) || 0);
       const pausedCount = Math.max(0, Number(counts.paused) || 0);
@@ -861,19 +1015,20 @@ export function createStage(host, opts) {
       // All flight points come from the pre-sampled tables; no live path read.
       if (busy && flightLayer && flier) {
         const now = clockNow(win);
-        if (!flight || flight.key !== lastScene.phase) {
-          const start = lastScene.reverse
-            ? samples.taskDisk[samples.taskDisk.length - 1]
-            : samples.srcTask[0];
+        const plan = currentPlan;
+        const table = planTable(plan);
+        const reverse = !!(plan && plan.reverse);
+        if (!flight || flight.key !== (lastScene && lastScene.flightKey)) {
+          const start = reverse ? table[table.length - 1] : table[0];
           flight = {
-            key: lastScene.phase,
+            key: lastScene && lastScene.flightKey,
             started: now,
             start: start || { x: 240, y: 150, ang: 0 },
           };
         }
         const elapsed = Math.max(0, now - flight.started);
         const k = Math.max(0, Math.min(1, elapsed / flightDuration));
-        const p = pointAt(samples.srcTask, lastScene.reverse ? 1 - k : k) ||
+        const p = pointAt(table, reverse ? 1 - k : k) ||
           flight.start;
         const ant = anticipationOffset(k, p.ang);
         const sy = squashStretch(k, trapezoidSpeed(k));
@@ -896,7 +1051,13 @@ export function createStage(host, opts) {
           } else {
             busy = false;
             flight = null;
-            if (flightLayer) flightLayer.setAttribute("data-flight", "idle");
+            if (plan && plan.park) {
+              // 「飞完有落点」的事件（完成/失败）停在落点上，不消失。
+              placeFlier(anchorFor(plan), 1);
+              if (flightLayer) flightLayer.setAttribute("data-flight", "hold");
+            } else if (flightLayer) {
+              flightLayer.setAttribute("data-flight", "idle");
+            }
             if (svgRoot && svgRoot.setAttribute) {
               svgRoot.setAttribute("data-busy", "off");
             }
@@ -963,17 +1124,18 @@ function safeTaskTitle(task) {
   if (!task) return "—";
   return String(task.title || task.channel_title || task.channel || "未命名任务");
 }
-// 视频块上限：移动/紧凑/平板 2；桌面 ≥1920 才展示 4，其余 2 + 精确聚合。
-function cardLimit() {
+// 视频块上限：移动/紧凑/平板 2；桌面按条数自适应——8 条以内全部铺开
+//（2 列 × 4 行，卡高约 31px），超过 8 条回到 6 条 + 一行精确聚合。
+function cardLimit(total) {
   const box = activeLayout || layout;
   if (box.compact || box.mobile || box.tablet) return 2;
-  const width = win && typeof win.innerWidth === "number" ? win.innerWidth : 0;
-  return width >= 1920 ? 4 : 2;
+  const n = Math.max(0, Number(total) || 0);
+  return n <= 8 ? 8 : 6;
 }
   function renderCards(items, speed, operation) {
     if (!cardsLayer || !doc || typeof doc.createElement !== "function") return;
     const list = Array.isArray(items) ? items : [];
-    const limit = cardLimit();
+    const limit = cardLimit(list.length);
     const compact = activeLayout.compact || activeLayout.mobile || activeLayout.tablet;
     const rank = {
       floodwait: 0, failed: 1, retrying: 2, downloading: 3,
@@ -1029,9 +1191,11 @@ function cardLimit() {
       const per = Number(item && item.speed);
       const errText = String(item && item.error || "");
       // 错误并入读数行（单行省略 + title），避免失败卡片多一行被裁掉。
-      meta.textContent = (Number.isFinite(pct) ? pctValue.toFixed(0) + "%" : "—")
-        + " · " + (Number.isFinite(per) && per > 0 ? formatStageSpeed(per) : "—")
-        + (errText ? " · " + errText : "");
+      // 没有速度就不写占位「—」：旧卡片「0% · —」看起来像坏掉的读数。
+      const metaParts = [Number.isFinite(pct) ? pctValue.toFixed(0) + "%" : "等待"];
+      if (Number.isFinite(per) && per > 0) metaParts.push(formatStageSpeed(per));
+      if (errText) metaParts.push(errText);
+      meta.textContent = metaParts.join(" · ");
       if (errText) {
         meta.setAttribute("data-has-error", "on");
         meta.setAttribute("title", errText);
@@ -1083,12 +1247,11 @@ function cardLimit() {
     node.setAttribute("data-hidden-fails", String(hiddenFails));
     const agg = aggregated || { failed: 0, retrying: 0, copying: 0, waiting: 0, paused: 0, done: 0, exists: 0, skipped: 0 };
     if (hidden <= 0 && hiddenFails <= 0 && agg.retrying <= 0 && agg.copying <= 0) {
-      const same = doc.createElement("span");
-      same.className = "xian-stage-more";
-      same.textContent = "全部视频已在此列出";
-      node.appendChild(same);
+      // 没有隐藏桶就没有这一行：旧文案「全部视频已在此列出」占着一行高度。
+      node.hidden = true;
       return;
     }
+    node.hidden = false;
     const dots = doc.createElement("span");
     dots.className = "xian-stage-agg-dots";
     const parts = [
@@ -1137,24 +1300,10 @@ function cardLimit() {
     const tPaused = Math.max(0, Number(counts.paused) || 0);
     const tParallel = Math.max(0, Number(task && task.parallel) || 0);
     if (currentEl) {
-      const title = task ? safeTaskTitle(task) : "—";
-      const live = Math.max(0, Number(aggregated ? aggregated.total : 0));
-      currentEl.textContent = (multi ? "焦点 " + title + " · " : "") +
-        "活跃 " + tActive + " 条 · 完成 " + tFinished + "/" + tTotal;
-    }
-    if (wbLabelEl) {
-      const label = multi ? "焦点任务活跃视频" : "活跃视频";
-      const n = Math.max(0, Number(aggregated ? aggregated.total : 0));
-      const live = tActive;
-      wbLabelEl.textContent = label + " · " + live + " 条正在搬运";
-    }
-    if (wbStatusEl) {
-      const speed = Number(s.speed);
-      const statusText = phaseCopy.status +
-        (phaseCopy.speedMode === "speed" && Number.isFinite(speed) && speed > 0
-          ? " · " + formatStageSpeed(speed) : "");
-      wbStatusEl.textContent = statusText;
-      if (bandStatusEl) bandStatusEl.textContent = statusText;
+      // 舱名 = 焦点任务名：用户要从标题直接认出是哪个任务。
+      const title = task ? safeTaskTitle(task) : "任务舱";
+      currentEl.textContent = title;
+      currentEl.setAttribute("title", title);
     }
     if (footEl) {
       const parts = [
@@ -1179,7 +1328,9 @@ function cardLimit() {
 // 竖列队列条最多 3 条；1024–1279 舱高只容 2 条 + 「另有 N 条」。
 function queueMax() {
   const box = activeLayout || layout;
-  if (box.compact || box.mobile || box.tablet) return 3;
+  // 手机舱宽只有 ~266px：3 条会把任务名压成几个字，2 条 + 「另有 N 条」才读得出。
+  if (box.mobile) return 2;
+  if (box.compact || box.tablet) return 3;
   const width = win && Number.isFinite(win.innerWidth) ? win.innerWidth : 1920;
   return width < 1280 ? 2 : 3;
 }
@@ -1232,17 +1383,6 @@ function queueMax() {
       name.className = "xian-stage-task-name";
       name.textContent = title;
       name.setAttribute("title", title);
-      const phase = doc.createElement("span");
-      phase.className = "xian-stage-task-state";
-      // flood_wait 在索引项上展示真实倒计时（从 phase_detail 解析），不再写死 0s
-      phase.textContent = (t.phase === "flood_wait" && cd > 0)
-        ? copy.label + " · " + cd + "s"
-        : copy.label;
-      const meta = doc.createElement("span");
-      meta.className = "xian-stage-task-meta";
-      meta.textContent = finished + "/" + total + " · 活跃 " + active + "/" +
-        (Math.max(0, Number(t.parallel) || 0) || "—") +
-        (failed ? " · 失败 " + failed : "");
       const bar = doc.createElement("span");
       bar.className = "xian-stage-task-bar";
       const fill = doc.createElement("i");
@@ -1251,8 +1391,6 @@ function queueMax() {
       bar.appendChild(fill);
       item.appendChild(ordinal);
       item.appendChild(name);
-      item.appendChild(phase);
-      item.appendChild(meta);
       item.appendChild(bar);
       item.addEventListener("click", function () {
         if (typeof options.onTaskSelect === "function") {
@@ -1364,6 +1502,19 @@ function queueMax() {
     const width = Math.max(1, Number(box.viewBox[2]) || 1);
     const height = Math.max(1, Number(box.viewBox[3]) || 1);
     const codes = { src: "TG", acct: "AC", disk: "DS", nas: "NS" };
+    // 账号池不写抽象名：直接显示真实账号（首个）+ 总数，否则认不出是哪个号。
+    const acctList = Array.isArray(sceneAccounts) ? sceneAccounts : [];
+    const first = acctList[0] || null;
+    const acctLabel = first
+      ? String(first.name || first.id || "账号池") : "账号池";
+    const acctSub = acctList.length
+      ? "账号池 · 共 " + acctList.length + " 个" : "账号池 · 未登录";
+    const labels = {
+      src: "Telegram", acct: acctLabel, disk: "本地磁盘", nas: "NAS / WebDAV",
+    };
+    const subs = {
+      src: "来源 · 读取清单", acct: acctSub, disk: diskSub, nas: "备份目标",
+    };
     for (const key of Object.keys(box.nodes || {})) {
       if (key === "task") continue;
       const n = box.nodes[key];
@@ -1371,6 +1522,10 @@ function queueMax() {
       const chip = doc.createElement("div");
       chip.className = "xian-stage-node-chip";
       chip.setAttribute("data-node", key);
+      // 磁盘节点带上剩余空间读数：这条读数比「保存位置」四个字有用。
+      if (key === "disk") {
+        chip.setAttribute("title", diskTitle);
+      }
       chip.setAttribute("style",
         "left:" + (n.x / width * 100).toFixed(4) + "%;" +
         "top:" + (n.y / height * 100).toFixed(4) + "%;" +
@@ -1379,11 +1534,22 @@ function queueMax() {
       const code = doc.createElement("span");
       code.className = "xian-stage-node-code";
       code.textContent = codes[key] || key.toUpperCase();
+      const text = doc.createElement("div");
+      text.className = "xian-stage-node-text";
       const label = doc.createElement("span");
       label.className = "xian-stage-node-label";
-      label.textContent = n.label;
+      label.textContent = labels[key] || n.label;
+      label.setAttribute("title", label.textContent);
+      text.appendChild(label);
+      const subText = subs[key] || "";
+      if (subText) {
+        const sub = doc.createElement("span");
+        sub.className = "xian-stage-node-sub";
+        sub.textContent = subText;
+        text.appendChild(sub);
+      }
       chip.appendChild(code);
-      chip.appendChild(label);
+      chip.appendChild(text);
       nodeOverlay.appendChild(chip);
     }
   }
@@ -1412,6 +1578,13 @@ function queueMax() {
     if (svgRoot && typeof svgRoot.setAttribute === "function") {
       svgRoot.setAttribute("viewBox", target.viewBox.join(" "));
     }
+    // 只改 viewBox 会把桌面几何拉进手机画布（右侧多出一块深色面板）。
+    samples = Object.fromEntries(
+      Object.entries(target.wires).map(([key, d]) => [key, sampleCubicPath(d, 8)]),
+    );
+    stage.samples = samples;
+    flight = null;
+    rebuildGeometry(target);
     if (cardsLayer && typeof cardsLayer.setAttribute === "function") {
       cardsLayer.setAttribute("data-layout", layoutName(target));
     }

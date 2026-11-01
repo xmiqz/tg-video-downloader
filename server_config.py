@@ -12,6 +12,7 @@ import ipaddress
 import json
 import os
 import pathlib
+import sys
 from dataclasses import dataclass, field
 
 import tg_video_dl as core
@@ -23,19 +24,52 @@ DEFAULT_PORT = 8787
 
 # 构建元信息：由 Dockerfile 的 ARG/ENV 在构建时注入，手工运行时缺省为开发态。
 # 这两个 TGDL_* 变量名同时在 compose.yaml 里透传，compose 契约测试会逐字核对。
+# 桌面安装包没有这些环境变量，build.py 会把同一份信息写进
+# assets/version.json 随包带走，冻结态由 _stamp_build_info() 读回。
 PROJECT_URL = "https://github.com/xmiqz/tg-video-downloader"
 BUILD_SHA_LENGTH = 7
+
+_STAMP_CACHE = None
+_STAMP_READ = False
+
+
+def _stamp_build_info():
+    """冻结态随包版本戳（assets/version.json）；源码直跑/测试态返回空字典。"""
+    global _STAMP_CACHE, _STAMP_READ
+    if _STAMP_READ:
+        return _STAMP_CACHE or {}
+    _STAMP_READ = True
+    try:
+        base = getattr(sys, "_MEIPASS", None)
+        if base:
+            path = os.path.join(base, "assets", "version.json")
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                _STAMP_CACHE = {
+                    "version": str(data.get("version") or "").strip(),
+                    "build": str(data.get("build") or "").strip(),
+                }
+    except Exception:
+        _STAMP_CACHE = None
+    return _STAMP_CACHE or {}
 
 
 def app_version():
     """发布版本号；未注入（源码直跑）时返回 ``dev``。"""
-    return os.environ.get("TGDL_VERSION", "").strip() or "dev"
+    env = os.environ.get("TGDL_VERSION", "").strip()
+    if env:
+        return env
+    return _stamp_build_info().get("version") or "dev"
 
 
 def app_build():
     """构建号 = 提交短 SHA；未注入时返回空串，由前端回退显示。"""
     raw = os.environ.get("TGDL_BUILD", "").strip()
-    return raw[:BUILD_SHA_LENGTH] if raw else ""
+    if raw:
+        return raw[:BUILD_SHA_LENGTH]
+    stamped = _stamp_build_info().get("build", "")
+    return stamped[:BUILD_SHA_LENGTH]
 
 
 def build_info():

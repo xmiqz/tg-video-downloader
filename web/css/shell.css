@@ -88,22 +88,65 @@ html[data-theme="wallpaper"] .sh-ambient { display: none; }
 html[data-theme="wallpaper"] #sh-backdrop::after {
   background: linear-gradient(180deg, rgba(8, 10, 18, .10), rgba(8, 10, 18, .26));
 }
-/* Wallpaper shares the liquid material: the photo is the backdrop, and cards
-   are frosted glass over it. Without this the panels were flat translucent
-   fills - "没有液态玻璃质感". backdrop-filter is the whole point here, so the
-   liquid block that disables it must not apply. */
+/* 壁纸档一律不取景模糊（桌面/平板/手机同口径）：blur 会把卡外亮部从边缘
+   拉进卡面，形成用户反复点名的「左缘高光条/毛玻璃条」；平板布局在 <1024
+   仍走这条基础规则，所以这里直接收成 saturate/contrast（无色散卷积核）。
+   磨砂底改由 tokens 的 --glass-card-bg 承担（暗壁纸 .68/.54、亮壁纸近不透白）。 */
 html[data-theme="wallpaper"] .sh-side,
 html[data-theme="wallpaper"] .sh-bar-mat,
 html[data-theme="wallpaper"] .sh-drawer,
 html[data-theme="wallpaper"] .u-card,
 html[data-theme="wallpaper"] .tk-card,
+html[data-theme="wallpaper"] .st-card,
 html[data-theme="wallpaper"] .u-actionbar,
 html[data-theme="wallpaper"] .u-overlay-panel,
 html[data-theme="wallpaper"] .ac-card,
-html[data-theme="wallpaper"] .ac-group,
+html[data-theme="wallpaper"] .ac-group-head,
 html[data-theme="wallpaper"] .sh-bottombar {
-  -webkit-backdrop-filter: blur(22px) saturate(165%);
-  backdrop-filter: blur(22px) saturate(165%);
+  -webkit-backdrop-filter: saturate(175%) contrast(1.1);
+  backdrop-filter: saturate(175%) contrast(1.1);
+}
+/* 抽屉在壁纸下必须自成一层；不用实底（用户：实底不好看），改用登录卡同款
+   「深色压底 + 大半径羽化模糊」：既把后方页面压下去，又保留玻璃的通透。 */
+html[data-theme="wallpaper"] .sh-drawer {
+  background: linear-gradient(155deg,
+    rgba(24, 27, 40, .84) 0%,
+    rgba(18, 21, 33, .88) 60%,
+    rgba(14, 17, 27, .92) 100%);
+  -webkit-backdrop-filter: blur(34px) saturate(150%);
+  backdrop-filter: blur(34px) saturate(150%);
+}
+html[data-theme="wallpaper"] .sh-drawer-mask {
+  background: rgba(8, 10, 18, .46);
+}
+/* T68 修（≥1024 桌面）：卡缘渗入亮带（用户实拍多次点名的「卡片左缘毛玻璃条」）。
+   机理：壁纸图里跨过（或紧贴）面板边缘的竖向亮内容——照片里的亮缝、窗外的
+   亮带——经卡面 backdrop blur(14px) 从边缘向内高斯扩散 ≈10px，在玻璃面上
+   拼出一条 8-10px 宽、柔边、浅灰的中性竖带（真机实测 (97,100,107)≈用户实拍
+   (107,109,114)），左缘贴边、贯穿高度、沿圆角；侧栏右缘（gap 后方）同理。
+   删 tokens 色散层/压 1px 描边都无效——带不是面板自绘层，是背景内容被
+   blur 从边界拉进来的。
+   修法：卡面零邻域采样（backdrop-filter 只留 saturate/contrast）→ 渗入带消失；
+   壁纸层不再预烘焙模糊，原图保持清晰（用户反馈「每日壁纸最低层也叠模糊了」），
+   transform:scale(1.03) 仅用于盖住视口边缘。桌面 <1024 的移动/平板形态零改动。 */
+@media (min-width: 1024px) {
+  /* 壁纸层保持原图清晰；PC 档卡面一律不取景模糊（blur 采样会把卡外亮部拉进
+     边缘形成高光条，用户多次复测）。玻璃质感改由「更实的磨砂底 + 噪点 +
+     菲涅尔边缘 + 顶缘高光 + 投影」承担，文字可读性靠底材 alpha，不靠模糊。 */
+  html[data-theme="wallpaper"] .sh-side,
+  html[data-theme="wallpaper"] .sh-bar-mat,
+  html[data-theme="wallpaper"] .sh-drawer,
+  html[data-theme="wallpaper"] .u-card,
+  html[data-theme="wallpaper"] .tk-card,
+  html[data-theme="wallpaper"] .st-card,
+  html[data-theme="wallpaper"] .u-actionbar,
+  html[data-theme="wallpaper"] .u-overlay-panel,
+  html[data-theme="wallpaper"] .ac-card,
+  html[data-theme="wallpaper"] .ac-group-head,
+  html[data-theme="wallpaper"] .sh-bottombar {
+    -webkit-backdrop-filter: saturate(175%) contrast(1.1);
+    backdrop-filter: saturate(175%) contrast(1.1);
+  }
 }
 /* Text that sits directly on the photo (page headings, subtitles, the guest
    bar, section labels) has no panel behind it. The data-lum switch fixes the
@@ -171,6 +214,7 @@ html.liquid .sh-side, html.liquid .sh-bar-mat, html.liquid .sh-drawer,
 html.liquid .v22-ph-card, html.liquid .u-card, html.liquid .u-actionbar,
 html.liquid .u-overlay-mask, html.liquid .ac-ov-card, html.liquid .ac-bulk,
 html.liquid .ac-group, html.liquid .ac-card, html.liquid .tk-card,
+html.liquid .xian-stage-bay, html.liquid .xian-stage-node-chip,
 html.liquid .ev-move-mask {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
@@ -187,8 +231,8 @@ html.liquid .ev-move-mask {
   padding-top: max(var(--space-4), env(safe-area-inset-top)); /* 刘海内缩 */
   box-sizing: border-box;
   background: var(--glass-nav-bg);
-  -webkit-backdrop-filter: blur(var(--glass-nav-blur)) saturate(var(--gl-sat));
-  backdrop-filter: blur(var(--glass-nav-blur)) saturate(var(--gl-sat));
+  /* GPU 占用优化：侧栏是整屏高度的大面板，每帧重采样最贵；去掉实时取景模糊，
+     材质感由 --glass-nav-bg 渐变 + 描边 + --glass-nav-hi + 投影承担（明暗不变）。 */
   border-right: var(--line-1) solid var(--glass-nav-border);
   z-index: var(--z-base);
 }
@@ -436,7 +480,19 @@ html.liquid .ev-move-mask {
 /* 手机（<640）悬浮底栏底部避让：必须置于 .sh-scroll 基础简写之后，
    否则被 padding 简写重置（级序坑订正）。 */
 @media (max-width: 639.98px) {
-  .sh-scroll { padding-bottom: calc(120px + env(safe-area-inset-bottom)); }
+  /* 底部遮挡：底栏（bottom 10 + 高 60）+ 作业胶囊（bottom 84）一块让位。
+     128px = 胶囊顶 + 14px 呼吸；滚动容器负责唯一一份避让，.vw-active 里
+     原先的 120+54 双算已归零（见 active.css §14）。 */
+  .sh-scroll {
+    padding-bottom: calc(128px + env(safe-area-inset-bottom, 0px));
+    scroll-padding-bottom: 128px;
+    /* 底栏/胶囊下方内容渐隐：只覆盖底栏本身（约 88px），过渡带 32px。
+       之前 128→152 的渐隐吃掉太多内容（用户：底部暗化遮挡得有些多了）。 */
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 120px),
+      transparent calc(100% - 88px), transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 120px),
+      transparent calc(100% - 88px), transparent 100%);
+  }
 }
 
 /* ---------- 4b. 未登录提示条 + 启动连接小字（2.1 style.css:1021-1072 逐值） ----------
@@ -504,7 +560,7 @@ html.liquid .ev-move-mask {
   position: fixed;
   left: 12px;
   right: 12px;
-  bottom: calc(env(safe-area-inset-bottom) + 12px); /* Home 指示条内缩 */
+  bottom: calc(env(safe-area-inset-bottom) + 10px); /* Home 指示条内缩（10px：再抬 2px 给卡片留呼吸） */
   height: 60px;
   border-radius: var(--radius-pill);
   display: flex;
@@ -555,8 +611,8 @@ html.liquid .ev-move-mask {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 56px;
-  height: 56px;
+  width: 52px;
+  height: 52px;
   margin: 0 var(--space-1);
   border-radius: var(--radius-pill);
   background: linear-gradient(135deg, var(--color-primary), var(--color-primary-strong));
@@ -574,8 +630,8 @@ html.liquid .ev-move-mask {
   inset: 0;
   border-radius: inherit;
   background: var(--glass-nav-bg);
-  -webkit-backdrop-filter: blur(var(--glass-nav-blur)) saturate(var(--gl-sat));
-  backdrop-filter: blur(var(--glass-nav-blur)) saturate(var(--gl-sat));
+  /* GPU 占用优化：底栏是整宽的大面板，实时模糊每帧重采样；保留渐变底、描边、
+     顶部高光与投影，去掉 backdrop-filter 后明暗观感不变、占用显著下降。 */
   border: var(--line-hair) solid var(--glass-nav-border);
   box-shadow: var(--glass-nav-shadow), var(--glass-nav-hi);
 }
@@ -677,6 +733,36 @@ html.liquid .ev-move-mask {
 .v22-ph-title { margin: 0 0 var(--space-2); font-size: var(--text-2xl); color: var(--color-text-strong); }
 .v22-ph-desc { margin: 0; color: var(--color-text-muted); font-size: var(--text-md); }
 .v22-ph-params { margin: var(--space-3) 0 0; color: var(--color-text-faint); font-size: var(--text-sm); min-height: 1em; }
+
+/* ---------- 8b. 壁纸换图后的一次性重栅格化 ----------
+   backdrop-filter 的模糊面在第一帧仍按旧背景栅格化，卡片/侧栏左缘会留下一条
+   约 10px 的亮带，直到下一次重绘才消失（刷新一下就没、重启又有）。router.js
+   在壁纸图解码完成后给 <html> 挂两帧 mat-repaint，这里把玻璃模糊临时关掉，
+   强制重新采样背景；类移除后材质自动恢复，肉眼无感。 */
+html.mat-repaint .sh-side,
+html.mat-repaint .sh-bar-mat,
+html.mat-repaint .v22-ph-card,
+html.mat-repaint .tk-card,
+html.mat-repaint .st-card,
+html.mat-repaint .u-card {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+/* ---------- 8c. 卡片边缘漏光（PC ≥1024） ----------
+   backdrop-filter 在卡片边缘会采到卡片外更亮的壁纸，沿左缘糊出一条“亮边/
+   毛玻璃条”（修好描边与首帧后仍复现的那条）。卡片的玻璃材质已由预烘焙的
+   噪点 + 上下缘菲涅尔 + 顶缘高光 + 投影承担，PC 档直接关掉实时取景模糊，
+   边缘不再混入背景，也不再发毛。移动端与 <1024 断点保持不变。 */
+@media (min-width: 1024px) {
+  .tk-card,
+  .st-card,
+  .u-card {
+    isolation: isolate;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+}
 
 /* ---------- 9. 降级三档 ---------- */
 /* 9.1 关折射动效（reduced-motion）：折射层整体淡出（保材质与虹彩） */
@@ -850,10 +936,11 @@ html.liquid .ev-move-mask {
    1.5s 节流），小面 blur 成本低；登录面板/胶囊底栏/侧栏/下载卡等
    叠加元素统一折叠胶囊同款羽化 blur(20px) saturate(160%)（:766 配方），
    修液态下层内容穿透文字不可读。 */
+/* GPU 占用优化：侧栏（.sh-side）已改为零实时模糊，不得再被本块用 !important
+   重新加回（整屏高度的大面板代价最高）。 */
 html.liquid .sh-jobdock .job-card,
 html.liquid .sh-jobdock .job-dock-mini,
 html.liquid .sh-bottombar,
-html.liquid .sh-side,
 html.liquid .sh-drawer {
   backdrop-filter: blur(20px) saturate(160%) !important;
   -webkit-backdrop-filter: blur(20px) saturate(160%) !important;
@@ -874,6 +961,14 @@ html.liquid .sh-drawer {
   background: linear-gradient(155deg,
     rgba(255,255,255,.78), rgba(255,255,255,.55));
   border-color: rgba(20,30,60,.12);
+  /* 亮底上 0 10px 30px rgba(4,6,18,.35) 会在浅色卡四周糊出深色四角阴影
+     （用户实拍「全局作业四角阴影不好看」）；亮主题改中性浅投影。 */
+  box-shadow: 0 6px 18px rgba(30,42,80,.16), 0 1px 3px rgba(30,42,80,.10),
+              inset 0 1px 0 rgba(255,255,255,.7);
+}
+:root[data-theme="light"] .sh-jobdock .job-dock-mini {
+  box-shadow: 0 6px 16px rgba(30,42,80,.14), 0 1px 3px rgba(30,42,80,.08),
+              inset 0 1px 0 rgba(255,255,255,.6);
 }
 :root[data-theme="light"] .sh-jobdock .job-bar {
   background: rgba(20,30,60,.12);
@@ -889,12 +984,24 @@ html.liquid .sh-drawer {
 :root[data-theme="light"] .sh-jobdock .job-dock-mini { color: rgba(20,26,46,.7); }
 :root[data-theme="light"] .sh-jobdock .job-fill.indet { background: rgba(20,30,60,.35); }
 
+/* 壁纸档作业卡：阴影不必那么重（亮壁纸时同样会糊出四角暗影），只留轻投影 */
+html[data-theme="wallpaper"] .sh-jobdock .job-card,
+html[data-theme="wallpaper"] .sh-jobdock .job-dock-mini {
+  box-shadow: 0 8px 22px rgba(4,6,18,.28), inset 0 1px 0 rgba(255,255,255,.35);
+}
+
 /* T19e 亮捕获底（liquid bright）：2.1 无此态；复用浅色玻璃面 + 深墨
    保证亮底文字可见度（用户 T19e 诉求口径，tokens.css §7 同型换色） */
 :root.liquid[data-lum="bright"] .sh-jobdock .job-card {
   background: linear-gradient(155deg,
     rgba(255,255,255,.78), rgba(255,255,255,.55));
   border-color: rgba(20,30,60,.12);
+  box-shadow: 0 6px 18px rgba(30,42,80,.16), 0 1px 3px rgba(30,42,80,.10),
+              inset 0 1px 0 rgba(255,255,255,.7);
+}
+:root.liquid[data-lum="bright"] .sh-jobdock .job-dock-mini {
+  box-shadow: 0 6px 16px rgba(30,42,80,.14), 0 1px 3px rgba(30,42,80,.08),
+              inset 0 1px 0 rgba(255,255,255,.6);
 }
 :root.liquid[data-lum="bright"] .sh-jobdock .job-bar {
   background: rgba(20,30,60,.12);
@@ -914,7 +1021,7 @@ html.liquid .sh-drawer {
    style.css:1478 #active-list 同款） */
 .vw-active { padding-bottom: calc(var(--job-dock-h, 0px) + 24px); }
 
-/* 移动端（<640）：让开悬浮底栏（底栏 bottom 12 + 高 60 + 间隙 12 = 84；
+/* 移动端（<640）：让开悬浮底栏（底栏 bottom 10 + 高 60 + 间隙 14 = 84；
    底栏定位见 §4 .sh-bottombar style.css:429-434 本文件） */
 @media (max-width: 639.98px) {
   .sh-jobdock {
@@ -922,3 +1029,9 @@ html.liquid .sh-drawer {
     bottom: calc(env(safe-area-inset-bottom) + 84px);
   }
 }
+
+/* 页面不可见（切后台/最小化）时冻结全部 CSS 动画：无限循环的脉冲、漂移、
+   indeterminate 在后台推进纯属浪费 GPU。router.js 监听 visibilitychange 挂
+   html.app-hidden；恢复可见即移除，动画从暂停处继续（不打乱进度）。
+   放在文件末尾，且用 !important 才能压过各组件自带的 animation 声明。 */
+html.app-hidden * { animation-play-state: paused !important; }

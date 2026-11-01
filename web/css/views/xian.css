@@ -8,7 +8,12 @@
 .xian-svg {
   display: block;
   overflow: visible;
-  /* 待机漂移是唯一允许的纯循环：6.5s、幅度 <1px，reduced-motion 归零 */
+}
+/* GPU 占用优化：待机漂移原先挂在 .xian-svg 上，等于登录徽标/侧栏/舞台里每个
+   实例都常驻一条无限动画（Adreno 上持续请求帧）。现在只给显式标记
+   .xian-live 的「活」实例保留 6.5s、幅度 <1px 的漂移；装饰性实例只画静态一帧。
+   reduced-motion 仍然归零。 */
+.xian-live .xian-svg {
   animation: xian-idle-drift var(--dur-xian-idle) var(--ease-standard) infinite;
 }
 

@@ -11,6 +11,7 @@ import {
   bankAngle, anticipationOffset, trailLength, receiverFeedback,
   stageItemState, queueRank, queueOrder, parseFloodWaitSeconds,
   formatStageSpeed, stagePhaseCopy, stageSlotModel,
+  formatDiskFree,
   createStage,
 } from "../../web/js/motion/stage.js";
 import { flapFrequency } from "../../web/js/motion/xian.js";
@@ -361,8 +362,13 @@ test("三档布局的 viewBox 与宿主宽高比一致（覆盖层百分比对�
 test("曲线按 8px 预采样且端点贴合误差 <0.5px", () => {
   const d = stageLayout({}).wires.srcTask;
   const pts = sampleCubicPath(d, 8);
-  assert.ok(pts.length > 8, "采样点数量");
-  assert.ok(Math.abs(pts[0].x - 210) < 0.51 && Math.abs(pts[0].y - 140) < 0.51);
+  assert.ok(pts.length >= 3, "采样点数量");
+  // 8px/点：相邻采样点的弦长不超过一个采样步长（短线也不该退化成两三个点）
+  for (let i = 1; i < pts.length; i++) {
+    assert.ok(Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y) <= 8.01,
+      "采样步长应 ≤8px");
+  }
+  assert.ok(Math.abs(pts[0].x - 220) < 0.51 && Math.abs(pts[0].y - 140) < 0.51);
   const last = pts[pts.length - 1];
   assert.ok(Math.abs(last.x - 250) < 0.51 && Math.abs(last.y - 100) < 0.51);
   assert.ok(pts.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.ang)));
@@ -474,5 +480,57 @@ test("8 路并发单帧耗时 < 4ms（Node 侧近似）", () => {
   for (let i = 0; i < 600; i++) api.tick();
   const cost = Number(process.hrtime.bigint() - t0) / 1e6 / 600;
   assert.ok(cost < 4, "单帧均值应 <4ms，实际 " + cost.toFixed(3) + "ms");
+  api.destroy();
+});
+
+test("保存位置显示剩余空间：读数格式化 + 磁盘节点子行/标题", () => {
+  assert.equal(formatDiskFree(0), "");
+  assert.equal(formatDiskFree(512 * 1024 * 1024), "512 MB");
+  assert.equal(formatDiskFree(3.5 * 1024 ** 3), "3.5 GB");
+  assert.equal(formatDiskFree(128 * 1024 ** 3), "128 GB");
+  assert.equal(formatDiskFree(2 * 1024 ** 4), "2.0 TB");
+  const { host, api } = stageFixture();
+  api.update(Object.assign(scene(), { disk: { free: 128 * 1024 ** 3, total: 512 * 1024 ** 3 } }));
+  const chips = host.querySelectorAll(".xian-stage-node-chip");
+  const disk = chips.find((c) => c.getAttribute("data-node") === "disk");
+  assert.ok(disk, "磁盘节点必须存在");
+  const sub = disk.querySelector(".xian-stage-node-sub");
+  assert.equal(sub.textContent, "剩余 128 GB");
+  assert.equal(disk.getAttribute("title"), "本地磁盘 · 剩余 128 GB（共 512 GB）");
+  api.destroy();
+});
+test("保存位置没读数时退回原本文案", () => {
+  const { host, api } = stageFixture();
+  api.update(scene());
+  const chips = host.querySelectorAll(".xian-stage-node-chip");
+  const disk = chips.find((c) => c.getAttribute("data-node") === "disk");
+  const sub = disk.querySelector(".xian-stage-node-sub");
+  assert.equal(sub.textContent, "保存位置");
+  api.destroy();
+});
+
+// 单条视频落地：任务还在下载时，完成数每多一条就补一次飞向磁盘的弦；
+// 首次进入/切任务不回放历史完成，任务整体完成仍走 done 计划。
+test("单条视频完成补飞磁盘，历史完成不回放", () => {
+  const { host, win, api } = stageFixture();
+  const items = (bDone) => [
+    { name: "a.mp4", status: "完成", pct: 100 },
+    { name: "b.mp4", status: bDone ? "完成" : "下载中", pct: bDone ? 100 : 30 },
+  ];
+  const first = api.update(scene({ items: items(false) }));
+  assert.doesNotMatch(first.flightKey, /^pulse:/, "首次进入不触发落地飞行");
+
+  const second = api.update(scene({ items: items(true) }));
+  assert.match(second.flightKey, /^pulse:/, "完成数增加 → 单条落地飞行");
+  assert.equal(second.busy, true);
+  const flightLayer = host.querySelectorAll(".xian-stage-flight")[0];
+  assert.equal(flightLayer.getAttribute("data-flight"), "forward");
+
+  win.step(0);                      // 第一帧：从磁盘线起点起飞
+  win.step(900);                    // 超过 flightDuration（720ms）→ 落点停住
+  assert.equal(flightLayer.getAttribute("data-flight"), "hold", "飞完停在磁盘");
+  const flier = host.querySelectorAll(".xian-stage-flier")[0];
+  const x = Number(/translate\(([0-9.]+)/.exec(flier.getAttribute("transform") || "")[1]);
+  assert.ok(x > 600, "落点应在右侧本地磁盘节点，实际 x=" + x);
   api.destroy();
 });

@@ -6346,8 +6346,11 @@ async def run_download_session(client, task, sess, *, gui=None,
                     k: t for k, t in sess.tasks.items() if not t.done()
                 }
                 # 队列暂时空了：工作任务全落定且消息也全部读取完才结束；
-                # 否则等 feeder 取下一批或有其他唤醒
-                if not sess.tasks and feeder_done:
+                # 否则等 feeder 取下一批或有其他唤醒。
+                # 还有「已暂停」条目时不得收场：会话一旦结束就会落终态墓碑、
+                # 3 秒后从「下载中」列表消失（用户实测「暂停一会就不在列表」），
+                # 且 Resume 需要 live 会话才走得通。留会话挂起等 wake。
+                if not sess.tasks and feeder_done and not sess.paused:
                     return
                 sess.wake.clear()
                 await sess.wake.wait()

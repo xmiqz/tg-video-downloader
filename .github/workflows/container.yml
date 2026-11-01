@@ -3,7 +3,7 @@ name: container
 on:
   push:
     tags:
-      - "v2.4*"
+      - "v2.*"
   workflow_dispatch:
   pull_request:
     paths:

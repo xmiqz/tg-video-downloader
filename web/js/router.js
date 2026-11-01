@@ -629,6 +629,33 @@ export async function boot() {
     else de.removeAttribute("data-lum");
     return true;
   }
+  // 壁纸换图后卡片材质会留下「第一帧」的合成接缝：backdrop-filter 的模糊面
+  // 仍按旧背景栅格化，卡片左缘会多出一条 10px 亮带，直到下一次重绘才消失
+  // （用户实测：刷新一下就没、重启又有）。这里在壁纸图解码完成后，用两帧
+  // 关掉玻璃模糊强制重栅格化，再把材质开回来——肉眼无感，接缝不残留。
+  function forceGlassRepaint() {
+    const de = doc.documentElement;
+    if (!de || !de.classList) return;
+    de.classList.add("mat-repaint");
+    const clear = function () { de.classList.remove("mat-repaint"); };
+    if (typeof win.requestAnimationFrame === "function") {
+      win.requestAnimationFrame(function () { win.requestAnimationFrame(clear); });
+    } else {
+      setTimeout(clear, 32);
+    }
+  }
+  function repaintAfterImage(url) {
+    if (!url) return;
+    try {
+      const img = new win.Image();
+      img.onload = forceGlassRepaint;
+      img.onerror = forceGlassRepaint;
+      img.src = url;
+      if (typeof img.decode === "function") {
+        img.decode().then(forceGlassRepaint, function () { forceGlassRepaint(); });
+      }
+    } catch (e) { forceGlassRepaint(); }
+  }
   win._setBackdrop = function (url, backendLum) {
     // A native liquid capture can arrive after the user has switched to the
     // daily-wallpaper theme. Never let that stale event replace the static
@@ -641,6 +668,7 @@ export async function boot() {
       return;
     }
     backdropEl.style.backgroundImage = url ? 'url("' + url + '")' : "";
+    if (isWallpaperAsset) repaintAfterImage(url);
     if (!url || !themeNeedsLum()) {
       doc.documentElement.removeAttribute("data-lum");
       lumLastUrl = "";
@@ -711,9 +739,11 @@ export async function boot() {
   const cs = win.CSS;
   const supportsBackdrop = !!(cs && (cs.supports("backdrop-filter", "blur(1px)") ||
     cs.supports("-webkit-backdrop-filter", "blur(1px)")));
-  const supportsFilter = !!(cs && cs.supports("filter", "url(#t8-lens)"));
   const forcedDegrade = /[?&#]v22degrade=1/.test(win.location.href);
-  const noLens = forcedDegrade || !supportsFilter;
+  // 底栏折射层 = 滚动内容快照 + feDisplacementMap。切视图时快照滞后，会把上一页
+  // 的文字残留在底栏里（用户实测「切换时出现别处文字」）；并且它是全栏滤镜面，
+  // 在 Adreno 上很吃 GPU。默认关闭折射，材质（底色/描边/高光/投影）保持不变。
+  const noLens = true;
   const noFrost = forcedDegrade || !supportsBackdrop;
   if (noLens) root.setAttribute("data-v22-nolens", "on");
   if (noFrost) root.setAttribute("data-v22-nofrost", "on");
@@ -752,6 +782,19 @@ export async function boot() {
       root.setAttribute("data-v22-kbd", kbdOn ? "on" : "off");
     });
   }
+
+  // —— 隐藏时暂停动画（GPU 占用优化）——
+  // 窗口切后台/最小化后，CSS 无限动画（脉冲、漂移、indeterminate）仍在推进，
+  // 属于纯浪费的合成开销。给 <html> 挂 app-hidden，shell.css 末尾统一
+  // animation-play-state: paused；恢复可见时移除，动画从原进度继续。
+  function syncAppHidden() {
+    const de = doc.documentElement;
+    if (de && de.classList) de.classList.toggle("app-hidden", !!doc.hidden);
+  }
+  if (typeof doc.addEventListener === "function") {
+    doc.addEventListener("visibilitychange", syncAppHidden);
+  }
+  syncAppHidden();
 
   // —— 折射层（滚动内容快照 + feDisplacementMap，自写实现）——
   const scrollEl = doc.getElementById("sh-scroll");

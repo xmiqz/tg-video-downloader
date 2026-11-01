@@ -129,9 +129,31 @@ export function overviewSubText(n) {
   return n + " 个任务下载中，按任务分组显示";
 }
 
+// 账号显示名（与 settings.nameOf 同口径）：@username → first_name/name → 主号/小号。
+function accountNameOf(a) {
+  if (!a) return "";
+  const me = a.me || {};
+  if (me.username) return "@" + me.username;
+  if (me.first_name || me.name) return me.first_name || me.name;
+  return a.id === "main" ? "主号（未获取资料）" : "小号（未获取资料）";
+}
+
+// 舞台上的账号池节点需要具体账号，不再只显示「账号池」三个字。
+function stageAccountsOf(list) {
+  const arr = Array.isArray(list) ? list : [];
+  const out = [];
+  for (let i = 0; i < arr.length; i++) {
+    const a = arr[i];
+    if (!a || !a.id) continue;
+    if (a.state === "absent") continue;              // 未登录的不上台面
+    out.push({ id: String(a.id), name: accountNameOf(a), state: String(a.state || "") });
+  }
+  return out;
+}
+
 // S12 舞台场景（T66）：active_states 快照 + acct_hint → stage.update 单帧输入。
 // 纯函数零 DOM；只读快照字段，不查询、不推算后端进度。
-export function buildStageScene(states, focusId, hint) {
+export function buildStageScene(states, focusId, hint, acctList) {
   const arr = Array.isArray(states) ? states : [];
   const oc = overviewAggregate(arr);
   const tasks = [];
@@ -210,6 +232,7 @@ export function buildStageScene(states, focusId, hint) {
     focusId: focus ? focus.task_id : "",
     operation: "download",
     countdown: countdown,
+    accounts: stageAccountsOf(acctList),
   };
 }
 
@@ -528,9 +551,13 @@ let rollSpeed = null;             // T64 总速度滚动器
 let rollEta = null;               // T64 剩余时间滚动器
 let stageApi = null;              // T66 舞台实例（onLeave 暂停共享 rAF）
 let stageFocusId = "";            // 舞台主任务（点队列条切换，不跳页）
+let stageDisk = null;             // 保存位置剩余空间 {free,total}（30s 缓存）
+let stageDiskAt = 0;              // 上次 disk_space 成功时刻
+const STAGE_DISK_TTL_MS = 30000;  // 磁盘读数节流：每次轮询都打 RPC 会白耗一帧
 let stageCollapsed = false;       // UI 偏好：localStorage 记忆，不写任务数据
 let stageFoldBtn = null;          // 展开/收起入口
 const deferTimers = new Set();    // 250/300/400ms 一次性补拉 timer（onLeave 全清）
+const collapsedGroups = new Set(); // 组折叠记忆（gid；组消失即清理）
 let offline = false;              // 断网 banner 态
 let hintText = "";                // acct_hint 限速提示行文案（空=不显示）
 let hintReason = "";              // T65 acct_hint 原始 reason（供弦状态映射）
@@ -794,6 +821,10 @@ function buildDom() {
   const bandCounts = el("span", { class: "ac-stage-counts", text: "" });
   const bandSpeed = el("span", { class: "ac-stage-speed", text: "—" });
   const bandEta = el("span", { class: "ac-stage-eta", text: "--" });
+  // 折叠舞台后多任务只剩一条聚合读数，看不出是哪几个任务：
+  // 折叠态在状态带内嵌一行「每任务一条」的读数（≤4 条 + 「另有 N 个」），
+  // 与底栏同一容器，不再另起一排胶囊。
+  const bandTasks = el("div", { class: "ac-band-tasks", hidden: true });
   stageFoldBtn = el("button", {
     class: "ac-stage-fold", type: "button", "aria-expanded": "true",
     text: "收起舞台", onclick: toggleStageFold,
@@ -811,6 +842,7 @@ function buildDom() {
       bandSpeed,
       bandEta,
       stageFoldBtn,
+      bandTasks,
     ]),
   ]);
 
@@ -948,7 +980,7 @@ function buildDom() {
     offlineBar: offlineBar, hintBar: hintBar, hintTextEl: hintTextEl,
     overview: overview, prog: prog, stagePanel: stagePanel, stageHost: stageHost,
     bandPhase: bandPhase, bandCountdown: bandCountdown, bandCounts: bandCounts,
-    bandSpeed: bandSpeed, bandEta: bandEta,
+    bandSpeed: bandSpeed, bandEta: bandEta, bandTasks: bandTasks,
     fetchBar: fetchBar, fetchText: fetchText,
     ptrBar: ptrBar, ptrText: ptrText,
     bulkBar: bulkBar, bulkCount: bulkCount, bulkBtns: bulkBtnEls,
@@ -1006,6 +1038,11 @@ function applyStageFold(on, persist) {
   }
   if (stageCollapsed) {
     if (stageApi) stageApi.pause();           // 收起即停共享 rAF，不空转
+    // 收起后仍要立刻刷新状态带（含「每任务胶囊」），但不重新驱舞台（避免 rAF 复启）
+    const scene = buildStageScene(lastStates, stageFocusId, hintReason, accounts);
+    if (scene.focusId) stageFocusId = scene.focusId;
+    if (stageDisk) scene.disk = stageDisk;
+    syncStageBand(scene);
   } else {
     refreshStage();
   }
@@ -1024,10 +1061,27 @@ function selectStageTask(tid) {
 // 把当前快照推给舞台并同步状态带（事件帧/轮询帧都只经这一条路）。
 function refreshStage() {
   if (!refs || !stageApi) return;
-  const scene = buildStageScene(lastStates, stageFocusId, hintReason);
+  const scene = buildStageScene(lastStates, stageFocusId, hintReason, accounts);
   if (scene.focusId) stageFocusId = scene.focusId;
+  if (stageDisk) scene.disk = stageDisk;
   stageApi.update(scene);
   syncStageBand(scene);
+}
+
+// 保存位置剩余空间：30s 节流；读不到就不显示（不阻塞刷新主链、不弹错）。
+async function refreshDiskSpace() {
+  const now = Date.now();
+  if (stageDisk && now - stageDiskAt < STAGE_DISK_TTL_MS) return;
+  try {
+    const info = await window.pywebview.api.disk_space();
+    const free = info && Number(info.free);
+    if (info && info.ok !== false && Number.isFinite(free) && free > 0) {
+      stageDisk = { free: free, total: Number(info.total) || 0 };
+      stageDiskAt = now;
+    }
+  } catch (e) {
+    // 磁盘读数失败只是少一行字，主链继续走。
+  }
 }
 
 function syncStageBand(scene) {
@@ -1052,6 +1106,54 @@ function syncStageBand(scene) {
     refs.bandCountdown.textContent = countdown > 0 ? "限流 " + countdown + "s" : "";
     refs.bandCountdown.hidden = countdown <= 0;
   }
+  // 折叠态：多任务时给「每任务一条」的胶囊，避免只剩一条聚合读数看不出是谁
+  if (refs.bandTasks) {
+    const tasks = Array.isArray(s.tasks) ? s.tasks : [];
+    const folded = stageCollapsed && tasks.length > 1;
+    refs.bandTasks.hidden = !folded;
+    if (folded) {
+      const pctOf = function (t) {
+        const total = Math.max(0, Number(t && t.task_total) || 0);
+        const done = Math.max(0, Number(t && t.task_finished) || 0);
+        return total > 0 ? Math.round(done * 100 / total) : 0;
+      };
+      // 窄屏一行只放得下两条：4 条会把任务名挤成「5…」；桌面留 4 条。
+      const limit = (typeof window !== "undefined" && Number(window.innerWidth) < 640) ? 2 : 4;
+      const key = limit + "|" + tasks.map(function (t) {
+        return String(t && t.task_id || "") + ":" + String(t && t.phase || "") + ":" + pctOf(t);
+      }).join("|");
+      if (refs.bandTasks.dataset.key !== key) {
+        refs.bandTasks.dataset.key = key;
+        refs.bandTasks.textContent = "";
+        const shown = tasks.slice(0, limit);
+        for (let i = 0; i < shown.length; i++) {
+          (function (t) {
+            const tid = String(t && t.task_id || "");
+            const label = stagePhaseCopy(t && t.phase, t);
+            const chip = el("button", {
+              class: "ac-band-task", type: "button",
+              dataset: { phase: String(t && t.phase || ""), tone: label.tone },
+              title: String(t && t.title || "") + " · " + label.label,
+            }, [
+              el("span", { class: "ac-band-task-name", text: String(t && t.title || "任务") }),
+              el("span", { class: "ac-band-task-pct", text: pctOf(t) + "%" }),
+              el("span", { class: "ac-band-task-ph", text: label.label }),
+            ]);
+            chip.addEventListener("click", function () { selectStageTask(tid); });
+            refs.bandTasks.appendChild(chip);
+          })(shown[i]);
+        }
+        if (tasks.length > shown.length) {
+          refs.bandTasks.appendChild(el("span", {
+            class: "ac-band-task-more",
+            text: "另有 " + (tasks.length - shown.length) + " 个",
+          }));
+        }
+      }
+    } else {
+      refs.bandTasks.dataset.key = "";
+    }
+  }
 }
 
 // ============================================================
@@ -1073,6 +1175,7 @@ async function refreshActive() {
     refreshBusy = false;
   }
   setOffline(false);
+  refreshDiskSpace();                       // 不 await：读盘慢也不拖主链，下一帧带上读数
   if (!Array.isArray(states)) states = [];
   lastStates = states;
 
@@ -1163,19 +1266,28 @@ function syncGroups(states) {
     // 组头（app.js:1327-1331；title/计数字段每拍同文不重写）
     setTextSafely(g.querySelector(".ac-gname"), s.title || "任务");
     setTextSafely(g.querySelector(".ac-gstat"), groupStatText(s));
+    // 「任务 N」只随条目数刷新；展开态由 aria-expanded 保留（不重建组头）
+    setTextSafely(g.querySelector(".ac-gfold"),
+      "任务 " + (Array.isArray(s.items) ? s.items.length : 0));
     // 轮询侧阶段位（无 index；事件侧 index 不被轮询覆盖）
     updateGroupPhaseEl(g, s.phase || "", s.phase_detail || "", null, null);
     // 恢复跳过按钮三态（app.js:1402-1428）
     updateGroupResumeSkip(g, s);
+    // 组级暂停/继续文案（全暂停 → 继续；有进行中 → 暂停）
+    syncGroupPause(g, s);
     // 卡片（app.js:1335）
     syncCards(g.querySelector(".ac-gbody"), s);
-    if (isNew) renderSegFor(gid, g);     // T52：新建组一次填入（含骨架组语义承接）
+    if (isNew) {
+      applyGroupFold(g);                 // 折叠记忆只在新建组时套用
+      renderSegFor(gid, g);              // T52：新建组一次填入（含骨架组语义承接）
+    }
   }
   // 掉组清理（app.js:1337-1339）
   for (const node of Array.from(refs.list.children)) {
     const gid2 = node.getAttribute("data-gid") || "";
     if (!live.has(gid2)) {
       destroySeg(gid2);
+      collapsedGroups.delete(gid2);      // 折叠记忆跟随组生命周期
       node.remove();
     }
   }
@@ -1201,11 +1313,28 @@ function buildGroup(gid) {
     text: "中止任务",                                                        // app.js:1322
     onclick: function (ev) { ev.stopPropagation(); askAbort(gid, [gAbort]); },
   });
+  // 组折叠（桌面 + 手机通用）：头部 chevron，收起的组隐藏卡片列表。
+  const gToggle = el("button", {
+    class: "ac-gtoggle", type: "button", "aria-expanded": "true", text: "▾",
+    "aria-label": "收起或展开该任务", title: "收起/展开该任务",
+    onclick: function (ev) { ev.stopPropagation(); toggleGroupFold(gid); },
+  });
+  // 任务级暂停/继续：整组按条目批量 item_action，不打断其它任务。
+  const gPause = el("button", {
+    class: "u-btn u-btn--ghost u-btn--md ac-gpause", type: "button",
+    text: "暂停", disabled: true,
+    onclick: function (ev) { ev.stopPropagation(); groupPauseToggle(gid, gPause); },
+  });
+  const gBody = el("div", { class: "ac-gbody" });
+  // 「任务 N」只作计数标签（组折叠入口在 gToggle；旧按钮的开关目标并不在 DOM 里）。
+  const gFold = el("span", { class: "ac-gfold", text: "任务 0" });
   const g = el("div", { class: "ac-group", dataset: { gid: gid } }, [
     el("div", { class: "ac-group-head" }, [
       el("div", { class: "ac-gtitle" }, [
+        gToggle,
         el("span", { class: "ac-gname", text: "" }),
         el("span", { class: "ac-gstat", text: "" }),
+        gFold,
       ]),
       el("span", { class: "ac-phase", dataset: { phase: "" } }, [
         el("span", { class: "ac-phase-dot", "aria-hidden": "true" }),
@@ -1213,11 +1342,99 @@ function buildGroup(gid) {
         el("span", { class: "ac-phase-idx", text: "", hidden: true }),
       ]),
       el("div", { class: "ac-acct", dataset: { acctTid: gid } }),
+      gPause,
       gAbort,
     ]),
-    el("div", { class: "ac-gbody" }),
+    gBody,
   ]);
   return g;
+}
+
+// ---- 组折叠 / 任务级暂停继续 ----
+function applyGroupFold(g) {
+  if (!g) return;
+  const gid = g.getAttribute("data-gid") || "";
+  const on = collapsedGroups.has(gid);
+  g.classList.toggle("is-collapsed", on);
+  const t = g.querySelector(".ac-gtoggle");
+  if (t) {
+    t.textContent = on ? "▸" : "▾";
+    t.setAttribute("aria-expanded", on ? "false" : "true");
+  }
+}
+
+function toggleGroupFold(gid) {
+  const g = groupByGid(gid);
+  if (!g) return;
+  if (collapsedGroups.has(gid)) collapsedGroups.delete(gid);
+  else collapsedGroups.add(gid);
+  applyGroupFold(g);
+}
+
+// 组级暂停/继续文案随快照切换：全暂停 → 「继续」；有进行中 → 「暂停」。
+function groupPauseState(s) {
+  const c = (s && s.counts) || {};
+  const paused = Number(c.paused) || 0;
+  const active = Number(c.active) || 0;
+  return {
+    mode: paused > 0 && active === 0 ? "resume" : "pause",
+    enabled: paused > 0 || active > 0,
+  };
+}
+
+function syncGroupPause(g, s) {
+  const btn = g && g.querySelector(".ac-gpause");
+  if (!btn || btn.dataset.busy === "1") return;      // 忙态由 PendingOps 接管
+  const st = groupPauseState(s);
+  const label = st.mode === "resume" ? "继续" : "暂停";
+  btn.dataset.mode = st.mode;
+  if (btn.textContent !== label) btn.textContent = label;
+  btn.disabled = !st.enabled;
+}
+
+function findGroupState(gid) {
+  for (let i = 0; i < lastStates.length; i++) {
+    if (String((lastStates[i] && lastStates[i].task_id) || "") === gid) return lastStates[i];
+  }
+  return null;
+}
+
+async function groupPauseToggle(gid, btn) {
+  const s = findGroupState(gid);
+  if (!s || !btn) return;
+  const st = groupPauseState(s);
+  const keys = [];
+  const items = Array.isArray(s.items) ? s.items : [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i] || {};
+    if (st.mode === "pause" && (it.status === "下载中" || it.status === "等待中")) {
+      keys.push({ src: it.src, mid: it.mid });
+    } else if (st.mode === "resume" && it.status === "已暂停") {
+      keys.push({ src: it.src, mid: it.mid });
+    }
+  }
+  if (!keys.length) return;
+  const key = "group:" + gid + ":" + st.mode;
+  if (pendingOps.has(key)) return;
+  pendingOps.pend(key, {
+    label: busyLabelFor(st.mode), busyText: busyLabelFor(st.mode), node: btn,
+    ctx: { tid: gid },
+  });
+  try {
+    const ready = await ensureApi();
+    if (!ready) throw new Error("bridge not ready");
+    const r = await window.pywebview.api.item_action(gid, st.mode, keys); // 同步直调
+    if (needLoginToasted(r)) { pendingOps.release(key); return; }
+    if (!r || !r.ok) {
+      pendingOps.release(key);
+      return showErr("任务操作失败", (r && r.error) || "操作未生效");
+    }
+    pendingOps.release(key);          // 组级操作不在卡片键的 reconcile 范围内
+    deferRefresh(250);
+  } catch (e) {
+    pendingOps.release(key);
+    return showErr("任务操作失败", e);
+  }
 }
 
 // 阶段位双更新（app.js:1238-1244 updateGroupPhase；text 全源、index 仅事件源）
@@ -1493,7 +1710,7 @@ function refreshStageFrom(patch) {
   for (let i = 0; i < base.length; i++) {
     if (base[i] && String(base[i].task_id) === String(patch.task_id)) base[i] = patch;
   }
-  const scene = buildStageScene(base, stageFocusId, hintReason);
+  const scene = buildStageScene(base, stageFocusId, hintReason, accounts);
   if (scene.focusId) stageFocusId = scene.focusId;
   stageApi.update(scene);
   syncStageBand(scene);
@@ -1841,6 +2058,8 @@ async function loadAccounts() {
   for (const node of refs.list.querySelectorAll(".ac-group")) {
     renderSegFor(node.getAttribute("data-gid") || "", node);
   }
+  // 账号列表通常晚于任务快照到达：补推一帧，舞台账号池节点立刻显示真实账号名。
+  if (stageApi) refreshStage();
 }
 
 function renderSegFor(gid, g) {

@@ -206,7 +206,15 @@
 }
 .ac-stage-fold:hover { border-color: var(--color-border-strong); color: var(--color-text); }
 
-/* 收起态：三段（阶段说明 / 限流倒计时 / 速度·剩余·计数 + 展开入口） */
+/* 收起态：三段（阶段说明 / 限流倒计时 / 速度·剩余·计数 + 展开入口），
+   多任务时第二行嵌「每任务一条」读数（同一底栏容器内，不另起胶囊排）。 */
+.ac-overview[data-folded="on"] .ac-stage-band {
+  min-height: 34px;
+  padding: 5px 12px;
+  flex-wrap: wrap;
+  row-gap: 0;
+  align-items: center;
+}
 .ac-overview[data-folded="on"] .ac-stage-prog,
 .ac-overview[data-folded="on"] .ac-stage-pct-wrap { display: none; }
 .ac-overview[data-folded="on"] .ac-stage-phase { display: block; order: -1; }
@@ -215,7 +223,74 @@
 .ac-overview[data-folded="on"] .ac-stage-speed { order: 3; }
 .ac-overview[data-folded="on"] .ac-stage-eta { order: 4; }
 .ac-overview[data-folded="on"] .ac-stage-fold { order: 5; }   /* 展开入口恒在最右 */
-.ac-overview[data-folded="on"] .ac-stage-band { min-height: 34px; padding: 4px 12px; }
+
+/* ---------- 3b. 折叠态任务读数（底栏第二行） ---------- */
+.ac-band-tasks {
+  flex: 1 1 100%;
+  order: 6;
+  position: relative;               /* 盖住「展开舞台」按钮下延的命中区，避免误触 */
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+  min-width: 0;
+  margin-top: 3px;
+  padding-top: 4px;
+  border-top: 1px solid var(--color-border);
+  overflow: hidden;
+}
+.ac-band-tasks[hidden] { display: none; }
+.ac-band-task {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: nowrap;
+  cursor: pointer;
+}
+/* 竖线细隔，不用胶囊底/描边：读数就长在底栏里 */
+.ac-band-task + .ac-band-task::before {
+  content: "";
+  flex: none;
+  align-self: center;
+  width: 1px;
+  height: 10px;
+  margin: 0 8px;
+  background: var(--color-border);
+}
+.ac-band-task-name {
+  max-width: 132px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+  font-weight: 600;
+}
+.ac-band-task-pct {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-strong);
+  font-weight: 700;
+}
+.ac-band-task-ph { font-size: 10.5px; color: var(--color-text-faint); }
+.ac-band-task[data-tone="live"] .ac-band-task-ph { color: var(--color-primary); }
+.ac-band-task[data-tone="warn"] .ac-band-task-ph { color: var(--color-warning); }
+.ac-band-task[data-tone="ok"] .ac-band-task-ph { color: var(--color-success); }
+.ac-band-task[data-tone="error"] .ac-band-task-ph { color: var(--color-danger); }
+.ac-band-task:hover .ac-band-task-name { text-decoration: underline; }
+.ac-band-task-more {
+  align-self: center;
+  margin-left: 8px;
+  color: var(--color-text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
 
 /* ---------- 4. fetching 同源抓取行（style.css:401-405 fetch-banner） ---------- */
 .ac-fetch {
@@ -397,7 +472,33 @@
 /* 组头选号宿主（.acct-seg-host 语义承接 app.js:1288/1321；内容为 u-seg） */
 .ac-acct { display: inline-flex; min-width: 0; }
 .ac-gresume,
+.ac-gpause,
 .ac-gabort { flex: none; }
+/* 组折叠入口：chevron 贴组名左侧；收起时卡面整列隐藏（状态仍随轮询更新） */
+.ac-gtoggle {
+  flex: none;
+  align-self: center;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ac-gtoggle:hover {
+  border-color: var(--color-border);
+  color: var(--color-text);
+}
+.ac-group.is-collapsed .ac-gbody { display: none; }
+/* 手机组头的「任务 N」折叠入口：桌面不出现（列表本来就完整可见） */
+.ac-gfold { display: none; }
 
 /* ---------- 8. 卡片（.dl-card style.css:407-470 承接） ---------- */
 .ac-gbody {
@@ -555,6 +656,13 @@
 .ac-action--danger { color: var(--color-danger-text); border-color: var(--color-danger); } /* style.css:667 */
 .ac-action.is-busy,
 .ac-action:disabled { opacity: .7; pointer-events: none; }  /* style.css:679 */
+/* 忙态只留转圈（桌面与手机一致）：pendBusyNode 会把按钮文案换成「移除中…」，
+   任何断点下图标位都装不下整句，字会顶出按钮/卡片（用户复测「移除字样又回来」）。 */
+.ac-action.is-busy {
+  padding: 0;
+  overflow: hidden;
+  font-size: 0;
+}
 .ac-action .ac-glyph { line-height: 1; }
 
 /* 进度条（.dl-bar/.dl-fill style.css:421-427 承接） */
@@ -724,4 +832,176 @@
 }
 @keyframes ac-spin {
   to { transform: rotate(360deg); }
+}
+
+/* ============================================================
+   14. 手机窄档（<640）：舞台优先 + 抽屉式任务（方案 C）
+   一屏目标：舞台 ≤50vh + 状态带 + 组头 + ≥2 张 88px 紧凑任务卡。
+   间距口径：行内 4/6、组内 8、区块 12；视觉控件压到 28/30，
+   命中区统一用 ::after 扩到 44（视觉小、可点区域不打折）。
+   本块必须放在文件末尾，才能覆盖上方的基础密度与 767.98 块。
+   ============================================================ */
+@media (max-width: 639.98px) {
+  .vw-active { padding-bottom: 0; }   /* 底部避让统一交给 .sh-scroll（去掉 120+54 双算） */
+
+  /* —— 页头 —— */
+  .ac-head { margin-bottom: 12px; }
+  .ac-head-main h2 {
+    font-size: 20px;
+    line-height: 1.3;
+    letter-spacing: .2px;
+  }
+  .ac-sub { margin-top: 4px; font-size: 11.5px; }
+  .ac-head-actions { gap: 6px; }
+  /* 页头按钮：视觉 30，命中区 44（上下各扩 7） */
+  .ac-head-actions .u-btn {
+    position: relative;
+    min-height: 30px;
+    padding: 0 10px;
+    font-size: 11.5px;
+  }
+  .ac-head-actions .u-btn::after {
+    content: "";
+    position: absolute;
+    inset: -7px 0;
+  }
+
+  /* —— 状态带 —— */
+  .ac-overview { gap: 6px; margin-bottom: 12px; }
+  .ac-stage-band {
+    flex-wrap: nowrap;                /* 34px 单行：不再让计数掉到第二行 */
+    min-height: 34px;
+    padding: 4px 8px;
+    gap: 6px;
+  }
+  .ac-stage-prog { flex: 0 0 96px; width: 96px; }
+  .ac-stage-counts { display: none; } /* 计数让位给「进度 + 速度 + 剩余」；详情在舞台里 */
+  /* 「收起舞台」：视觉 28，命中区 44 */
+  .ac-stage-fold {
+    position: relative;
+    min-height: 28px;
+    padding: 0 8px;
+    font-size: 10.5px;
+  }
+  .ac-stage-fold::after {
+    content: "";
+    position: absolute;
+    inset: -8px 0;
+  }
+
+  /* —— 组头 —— */
+  .ac-list { gap: 12px; }
+  .ac-group { gap: 8px; }
+  .ac-group-head {
+    padding: 4px 8px;
+    gap: 4px 6px;
+    border-radius: 12px;
+  }
+  .ac-gtitle { gap: 6px; }
+  .ac-gname { font-size: 13px; }
+  .ac-gstat { font-size: 11px; }
+  /* 组折叠 chevron：视觉 26，命中区 44 */
+  .ac-gtoggle {
+    position: relative;
+    width: 26px;
+    height: 26px;
+    margin-left: -6px;
+  }
+  .ac-gtoggle::after {
+    content: "";
+    position: absolute;
+    inset: -9px;
+  }
+  /* 分段控件与「中止」：视觉 30，命中区 44 */
+  .ac-group-head .u-seg-item,
+  .ac-group-head .u-btn {
+    position: relative;
+    min-height: 30px;
+    padding: 2px 10px;
+    font-size: 11px;
+  }
+  .ac-group-head .u-seg-item::after,
+  .ac-group-head .u-btn::after {
+    content: "";
+    position: absolute;
+    inset: -7px 0;
+  }
+  /* 「任务 N」折叠入口已取消（组列表不再裁切，按钮变成空操作） */
+  .ac-gfold { display: none; }
+
+  /* —— 任务组列表：不做高度裁切 ——
+     之前把 .ac-gbody 收到 184px + overflow:hidden，收起舞台后列表被切断且无法滚动
+     （用户实测「下面的列表展示不出来、不能滑动」）。这里恢复整列自然高度，交由
+     页面滚动承载；组内只留 8px 间距。 */
+  .ac-gbody {
+    gap: 8px;                        /* 组内 8 */
+  }
+
+  /* —— 任务卡：116 → 88 —— */
+  .ac-card {
+    position: relative;
+    min-height: 88px;
+    padding: 10px 12px;
+    gap: 0;
+  }
+  .ac-ctop {
+    flex-wrap: nowrap;               /* 标题与读数不折行，卡高稳定 */
+    gap: 6px;
+  }
+  .ac-cmain { flex: 1 1 auto; gap: 2px; }
+  .ac-cname { font-size: 13px; }
+  .ac-cmeta { gap: 6px; font-size: 11px; }
+  .ac-badge {
+    padding: 2px 6px;
+    font-size: 10px;
+  }
+  /* 动作位留在行内（不再绝对定位）：绝对定位会与徽标/标题互相压住 */
+  .ac-cactions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+  }
+  .ac-action {
+    position: relative;
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    font-size: 14px;
+  }
+  /* 忙态只留转圈：pendBusyNode 把按钮文案换成「移除中…」，30px 的图标位装不下
+     整句，字会顶出卡片右边（用户实测「移除中 布局不合理」）。 */
+  .ac-action.is-busy {
+    width: 30px;
+    min-width: 30px;
+    padding: 0;
+    overflow: hidden;
+    font-size: 0;
+  }
+  .ac-action::after {
+    content: "";
+    position: absolute;
+    inset: -7px;
+  }
+  .ac-cbar {
+    height: 4px;
+    margin-top: 6px;
+    margin-bottom: 4px;
+  }
+  .ac-cfoot {
+    margin-top: 4px;
+    gap: 6px;
+    font-size: 10.5px;
+  }
+}
+
+/* ---------- 15. 折叠态任务读数 · 手机档 ----------
+   手机底栏只有一行可用的横向空间：任务读数留在第二行，名称收窄、字号降一档。 */
+@media (max-width: 639.98px) {
+  .ac-overview[data-folded="on"] .ac-stage-band { padding: 4px 8px; }
+  .ac-band-tasks { margin-top: 2px; padding-top: 3px; }
+  .ac-band-task { font-size: 11px; }
+  .ac-band-task-name { max-width: 96px; }
+  .ac-band-task-ph { font-size: 10px; }
+  .ac-band-task + .ac-band-task::before { margin: 0 6px; }
 }
