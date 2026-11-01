@@ -23,6 +23,7 @@ const CSS = path.join(ROOT, "web", "css");
 const OWNED = [
   path.join(CSS, "ui.css"),
   path.join(CSS, "views", "active.css"),
+  path.join(CSS, "views", "stage.css"),
 ];
 
 function stripComments(css) {

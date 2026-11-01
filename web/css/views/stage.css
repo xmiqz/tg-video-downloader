@@ -1,0 +1,766 @@
+﻿/* ============================================================
+   stage.css — T66 下载链路舞台（FR-56）
+   1) SVG 只负责几何与飞行，文字/按钮全部由 HTML 覆盖层承载；
+   2) 面材与状态色一律走 tokens.css 语义键，不写死深色；
+   3) 时长/曲线走 --dur-* / --ease-*，无裸毫秒、无裸 cubic-bezier；
+   4) reduced-motion 与 .still 双路归零，终态保留。
+   ============================================================ */
+
+/* ---------- 1. 宿主与面板 ---------- */
+.ac-stage-host {
+  position: relative;
+  display: block;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  user-select: none;
+  content-visibility: auto;        /* 屏幕外不参与绘制（性能条款） */
+  contain-intrinsic-size: auto 307px;
+}
+/* 桌面三档：舞台高度跟视口收放，落在任务书各档区间
+   （1024→约 239、1280→约 259、1440→约 275、≥1920→约 307）。 */
+@media (min-width: 1024px) and (max-width: 1279.98px) {
+  .ac-stage-host { max-width: 590px; }
+}
+@media (min-width: 1280px) and (max-width: 1439.98px) {
+  .ac-stage-host { max-width: 640px; }
+}
+@media (min-width: 1440px) and (max-width: 1919.98px) {
+  .ac-stage-host { max-width: 680px; }
+}
+.ac-stage-host[data-stage-layout="tablet"] {
+  max-width: 720px;                /* 768×1024 → 高约 291（任务书 260–320） */
+  contain-intrinsic-size: auto 291px;
+}
+.ac-stage-host[data-stage-layout="compact"] {
+  max-width: 460px;
+  contain-intrinsic-size: auto 470px;
+}
+.ac-stage-host[data-stage-layout="mobile"] {
+  max-width: min(336px, 39vh);     /* 高 ≤60vh，超出的走内部滚动 */
+  contain-intrinsic-size: auto 512px;
+}
+.ac-gstage:empty { display: none; }
+
+.xian-stage-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 940 / 380;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ac-stage-host[data-stage-layout="compact"] .xian-stage-svg { aspect-ratio: 460 / 470; }
+.ac-stage-host[data-stage-layout="mobile"] .xian-stage-svg { aspect-ratio: 420 / 640; }
+.xian-stage-wire {
+  fill: none;
+  stroke: var(--color-border-strong);
+  stroke-width: 1.2;
+}
+.xian-stage-node rect {
+  fill: var(--color-surface-sunk);
+  stroke: var(--color-border);
+}
+/* 节点文字改由 HTML 气泡承载，SVG 只留几何 */
+.xian-stage-node text,
+.xian-stage-status { display: none; }
+
+/* ---------- 2. 节点气泡（HTML，不随 viewBox 缩放） ---------- */
+.xian-stage-node-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.xian-stage-node-chip {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 13px;
+  background: var(--color-surface-raise);
+  color: var(--color-text-muted);
+  font-size: 10px;
+  line-height: 1.2;
+  overflow: hidden;
+}
+.xian-stage-node-code {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-primary) 15%, transparent);
+  color: var(--color-primary);
+  font: 650 8px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.xian-stage-node-chip[data-node="acct"] .xian-stage-node-code {
+  background: color-mix(in srgb, var(--color-primary-strong) 15%, transparent);
+  color: var(--color-primary-strong);
+}
+.xian-stage-node-chip[data-node="disk"] .xian-stage-node-code,
+.xian-stage-node-chip[data-node="nas"] .xian-stage-node-code {
+  background: color-mix(in srgb, var(--color-success) 15%, transparent);
+  color: var(--color-success);
+}
+.xian-stage-node-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.xian-stage-band-status {
+  position: absolute;
+  left: 4.3%;
+  bottom: 6%;
+  z-index: 2;
+  max-width: 20%;
+  overflow: hidden;
+  color: var(--color-text-faint);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ac-stage-host[data-stage-layout="compact"] .xian-stage-band-status,
+.ac-stage-host[data-stage-layout="mobile"] .xian-stage-band-status {
+  display: none;
+}
+
+/* ---------- 3. 飞行层（共享同一 XIAN 工厂） ---------- */
+.xian-stage-flight { pointer-events: none; }
+.xian-stage-flier {
+  transform-origin: 0 0;
+  will-change: transform;
+}
+.xian-stage-flight .xian-svg {
+  width: 60px;
+  height: 60px;
+  overflow: visible;
+}
+.xian-stage-flight[data-flight="idle"] .xian-stage-flier,
+.xian-stage-flight[data-flight="hold"] .xian-stage-flier {
+  opacity: 0;
+}
+.ac-stage-host[data-stage-layout="compact"] .xian-stage-flight .xian-svg {
+  width: 44px;
+  height: 44px;
+}
+
+/* 阶段着色：只染数据线，不改节点形体 */
+.xian-stage-svg[data-phase="downloading"] .wire-srcTask,
+.xian-stage-svg[data-phase="downloading"] .wire-taskDisk,
+.xian-stage-svg[data-phase="fetching"] .wire-srcTask {
+  stroke: var(--color-primary);
+}
+.xian-stage-svg[data-phase="flood_wait"] .wire-acctTask {
+  stroke: var(--color-warning);
+}
+.xian-stage-svg[data-phase="error"] .wire-srcTask {
+  stroke: var(--color-danger);
+}
+
+/* ---------- 4. 视频块（展示上限：桌面 4、移动 2） ---------- */
+.xian-stage-cards {
+  flex: 1 1 auto;                  /* 高度由任务舱剩余空间决定，卡片不被切成半张 */
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 7px;
+  margin-top: 0;
+  pointer-events: none;
+}
+.xian-stage-card {
+  min-width: 0;
+  min-height: 0;
+  height: auto;
+  padding: 3px 6px 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-surface-raise);
+  font-size: 9.5px;
+  overflow: hidden;
+}
+.xian-stage-card[data-state="downloading"] { border-color: var(--color-primary); }
+.xian-stage-card[data-state="copying"],
+.xian-stage-card[data-state="done"] { border-color: var(--color-success); }
+.xian-stage-card[data-state="failed"] { border-color: var(--color-danger); }
+.xian-stage-card[data-state="floodwait"],
+.xian-stage-card[data-state="retrying"] { border-color: var(--color-warning); }
+.xian-stage-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  margin-bottom: 2px;
+}
+.xian-stage-card-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+  font-size: 9.5px;
+  font-weight: 600;
+}
+.xian-stage-card-state {
+  flex: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  padding: 0 5px;
+  color: var(--color-text-faint);
+  font-size: 7.5px;
+  line-height: 1.5;
+}
+.xian-stage-card[data-state="downloading"] .xian-stage-card-state {
+  color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+}
+.xian-stage-card[data-state="copying"] .xian-stage-card-state,
+.xian-stage-card[data-state="done"] .xian-stage-card-state {
+  color: var(--color-success);
+}
+.xian-stage-card[data-state="failed"] .xian-stage-card-state { color: var(--color-danger); }
+.xian-stage-card[data-state="floodwait"] .xian-stage-card-state,
+.xian-stage-card[data-state="retrying"] .xian-stage-card-state {
+  color: var(--color-warning);
+}
+.xian-stage-card-bar {
+  height: 3px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--color-border);
+}
+.xian-stage-card-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--color-primary), var(--color-success));
+}
+.xian-stage-card-meta {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-text-muted);
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.xian-stage-card-meta[data-has-error="on"] { color: var(--color-danger); }
+.xian-stage-more {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  border: 1px dashed var(--color-border);
+  border-radius: 9px;
+  color: var(--color-text-faint);
+  font-size: 8.5px;
+}
+
+/* ---------- 4b. 分片槽位（真实并发驱动，空闲槽不呼吸） ---------- */
+.xian-stage-slots {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+}
+.xian-stage-slots[hidden] { display: none; }
+.xian-stage-slot {
+  width: 22px;
+  height: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-border);
+}
+.xian-stage-slot[data-lit="on"] {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+.xian-stage-slot-more {
+  margin-left: 2px;
+  color: var(--color-text-faint);
+  font-size: 8.5px;
+  font-variant-numeric: tabular-nums;
+}
+.ac-stage-host[data-stage-layout="mobile"] .xian-stage-slot {
+  width: 32px;
+  height: 8px;
+}
+
+/* ---------- 5. 任务舱（桌面绝对覆盖 SVG 任务节点；紧凑/移动同舱） ---------- */
+.xian-stage-bay {
+  position: absolute;
+  z-index: 3;
+  left: 23%;
+  top: 7.4%;
+  width: 54.2%;
+  height: 84.2%;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 32%, transparent);
+  border-radius: 17px;
+  background: var(--color-surface-raise);
+  box-shadow: var(--shadow-3), inset 0 1px 0 var(--color-border);
+  overflow: hidden;
+}
+.ac-stage-host[data-stage-layout="compact"] .xian-stage-bay {
+  left: 2.2%;
+  top: 26.4%;
+  width: 95.6%;
+  height: 72.8%;
+  border-radius: 14px;
+  padding: 8px;
+}
+.ac-stage-host[data-stage-layout="mobile"] .xian-stage-bay {
+  left: 7.2%;
+  top: 32.8%;
+  width: 85.7%;
+  height: 30.6%;
+}
+.xian-stage-bay[hidden] { display: none; }
+.xian-stage-bay-head {
+  flex: none;
+  min-height: 29px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 3px 6px;
+  border-bottom: 1px solid var(--color-border);
+}
+.xian-stage-bay-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-text);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+.xian-stage-bay-count {
+  min-width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  color: var(--color-primary);
+  font: 600 9px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.xian-stage-bay-current {
+  overflow: hidden;
+  color: var(--color-text-faint);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.xian-stage-bay-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 9px;
+  padding: 3px 1px;
+}
+.xian-stage-bay[data-many="off"] .xian-stage-bay-body {
+  grid-template-columns: minmax(0, 1fr);
+}
+.xian-stage-bay[data-many="off"] .xian-stage-task-rail { display: none; }
+
+/* ---------- 6. 队列条（每条 30px，最多 3 条 + 「另有 N 条」） ---------- */
+.xian-stage-task-rail {
+  min-width: 0;
+  min-height: 0;                   /* 展开态不得撑出任务舱（滚动交给 task-list） */
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--color-border);
+  padding-right: 9px;
+}
+.xian-stage-bay[data-many="off"] .xian-stage-task-rail {
+  border-right: 0;
+  padding-right: 0;
+}
+.xian-stage-task-list {
+  position: static;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow-y: auto;
+  pointer-events: auto;
+  scrollbar-width: thin;
+}
+.xian-stage-task-list[hidden] { display: none; }
+.xian-stage-queue-more {
+  flex: none;
+  height: 24px;
+  border: 1px dashed var(--color-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-faint);
+  font: 600 8.5px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  cursor: pointer;
+}
+.xian-stage-queue-more:hover { border-color: var(--color-border-strong); }
+.xian-stage-task-item {
+  position: relative;
+  flex: none;
+  min-width: 0;
+  height: 28px;                    /* 任务书队列条 28–32 */
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  grid-template-rows: 16px 3px;
+  column-gap: 6px;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 4px 7px 4px 9px;
+  background: var(--color-surface-sunk);
+  color: var(--color-text-faint);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.xian-stage-task-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: var(--radius-pill);
+  background: transparent;
+}
+.xian-stage-task-item.is-active {
+  border-color: color-mix(in srgb, var(--color-primary) 30%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+}
+.xian-stage-task-item.is-active::before {
+  background: var(--color-primary);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--color-primary) 45%, transparent);
+}
+.xian-stage-task-item[data-phase="error"] {
+  border-color: color-mix(in srgb, var(--color-danger) 32%, transparent);
+}
+.xian-stage-task-item[data-phase="flood_wait"] {
+  border-color: color-mix(in srgb, var(--color-warning) 28%, transparent);
+}
+.xian-stage-task-index {
+  width: 19px;
+  height: 19px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  color: var(--color-text-faint);
+  font: 600 8px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.xian-stage-task-item.is-active .xian-stage-task-index {
+  background: color-mix(in srgb, var(--color-primary) 13%, transparent);
+  color: var(--color-primary);
+}
+.xian-stage-task-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 9.5px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.xian-stage-task-item.is-active .xian-stage-task-name { color: var(--color-text); }
+.xian-stage-task-state {
+  padding: 0 5px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  color: var(--color-text-faint);
+  font-size: 7px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.xian-stage-task-item[data-phase="downloading"] .xian-stage-task-state {
+  color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 28%, transparent);
+}
+.xian-stage-task-item[data-phase="error"] .xian-stage-task-state {
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 30%, transparent);
+}
+.xian-stage-task-item[data-phase="flood_wait"] .xian-stage-task-state {
+  color: var(--color-warning);
+  border-color: color-mix(in srgb, var(--color-warning) 28%, transparent);
+}
+.xian-stage-task-meta {
+  grid-column: 2 / 4;
+  display: none;
+}
+.xian-stage-task-bar {
+  grid-column: 2 / 4;
+  height: 3px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--color-border);
+}
+.xian-stage-task-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--color-primary), var(--color-success));
+}
+.xian-stage-task-item[data-phase="error"] .xian-stage-task-bar i {
+  background: var(--color-danger);
+}
+.xian-stage-task-item[data-phase="flood_wait"] .xian-stage-task-bar i {
+  background: var(--color-warning);
+}
+
+/* ---------- 7. 焦点工作台 ---------- */
+.xian-stage-workbench {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.xian-stage-workbench-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 18px;
+  margin-bottom: 5px;
+  color: var(--color-text-faint);
+  font-size: 8.5px;
+}
+.xian-stage-workbench-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.xian-stage-workbench-status {
+  flex: none;
+  overflow: hidden;
+  max-width: 58%;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.xian-stage-aggregate {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 25px;
+  margin-top: 7px;
+  border: 1px dashed var(--color-border);
+  border-radius: 8px;
+  padding: 3px 7px;
+  color: var(--color-text-faint);
+  font-size: 8px;
+}
+.xian-stage-agg-dots {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.xian-stage-agg-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.xian-stage-agg-dot::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 2px;
+  background: var(--color-text-faint);
+}
+.xian-stage-agg-dot.fail::before { background: var(--color-danger); }
+.xian-stage-agg-dot.wait::before,
+.xian-stage-agg-dot.paused::before { background: var(--color-warning); }
+.xian-stage-agg-dot.done::before,
+.xian-stage-agg-dot.exists::before { background: var(--color-success); }
+.xian-stage-agg-more {
+  flex: none;
+  color: var(--color-text-muted);
+  font: 600 8px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.xian-stage-bay-foot {
+  flex: none;
+  min-height: 31px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid var(--color-border);
+  padding: 5px 3px 0;
+  color: var(--color-text-faint);
+  font-size: 8.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 紧凑档（640–1023）：队列条折到舞台下方，横向可滑动 */
+.ac-stage-host[data-stage-layout="compact"] .xian-stage-bay-body {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+.ac-stage-host[data-stage-layout="compact"] .xian-stage-task-rail {
+  border-right: 0;
+  border-bottom: 1px solid var(--color-border);
+  padding-right: 0;
+  padding-bottom: 6px;
+}
+.ac-stage-host[data-stage-layout="compact"] .xian-stage-task-list {
+  flex-direction: row;
+  overflow-x: auto;
+  overflow-y: hidden;
+  gap: 6px;
+  -webkit-overflow-scrolling: touch;
+}
+.ac-stage-host[data-stage-layout="compact"] .xian-stage-task-item { min-width: 160px; }
+
+/* 1024–1279：队列条收窄 160（任务书 1024 行）；舱内固定行收紧，保证卡片整张可见 */
+@media (min-width: 1024px) and (max-width: 1279.98px) {
+  .ac-stage-host[data-stage-layout="desktop"] .xian-stage-bay-body {
+    grid-template-columns: 170px minmax(0, 1fr);
+  }
+  .ac-stage-host[data-stage-layout="desktop"] .xian-stage-workbench-head {
+    height: 15px;
+    margin-bottom: 3px;
+    font-size: 8px;
+  }
+  .ac-stage-host[data-stage-layout="desktop"] .xian-stage-slots { margin-top: 3px; }
+  .ac-stage-host[data-stage-layout="desktop"] .xian-stage-aggregate {
+    min-height: 20px;
+    margin-top: 4px;
+    padding: 2px 6px;
+    font-size: 8px;
+  }
+}
+
+/* 平板档（640–1023）：桌面三列几何 + 队列条折到任务舱底边，横向可滑动 */
+.ac-stage-host[data-stage-layout="tablet"] .xian-stage-bay-body {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+.ac-stage-host[data-stage-layout="tablet"] .xian-stage-task-rail {
+  order: 2;
+  border-right: 0;
+  border-top: 1px solid var(--color-border);
+  padding: 6px 0 0;
+}
+.ac-stage-host[data-stage-layout="tablet"] .xian-stage-task-list {
+  flex-direction: row;
+  overflow-x: auto;
+  overflow-y: hidden;
+  gap: 6px;
+  -webkit-overflow-scrolling: touch;
+}
+.ac-stage-host[data-stage-layout="tablet"] .xian-stage-task-item { min-width: 160px; }
+.ac-stage-host[data-stage-layout="tablet"] .xian-stage-slots { margin-top: 4px; }
+.ac-stage-host[data-stage-layout="tablet"] .xian-stage-aggregate {
+  min-height: 20px;
+  margin-top: 4px;
+  padding: 2px 6px;
+  font-size: 8px;
+}
+
+/* ---------- 8. 舱内分页器（未用：移动改横向胶囊） ---------- */
+.xian-stage-pager { display: none; }
+
+/* ---------- 9. 窄屏：队列改顶部横向胶囊 ---------- */
+@media (max-width: 767.98px) {
+  .xian-stage-node-chip { padding: 5px 7px; border-radius: 10px; font-size: 9px; }
+  .xian-stage-node-code { width: 18px; height: 18px; font-size: 7px; }
+  .xian-stage-bay { padding: 8px; border-radius: 13px; }
+  .xian-stage-bay-head { min-height: 24px; padding-bottom: 5px; }
+  .xian-stage-bay-title { font-size: 11px; }
+  .xian-stage-bay-current { font-size: 8.5px; }
+  .xian-stage-bay-body {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
+    padding-top: 2px;
+  }
+  /* 队列条转横向胶囊：可滑动，每条 30px 命中区 */
+  .xian-stage-task-rail {
+    display: flex;
+    border-right: 0;
+    padding-right: 0;
+    border-bottom: 1px solid var(--color-border);
+    padding-bottom: 5px;
+  }
+  .xian-stage-task-list {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    gap: 5px;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+  .xian-stage-task-item {
+    width: auto;
+    min-width: 132px;
+    grid-template-columns: 20px minmax(0, 1fr);
+    grid-template-rows: 16px 3px;
+  }
+  /* 触屏命中区 ≥44：视觉条 28px，命中区上下各扩 8px */
+  .xian-stage-task-item::after {
+    content: "";
+    position: absolute;
+    inset: -8px 0;
+  }
+  .xian-stage-task-state { display: none; }
+  .xian-stage-queue-more { height: 28px; white-space: nowrap; }
+  .xian-stage-workbench-head { height: 15px; margin-bottom: 3px; font-size: 8px; }
+  .xian-stage-workbench { overflow-y: auto; }        /* ≤60vh：舱内滚动，不丢卡片 */
+  .xian-stage-cards { flex: none; grid-auto-rows: 52px; grid-template-columns: minmax(0, 1fr); gap: 5px; }
+  .xian-stage-card { height: 52px; padding: 5px 7px; }
+  .xian-stage-card-name { font-size: 10px; }
+  .xian-stage-card-state { font-size: 8px; }
+  .xian-stage-card-meta { margin-top: 3px; font-size: 8.5px; }
+  .xian-stage-aggregate {
+    min-height: 21px;
+    margin-top: 4px;
+    padding: 2px 5px;
+    font-size: 7.5px;
+  }
+  .xian-stage-agg-dots { gap: 6px; }
+  .xian-stage-bay-foot { min-height: 23px; padding-top: 3px; font-size: 7.5px; }
+}
+
+/* ---------- 10. reduced-motion / .still：只停动，不丢终态 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .xian-stage-bay,
+  .xian-stage-task-item,
+  .xian-stage-card,
+  .xian-stage-card-bar i,
+  .xian-stage-node-chip,
+  .xian-stage-node-chip * { animation: none !important; transition: none !important; }
+}
+.still .xian-stage-bay,
+.still .xian-stage-task-item,
+.still .xian-stage-card,
+.still .xian-stage-card-bar i,
+.still .xian-stage-node-chip,
+.still .xian-stage-node-chip * {
+  animation: none !important;
+  transition: none !important;
+}

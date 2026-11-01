@@ -43,8 +43,10 @@ import {
 } from "../gestures.js";
 // T64 动效节拍（620ms 四段缓出数字滚动；reduced-motion 直跳终值）
 import { createRoller } from "../motion/calm.js";
-// T65 弦：下载中概览按真实任务快照映射九态
-import { mountXian, xianStateFor } from "../motion/xian.js";
+// T66 下载链路舞台（阶段动线 / 队列条 / 分片槽；只消费快照与事件）
+import {
+  createStage, stageItemState, stagePhaseCopy, parseFloodWaitSeconds,
+} from "../motion/stage.js";
 
 export const path = "active";
 
@@ -125,6 +127,90 @@ export function overviewDetailText(states) {
 // S3 标题副文案（app.js:1156-1157 逐字）
 export function overviewSubText(n) {
   return n + " 个任务下载中，按任务分组显示";
+}
+
+// S12 舞台场景（T66）：active_states 快照 + acct_hint → stage.update 单帧输入。
+// 纯函数零 DOM；只读快照字段，不查询、不推算后端进度。
+export function buildStageScene(states, focusId, hint) {
+  const arr = Array.isArray(states) ? states : [];
+  const oc = overviewAggregate(arr);
+  const tasks = [];
+  let focus = null;
+  const want = String(focusId || "");
+  for (let i = 0; i < arr.length; i++) {
+    const s = arr[i] || {};
+    const tid = String(s.task_id || "");
+    const counts = s.counts || {};
+    const items = Array.isArray(s.items) ? s.items : [];
+    const t = {
+      task_id: tid,
+      title: s.title || "",
+      phase: String(s.phase || ""),
+      parallel: Number(s.parallel) || 0,
+      task_total: Number(s.task_total) || 0,
+      task_finished: Number(s.task_finished) || 0,
+      counts: {
+        active: Number(counts.active) || 0,
+        fail: Number(counts.fail) || 0,
+        paused: Number(counts.paused) || 0,
+        skip: Number(counts.skip) || 0,
+        retrying: 0,
+      },
+      items: items,
+      phase_detail: s.phase_detail || "",
+      status_text: s.status_text || "",
+      countdown: s.countdown,
+    };
+    // 任务无独立 retrying 字段：按条目真实状态派生，供队列排序使用。
+    for (let j = 0; j < items.length; j++) {
+      if (stageItemState(items[j] && items[j].status) === "retrying") t.counts.retrying++;
+    }
+    tasks.push(t);
+    if (!focus && tid === want) focus = t;
+  }
+  if (!focus && tasks.length) {
+    // 焦点回落：优先下载中，其次首条；切走的任务消失时舞台不空转。
+    let live = -1;
+    for (let i = 0; i < tasks.length; i++) {
+      if (tasks[i].phase === "downloading") { live = i; break; }
+    }
+    focus = tasks[live >= 0 ? live : 0];
+  }
+  let phase = focus ? focus.phase : "";
+  let countdown = 0;
+  if (focus && phase === "flood_wait") countdown = parseFloodWaitSeconds(focus);
+  // acct_hint 先于快照到达时，按限流等待呈现，倒计时取快照 phase_detail 实数。
+  if (hint === "flood_wait" && (phase === "downloading" || phase === "fetching")) {
+    phase = "flood_wait";
+    countdown = parseFloodWaitSeconds(focus || {});
+  }
+  const items = focus ? focus.items : [];
+  let itemStatus = "";
+  if (items.length === 1) {
+    const only = stageItemState(items[0] && items[0].status);
+    if (only === "exists" || only === "skipped") itemStatus = only;
+  }
+  const LIVE = ["preparing", "disk_check", "reconciling", "fetching",
+    "downloading", "refreshing"];
+  return {
+    phase: phase,
+    itemStatus: itemStatus,
+    pct: oc.pct,
+    counts: {
+      done: oc.cc.done, active: oc.cc.active, fail: oc.cc.fail,
+      paused: oc.cc.paused, skip: oc.cc.skip,
+    },
+    taskTotal: focus ? focus.task_total : 0,
+    taskFinished: focus ? focus.task_finished : 0,
+    speed: oc.speed,
+    parallel: focus ? focus.parallel : 0,
+    busy: LIVE.indexOf(phase) >= 0,
+    items: items,
+    tasks: tasks,
+    focusId: focus ? focus.task_id : "",
+    operation: "download",
+    countdown: countdown,
+  };
 }
 
 // S3 组头计数（app.js:1328-1329 逐字）
@@ -440,7 +526,10 @@ let refreshBusy = false;          // refreshActive 防重入
 let rollPct = null;               // T64 总览百分比滚动器（mount 建）
 let rollSpeed = null;             // T64 总速度滚动器
 let rollEta = null;               // T64 剩余时间滚动器
-let ovXianApi = null;             // T65 概览弦实例（onLeave 归 idle 停拍）
+let stageApi = null;              // T66 舞台实例（onLeave 暂停共享 rAF）
+let stageFocusId = "";            // 舞台主任务（点队列条切换，不跳页）
+let stageCollapsed = false;       // UI 偏好：localStorage 记忆，不写任务数据
+let stageFoldBtn = null;          // 展开/收起入口
 const deferTimers = new Set();    // 250/300/400ms 一次性补拉 timer（onLeave 全清）
 let offline = false;              // 断网 banner 态
 let hintText = "";                // acct_hint 限速提示行文案（空=不显示）
@@ -575,7 +664,7 @@ export function onLeave() {
   if (rollPct) rollPct.stop();
   if (rollSpeed) rollSpeed.stop();
   if (rollEta) rollEta.stop();
-  if (ovXianApi) ovXianApi.setState("idle");   // ⑨弦归待机，停 rAF
+  if (stageApi) stageApi.pause();              // ⑨舞台停共享 rAF，保留宿主与已渲染 DOM
 }
 
 // ---- window 事件绑定/解绑（计数对称；onLeave 归零）----
@@ -602,6 +691,10 @@ function bindEvents() {
       if (document.hidden || pollBusy) return;
       pollBusy = true;
       pollOnce().catch(function () { }).finally(function () { pollBusy = false; });
+    }),
+    // T66：视口跨档时切舞台结构（不重建实例、不重放跃迁）
+    resize: addWin("resize", function () {
+      if (stageApi && typeof stageApi.setLayout === "function") stageApi.setLayout(stageLayoutFor());
     }),
   };
   // PTR（手机）：监听挂视图根节点（不污染 window；随 keep-alive 存续）
@@ -633,6 +726,7 @@ function unbindEvents() {
   delWin("online", bound.online);
   delWin("offline", bound.offline);
   delWin("visibilitychange", bound.vis);
+  delWin("resize", bound.resize);
   if (refs && refs.root) {
     refs.root.removeEventListener("touchstart", bound.touchStart);
     refs.root.removeEventListener("touchmove", bound.touchMove);
@@ -689,30 +783,36 @@ function buildDom() {
     }),
   ]);
 
-  // —— 概览面板（index.html:151-168 / app.js:1124-1157）——
+  // —— T66 舞台 + 状态带（三张统计卡取消，读数并入一行）——
+  // 默认展开、参与正常布局；手动收起后只留状态带，选择记在 localStorage。
+  const stageHost = el("div", { class: "ac-stage-host", "aria-label": "下载链路舞台" });
+  const stagePanel = el("div", { class: "ac-stage-panel" }, [stageHost]);
   const prog = createProgress({ determinate: true, value: 0 });
-  const ovPct = el("span", { class: "ac-ov-pct", text: "0%" });
-  const ovDetail = el("div", { class: "ac-ov-detail", text: "" });
-  const ovXian = el("div", { class: "ac-ov-xian xian-host", "aria-hidden": "true" });
-  const ovCard1 = el("div", { class: "ac-ov-card ac-ov-card--main" }, [
-    el("div", { class: "ac-ov-top" }, [
-      el("div", { class: "ac-ov-label", text: "总体进度" }),
-      ovXian,
+  const bandPct = el("span", { class: "ac-stage-pct", text: "0%" });
+  const bandPhase = el("span", { class: "ac-stage-phase", text: "暂无进行中任务" });
+  const bandCountdown = el("span", { class: "ac-stage-countdown", text: "" });
+  const bandCounts = el("span", { class: "ac-stage-counts", text: "" });
+  const bandSpeed = el("span", { class: "ac-stage-speed", text: "—" });
+  const bandEta = el("span", { class: "ac-stage-eta", text: "--" });
+  stageFoldBtn = el("button", {
+    class: "ac-stage-fold", type: "button", "aria-expanded": "true",
+    text: "收起舞台", onclick: toggleStageFold,
+  });
+  const overview = el("div", { class: "ac-overview", hidden: true }, [
+    stagePanel,
+    el("div", { class: "ac-stage-band" }, [
+      el("span", { class: "ac-stage-prog" }, [prog.el]),
+      el("span", { class: "ac-stage-pct-wrap" }, [
+        el("span", { class: "ac-stage-pct-label", text: "总体进度" }), bandPct,
+      ]),
+      bandPhase,
+      bandCountdown,
+      bandCounts,
+      bandSpeed,
+      bandEta,
+      stageFoldBtn,
     ]),
-    el("div", { class: "ac-ov-prog" }, [prog.el, ovPct]),
-    ovDetail,
   ]);
-  const ovSpeed = el("div", { class: "ac-ov-big", text: "0 B/s" });
-  const ovEta = el("div", { class: "ac-ov-big", text: "--" });
-  const ovCard2 = el("div", { class: "ac-ov-card" }, [
-    el("div", { class: "ac-ov-label", text: "总速度" }), ovSpeed,
-  ]);
-  const ovCard3 = el("div", { class: "ac-ov-card" }, [
-    el("div", { class: "ac-ov-label", text: "剩余时间" }), ovEta,
-  ]);
-  const overview = el("div", { class: "ac-overview", hidden: true }, [ovCard1, ovCard2, ovCard3]);
-  // T65 弦：概览 34px 同源 XIAN（状态只由真实快照驱动；构造失败只是不显示）
-  ovXianApi = mountXian(ovXian, { size: 34, state: "idle", decorative: true });
 
   // —— T64 总览读数滚动（620ms 四段缓出）——
   // 事件帧（1s 轮询 / 状态事件）只改目标值，不重启计时、不重建 DOM；
@@ -721,15 +821,15 @@ function buildDom() {
     ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
   rollPct = createRoller({
     from: 0, media: rmMedia,
-    update: function (v) { ovPct.textContent = Math.round(v) + "%"; },
+    update: function (v) { bandPct.textContent = Math.round(v) + "%"; },
   });
   rollSpeed = createRoller({
     from: 0, media: rmMedia,
-    update: function (v) { ovSpeed.textContent = humanSpeed(Math.max(0, v)); },
+    update: function (v) { bandSpeed.textContent = humanSpeed(Math.max(0, v)); },
   });
   rollEta = createRoller({
     from: 0, media: rmMedia,
-    update: function (v) { ovEta.textContent = humanSec(v); },
+    update: function (v) { bandEta.textContent = humanSec(v); },
   });
 
   // —— fetching 阶段同源抓取行（app.js:1138-1146 fetch-banner）——
@@ -846,14 +946,112 @@ function buildDom() {
     root: root, sub: sub, bulkHint: bulkHint,
     selectBtn: selectBtn, selAllBtn: selAllBtn,
     offlineBar: offlineBar, hintBar: hintBar, hintTextEl: hintTextEl,
-    overview: overview, prog: prog, ovPct: ovPct, ovDetail: ovDetail,
-    ovSpeed: ovSpeed, ovEta: ovEta,
+    overview: overview, prog: prog, stagePanel: stagePanel, stageHost: stageHost,
+    bandPhase: bandPhase, bandCountdown: bandCountdown, bandCounts: bandCounts,
+    bandSpeed: bandSpeed, bandEta: bandEta,
     fetchBar: fetchBar, fetchText: fetchText,
     ptrBar: ptrBar, ptrText: ptrText,
     bulkBar: bulkBar, bulkCount: bulkCount, bulkBtns: bulkBtnEls,
     list: list, empty: empty,
   };
+  // T66 舞台实例：只由 refreshStage 喂帧；onTaskSelect 切主任务（不跳页）
+  try {
+    stageApi = createStage(stageHost, Object.assign(stageLayoutFor(), {
+      doc: document, win: window, onTaskSelect: selectStageTask,
+    }));
+  } catch (e) {
+    stageApi = null;                          // 构造失败只是不显示舞台
+  }
+  applyStageFold(readStageFold(), false);
   return root;
+}
+
+// ============================================================
+// 七之二、T66 舞台：布局分档 / 折叠记忆 / 场景推送
+// ============================================================
+const STAGE_FOLD_KEY = "tgdl.active.stage.folded";
+
+// 分档只按视口宽度（结构档位），并发数交给场景里的 parallel 驱动槽位。
+// 640–1023 用 tablet：桌面三列几何 + 队列换行到舱内下方（舞台高落 260–320）。
+function stageLayoutFor() {
+  const w = (typeof window !== "undefined" && Number(window.innerWidth)) || 1024;
+  if (w < 640) return { mobile: true, compact: false, tablet: false, concurrency: 4 };
+  if (w < 1024) return { mobile: false, compact: false, tablet: true, concurrency: 4 };
+  return { mobile: false, compact: false, tablet: false, concurrency: 4 };
+}
+
+function readStageFold() {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem(STAGE_FOLD_KEY) === "1";
+  } catch (e) {
+    return false;                             // 隐私模式/禁用存储：默认展开
+  }
+}
+
+function writeStageFold(on) {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.setItem(STAGE_FOLD_KEY, on ? "1" : "0");
+  } catch (e) { /* 仅 UI 偏好，写不进不影响使用 */ }
+}
+
+function applyStageFold(on, persist) {
+  stageCollapsed = !!on;
+  if (refs && refs.overview) {
+    refs.overview.setAttribute("data-folded", stageCollapsed ? "on" : "off");
+  }
+  if (refs && refs.stagePanel) refs.stagePanel.hidden = stageCollapsed;
+  if (stageFoldBtn) {
+    stageFoldBtn.textContent = stageCollapsed ? "展开舞台" : "收起舞台";
+    stageFoldBtn.setAttribute("aria-expanded", stageCollapsed ? "false" : "true");
+  }
+  if (stageCollapsed) {
+    if (stageApi) stageApi.pause();           // 收起即停共享 rAF，不空转
+  } else {
+    refreshStage();
+  }
+  if (persist) writeStageFold(stageCollapsed);
+}
+
+function toggleStageFold() {
+  applyStageFold(!stageCollapsed, true);
+}
+
+function selectStageTask(tid) {
+  stageFocusId = String(tid || "");
+  refreshStage();                             // 只切焦点，不跳页、不重排舞台
+}
+
+// 把当前快照推给舞台并同步状态带（事件帧/轮询帧都只经这一条路）。
+function refreshStage() {
+  if (!refs || !stageApi) return;
+  const scene = buildStageScene(lastStates, stageFocusId, hintReason);
+  if (scene.focusId) stageFocusId = scene.focusId;
+  stageApi.update(scene);
+  syncStageBand(scene);
+}
+
+function syncStageBand(scene) {
+  if (!refs) return;
+  const s = scene || {};
+  const c = s.counts || {};
+  const copy = stagePhaseCopy(s.phase, s);
+  const countdown = Math.max(0, Number(s.countdown) || 0);
+  if (refs.bandCounts) {
+    refs.bandCounts.textContent = "完成 " + Math.max(0, Number(c.done) || 0) +
+      " · 跳过 " + Math.max(0, Number(c.skip) || 0) +
+      " · 失败 " + Math.max(0, Number(c.fail) || 0) +
+      " · 进行 " + Math.max(0, Number(c.active) || 0) +
+      " · 暂停 " + Math.max(0, Number(c.paused) || 0);
+  }
+  if (refs.bandPhase) {
+    refs.bandPhase.textContent = s.tasks && s.tasks.length
+      ? copy.label + " · " + copy.status
+      : "暂无进行中任务";
+  }
+  if (refs.bandCountdown) {
+    refs.bandCountdown.textContent = countdown > 0 ? "限流 " + countdown + "s" : "";
+    refs.bandCountdown.hidden = countdown <= 0;
+  }
 }
 
 // ============================================================
@@ -883,7 +1081,8 @@ async function refreshActive() {
 
   const running = states.length > 0;
   if (!running) {
-    if (ovXianApi) ovXianApi.setState("idle");
+    stageFocusId = "";
+    refreshStage();                         // 清舞台/状态带（无任务不产帧）
     // 空态收口（app.js:1112-1119）：清选择/隐藏概览与批量/清列表/显示空态
     selectionSetKeys([]);
     wrapSelClear(false);                    // app.js:1113 activeSel.clear()
@@ -915,11 +1114,11 @@ async function refreshActive() {
     rollEta.set(a.etaSec);
   } else {
     rollEta.stop();                       // speed 0 → "--"（app.js:1152-1153）
-    refs.ovEta.textContent = "--";
+    refs.bandEta.textContent = "--";
   }
-  refs.ovDetail.textContent = overviewDetailText(states);
   refs.sub.textContent = overviewSubText(states.length);
-  if (ovXianApi) ovXianApi.setState(xianStateFor(states, hintReason));
+  // T66：三张统计卡的读数并入状态带，舞台只由同一快照喂帧
+  refreshStage();
 
   // fetching 同源抓取行（app.js:1138-1146）
   refs.fetchBar.hidden = a.fetchDetails.length === 0;
@@ -1275,6 +1474,29 @@ function onDlPhaseEvent(ev) {
     g.classList.toggle("is-skeleton", false); // 轮询/后续事件补全后即非骨架
     updateGroupPhaseEl(g, c.phase, c.text, c.index, c.total);
   }
+  // 阶段事件先于下一拍轮询到达：直接用事件阶段推进舞台（不查询、不补播）
+  if (refs && stageApi && Array.isArray(lastStates)) {
+    const i = lastStates.findIndex(function (s) { return s && String(s.task_id) === String(detail.task_id); });
+    if (i >= 0 && c.phase) {
+      const copy = Object.assign({}, lastStates[i]);
+      copy.phase = c.phase;
+      copy.phase_detail = c.text || copy.phase_detail;
+      refreshStageFrom(copy);
+    }
+  }
+}
+
+// 用事件帧的临时快照替换同 task_id 后重推舞台，不写回 lastStates（轮询仍为准）。
+function refreshStageFrom(patch) {
+  if (!refs || !stageApi) return;
+  const base = Array.isArray(lastStates) ? lastStates.slice() : [];
+  for (let i = 0; i < base.length; i++) {
+    if (base[i] && String(base[i].task_id) === String(patch.task_id)) base[i] = patch;
+  }
+  const scene = buildStageScene(base, stageFocusId, hintReason);
+  if (scene.focusId) stageFocusId = scene.focusId;
+  stageApi.update(scene);
+  syncStageBand(scene);
 }
 
 function onJobUpdateEvent(ev) {
@@ -1294,6 +1516,7 @@ function onAcctHintEvent(ev) {
     ? "主号下载较慢（服务器限速）：任务可切换小号或保持自动分流"
     : "当前账号下载较慢（服务器限速），登录小号可自动分流提速";
   syncHintUI();
+  refreshStage();                             // 限流提示先到：舞台按 flood_wait 呈现
 }
 function syncHintUI() {
   if (!refs) return;

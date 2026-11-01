@@ -119,70 +119,103 @@
   cursor: pointer;
 }
 
-/* ---------- 3. 概览面板（style.css:380-397 .overview/.ov-* 承接） ---------- */
+/* ---------- 3. 舞台 + 状态带（T66：原三张统计卡取消，读数并作一行） ---------- */
 .ac-overview {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 14px;                     /* 2.1 .overview（style.css:380） */
-  margin-bottom: 20px;           /* 2.1 style.css:380 */
-}
-.ac-ov-card {
   display: flex;
   flex-direction: column;
-  gap: 0;                                /* 2.1 逐件 margin 承接（style.css:383/396） */
-  min-width: 0;
-  padding: 18px 20px;                    /* 2.1 .ov-card（style.css:381） */
-  border-radius: var(--radius-lg);
-  background: var(--glass-card-bg);
-  backdrop-filter: blur(var(--glass-card-blur)) saturate(var(--gl-sat));
-  -webkit-backdrop-filter: blur(var(--glass-card-blur)) saturate(var(--gl-sat));
-  border: 1px solid var(--glass-card-border);
-  box-shadow: var(--glass-card-shadow), var(--glass-card-hi);
+  gap: var(--space-2);
+  margin-bottom: 20px;           /* 2.1 style.css:380 */
 }
-.ac-ov-label {
-  font-size: 12px;               /* 2.1 .ov-label（style.css:383） */
-  margin-bottom: 12px;           /* 2.1 style.css:383 */
-  color: var(--color-text-faint);
-  letter-spacing: .4px;          /* 旧壳 .ov-label 字距（style.css:383） */
-}
-.ac-ov-top {
+.ac-overview[hidden] { display: none; }
+.ac-stage-panel { min-width: 0; }
+.ac-stage-panel[hidden] { display: none; }
+.ac-stage-panel .ac-stage-host { margin: 0 auto; }
+
+/* 状态带：左进度条（180–220）→ 进度/计数 → | 速度 | 剩余 → 折叠入口 */
+.ac-stage-band {
   display: flex;
   align-items: center;
-  justify-content: space-between;   /* T65 弦：标签左、弦右 */
-  gap: var(--space-3);
-}
-.ac-ov-top .ac-ov-label { margin-bottom: 0; }
-.ac-ov-xian {
-  flex: none;
-  width: 34px;                     /* 与 mountXian size 一致 */
-  height: 34px;
-}
-.ac-ov-prog {
-  display: flex;
-  align-items: center;
-  gap: 13px;                     /* 2.1 .ov-progress（style.css:384） */
-  min-width: 0;
-}
-.ac-ov-pct {
-  flex: none;
-  font-weight: 700;
-  font-size: 14px;               /* 2.1 .ov-pct（style.css:395） */
-  color: var(--color-text);
-  font-variant-numeric: tabular-nums;
-}
-.ac-ov-detail {
-  font-size: 12px;               /* 2.1 .ov-detail（style.css:396） */
-  margin-top: 12px;              /* 2.1 style.css:396 */
+  gap: var(--space-2);
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raise);
   color: var(--color-text-muted);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
+  overflow: hidden;
 }
-.ac-ov-big {
-  font-size: 24px;               /* 2.1 .ov-big（style.css:397） */
-  font-weight: 700;
+.ac-stage-prog {
+  flex: 0 0 180px;               /* 任务书：宽 180–220 */
+  width: 180px;
+  min-width: 0;
+}
+.ac-stage-pct-wrap {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.ac-stage-pct-label { color: var(--color-text-faint); }
+.ac-stage-pct { color: var(--color-text); font-weight: 700; }
+.ac-stage-counts {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1 1 auto;
+  color: var(--color-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ac-stage-speed,
+.ac-stage-eta {
+  flex: none;
+  padding-left: var(--space-2);
+  border-left: 1px solid var(--color-border);
   color: var(--color-text);
-  letter-spacing: .3px;          /* 旧壳字距（style.css:397） */
-  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
+.ac-stage-eta { color: var(--color-text-muted); }
+.ac-stage-countdown {
+  display: none;
+  flex: none;
+  color: var(--color-warning);
+  white-space: nowrap;
+}
+.ac-stage-countdown[hidden] { display: none; }
+.ac-stage-phase {
+  display: none;
+  min-width: 0;
+  overflow: hidden;
+  flex: 1 1 auto;
+  color: var(--color-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ac-stage-fold {
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.ac-stage-fold:hover { border-color: var(--color-border-strong); color: var(--color-text); }
+
+/* 收起态：三段（阶段说明 / 限流倒计时 / 速度·剩余·计数 + 展开入口） */
+.ac-overview[data-folded="on"] .ac-stage-prog,
+.ac-overview[data-folded="on"] .ac-stage-pct-wrap { display: none; }
+.ac-overview[data-folded="on"] .ac-stage-phase { display: block; order: -1; }
+.ac-overview[data-folded="on"] .ac-stage-countdown { display: block; order: 0; }
+.ac-overview[data-folded="on"] .ac-stage-counts { flex: none; order: 2; }
+.ac-overview[data-folded="on"] .ac-stage-speed { order: 3; }
+.ac-overview[data-folded="on"] .ac-stage-eta { order: 4; }
+.ac-overview[data-folded="on"] .ac-stage-fold { order: 5; }   /* 展开入口恒在最右 */
+.ac-overview[data-folded="on"] .ac-stage-band { min-height: 34px; padding: 4px 12px; }
 
 /* ---------- 4. fetching 同源抓取行（style.css:401-405 fetch-banner） ---------- */
 .ac-fetch {
@@ -246,6 +279,16 @@
 }
 @media (max-width: 767.98px) {
   .ac-bulk { display: none; }   /* 手机侧唯一动作面=底部条（响应式双形态） */
+  /* T66 状态带窄屏：进度条收窄，计数整行省略，命中区 ≥44 */
+  .ac-stage-band {
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 11px;
+  }
+  .ac-stage-prog { flex: 1 1 120px; width: 120px; }
+  .ac-stage-pct-label { display: none; }
+  .ac-stage-counts { flex: 1 1 100%; order: 5; }
+  .ac-stage-fold { min-height: 44px; padding: 0 12px; }
 }
 
 /* ---------- 7. 任务组（style.css:446-458 .dl-group 承接） ---------- */
@@ -613,11 +656,6 @@
    —— 概览三列（跨 2 总进度卡）、组头单行、卡片紧凑行表格化密度
    ============================================================ */
 @media (min-width: 768px) {
-  .ac-overview {
-    grid-template-columns: repeat(4, 1fr);   /* 2.1 4 列 3 卡（style.css:380）：主卡 span2 + 速度 + 剩余 */
-    gap: 14px;                     /* 2.1 style.css:380 */
-  }
-  .ac-ov-card--main { grid-column: span 2; }            /* 旧壳 .span2（style.css:382） */
   .ac-gtitle { flex: 1 1 auto; }                        /* 组头单行化：标题不再整行独占 */
   .ac-group-head { flex-wrap: nowrap; }
   .ac-gresume,
