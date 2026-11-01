@@ -454,11 +454,19 @@
 
 /* ≥1024（桌面/大屏）：结果页取消 760px 固定窄带，保持单列、每行铺满可用宽度
    （不切多列卡片），名称/拟命名/摘要随行宽显示更多内容，右侧标签贴容器右缘。
+   结果区高度锁进视口：列表吃掉进度/工具条与底部按钮之间的剩余空间，不再用固定
+   52vh 留死空白，首屏可多渲染若干行；底部「上一步/开始下载」紧贴列表。
    用 :has 只放宽含结果列表的向导（步骤 1 条件卡保持 680—760 原宽）。
    <1024 全部断点与单列形态零改动；卡片内跑马/行距沿用 §7 原值。 */
 @media (min-width: 1024px) {
-  .nw-wiz:has(.nw-list) { max-width: none; }
-  .nw-list { max-height: 52vh; }   /* 单列内滚（44vh→52vh：900p 首屏多显示 1 行） */
+  /* .sh-scroll 上下 padding 14px×2，视图高度正好等于可视区，避免外层滚动 */
+  .vw-new:has(.nw-list) { height: calc(100vh - 28px); min-height: 0; }
+  .nw-wiz:has(.nw-list) { flex: 1 1 auto; min-height: 0; max-width: none; }
+  .nw-list {
+    flex: 1 1 auto;              /* 单列内滚，吃满剩余高度 */
+    min-height: 0;
+    max-height: none;
+  }
   .nw-row {
     /* ≥768 的 4 列模板末列无对应子元素（现 DOM 为 勾选|信息|体积来源 三段），
        改 3 列让信息列吃满行宽 */
