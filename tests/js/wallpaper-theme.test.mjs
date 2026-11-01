@@ -37,16 +37,23 @@ test("wallpaper scrim stays light instead of dimming the photo", async () => {
   }
 });
 
-test("wallpaper panels keep a frosted-glass backdrop", async () => {
+test("wallpaper panels stay glass-tinted but never sample-blur", async () => {
   const shell = await css("shell.css");
   const i = shell.indexOf('html[data-theme="wallpaper"] .sh-side,');
   assert.ok(i > 0, "缺少壁纸玻璃材质规则");
   const block = shell.slice(i, shell.indexOf("}", i) + 1);
 
-  assert.match(block, /backdrop-filter:\s*blur\(/,
-    "壁纸主题下的卡片必须有 backdrop-filter 玻璃质感");
+  // v2.5.0 正式版裁决：壁纸档不做实时取景模糊（blur 会把卡外亮部拉进边缘，
+  // 形成用户反复点名的左缘高光条），玻璃染色保留 saturate/contrast。
+  assert.match(block, /backdrop-filter:\s*saturate\(/,
+    "壁纸主题下的卡片应保留 saturate/contrast 玻璃染色");
+  assert.ok(!/backdrop-filter:\s*blur\(/.test(block),
+    "壁纸主题不得取景模糊（会在卡缘拉出高光条）");
   assert.ok(!/backdrop-filter:\s*none/.test(block),
-    "壁纸主题不应禁用 backdrop-filter");
+    "壁纸主题不应完全禁用玻璃面");
+  // 壁纸层必须保持清晰：任何 #sh-backdrop 上都不许再挂 filter blur。
+  assert.ok(!/html\[data-theme="wallpaper"\]\s*#sh-backdrop\s*\{\s*filter:\s*blur/.test(shell),
+    "壁纸底层不得整层模糊");
   // The liquid block that kills backdrop-filter must not cover the wallpaper
   // selectors, otherwise the frosted panels silently lose their blur.
   const liquidBlock = rule(shell, "html.liquid .sh-side, html.liquid .sh-bar-mat, html.liquid .sh-drawer,\nhtml.liquid .v22-ph-card, html.liquid .u-card, html.liquid .u-actionbar,\nhtml.liquid .u-overlay-mask, html.liquid .ac-ov-card, html.liquid .ac-bulk,\nhtml.liquid .ac-group, html.liquid .ac-card, html.liquid .tk-card,\nhtml.liquid .ev-move-mask");
