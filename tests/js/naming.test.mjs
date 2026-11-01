@@ -117,7 +117,8 @@ test("new-task page moved the naming block above the result list", () => {
   assert.ok(!js.includes("refs.nameWide"), "条件区引用未清理");
   const toolbarAt = js.indexOf('class: "nw-toolbar"');
   const namingAt = js.indexOf("namingBar.el");
-  const listAt = js.indexOf("\n    list,\n");
+  // Windows CI 的 checkout 默认 CRLF：按行匹配时不能写死裸 \n。
+  const listAt = js.search(/\r?\n    list,\r?\n/);
   assert.ok(toolbarAt >= 0 && namingAt > toolbarAt, "命名块必须位于工具条之后");
   assert.ok(listAt > namingAt, "命名块必须位于结果列表之前");
   assert.ok(js.includes("createNamingBar"), "必须消费共用命名组件");

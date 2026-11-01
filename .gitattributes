@@ -1,0 +1,10 @@
+# Windows CI checkout defaults to CRLF, which breaks tests that compare source
+# offsets / literal "\n" sequences (naming.test.mjs, wallpaper-theme.test.mjs).
+# Pin the source tree to LF so CI and local parity is exact.
+web/** text eol=lf
+tests/** text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
