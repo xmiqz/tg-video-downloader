@@ -271,9 +271,12 @@
 
 /* ============ 5. 降级（FR-22 / NFR-8） ============ */
 
-/* 5.1 减弱动效：时长归零、缓动线性 */
+/* 5.1 减弱动效：时长归零、缓动线性
+   T68 修：选择器须与 1.x/2.x/3.x 的 `:root, :root[data-theme="light"]` 同特异性（0,2,0），
+   否则显式主题（index.html 启动即写 data-theme="light"，router 写 light/dark/wallpaper）
+   会把本块的归零压掉，system 减弱动效在显式主题下失效。 */
 @media (prefers-reduced-motion: reduce) {
-  :root {
+  :root, :root[data-theme] {
     --dur-xs: 0ms; --dur-sm: 0ms; --dur-md: 0ms; --dur-lg: 0ms;
     --dur-count: 0ms; --dur-flash: 0ms; --dur-toast-out: 0ms;
     --dur-progress: 0ms; --dur-indet: 0ms; --dur-ambient: 0ms;
@@ -290,7 +293,8 @@
    无滤镜时背后内容直接透出不可读；现统一为不透明实色 --raw-solid，
    浅色=白、深色=暗实面板；blur 原料归零杜绝残留滤镜计算。） */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  :root {
+  /* T68 修：同 5.1，改用 `:root[data-theme]` 与显式主题块同特异性，后置胜出 */
+  :root, :root[data-theme] {
     --gl-blur-l: 0; --gl-blur-m: 0; --gl-blur-s: 0;
     --glass-card-bg: var(--raw-solid);
     --glass-nav-bg: var(--raw-solid);
@@ -300,7 +304,9 @@
 
 /* 5.3 低端/小屏：降模糊、减叠层、去重阴影（中端手机帧率） */
 @media (max-width: 640px) {
-  :root {
+  /* T68 修：与浅色主题块同特异性（本块含浅色玻璃原色，不能对深色生效），
+     显式浅色下小屏也能降模糊 */
+  :root, :root[data-theme="light"] {
     --gl-blur-l: 20px; --gl-blur-m: 14px; --gl-blur-s: 8px;
     --gl-g-a: rgba(255,255,255,.85); --gl-g-b: rgba(255,255,255,.68);
     --gl-g-c: rgba(255,255,255,.55);
