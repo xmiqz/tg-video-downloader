@@ -18,10 +18,12 @@ body {
 
 .setup-shell {
   min-height: 100vh;
-  display: flex;
-  flex-direction: column;
+  /* 两行网格：首行吃掉剩余高度并把卡片垂直居中，末行放页脚，永远贴页面底部 */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 1fr auto;
+  justify-items: center;
   align-items: center;
-  justify-content: center;
   gap: 14px;
   padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
 }
