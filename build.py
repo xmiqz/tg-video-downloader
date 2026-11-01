@@ -11,8 +11,10 @@ TG视频下载器 —— 跨平台一键打包脚本（PyInstaller）
 用法：
   python build.py [输出目录]
 """
+import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -36,8 +38,13 @@ os.environ["PYTHONIOENCODING"] = "utf-8"
 
 
 def is_arm64_windows():
-    return (platform.system() == "Windows"
-            and platform.machine().lower() in ("arm64", "aarch64"))
+    if platform.system() != "Windows":
+        return False
+    # platform.machine() 在 x64 模拟层会误报成物理 CPU 的 ARM64，
+    # 于是用 x64 解释器打出来的包也会叫「_ARM64」。改看解释器自身的平台串
+    # （win-arm64 / win-amd64），它随解释器架构走，模拟层下也准确。
+    import sysconfig
+    return "arm64" in sysconfig.get_platform().lower()
 
 
 def _write_stdio_runtime_hook():
@@ -52,21 +59,97 @@ def _write_stdio_runtime_hook():
 
     失效条件：uvicorn 上游对 None stdout 加防护，或 PyInstaller windowed 模式
     提供默认 stdout 后，可连同 --runtime-hook 一并移除。
+
+    同一 hook 还负责把 SSL_CERT_FILE 指向随包 cacert.pem。冻结态的 OpenSSL
+    找不到构建机的默认证书路径，ssl.create_default_context() 直接抛
+    FileNotFoundError——桌面端「每日壁纸」同步就是这样失败的（源码态正常，
+    只有打包后才复现）。
     """
     os.makedirs(WORK, exist_ok=True)
     hook = os.path.join(WORK, "rthook_stdio.py")
     with open(hook, "w", encoding="utf-8") as f:
         f.write(
-            "# PyInstaller runtime hook: windowed mode has no console streams\n"
+            "# PyInstaller runtime hook: console streams + CA bundle\n"
             "import os\n"
             "import sys\n"
             "for _name in ('stdout', 'stderr'):\n"
-            "    if getattr(sys, _name) is None:\n"
+            "    _stream = getattr(sys, _name, None)\n"
+            "    _broken = _stream is None\n"
+            "    if not _broken:\n"
+            "        try:\n"
+            "            _stream.flush()\n"
+            "        except (OSError, ValueError, AttributeError):\n"
+            "            _broken = True\n"
+            "    if _broken:\n"
             "        setattr(sys, _name,\n"
             "                open(os.devnull, 'w', encoding='utf-8'))\n"
+            "del _stream, _broken\n"
             "del _name\n"
+            "_base = getattr(sys, '_MEIPASS', None)\n"
+            "if _base:\n"
+            "    _ca = os.path.join(_base, 'certifi', 'cacert.pem')\n"
+            "    if os.path.isfile(_ca):\n"
+            "        os.environ['SSL_CERT_FILE'] = _ca\n"
+            "        os.environ.setdefault('REQUESTS_CA_BUNDLE', _ca)\n"
+            "del _base\n"
         )
     return hook
+
+
+def _ssl_reject_pem():
+    """Return the ``codex-rejected-cas.pem`` shipped beside this ssl.py, if any.
+
+    The Codex runtime patches ssl.SSLContext.__new__ to unconditionally
+    ``load_verify_locations(cafile=os.path.join(os.path.dirname(ssl.__file__),
+    'codex-rejected-cas.pem'))``. Once frozen, ssl.__file__ lives inside
+    _MEIPASS and that file is absent, so *every* SSLContext construction raises
+    FileNotFoundError - which is exactly why the packaged desktop build could
+    not fetch the daily wallpaper while the source tree could.
+
+    Stock CPython has no such file, so this returns None there and the build is
+    unchanged.
+    """
+    try:
+        import ssl
+    except Exception:
+        return None
+    cand = os.path.join(os.path.dirname(ssl.__file__ or ""), "codex-rejected-cas.pem")
+    return cand if os.path.isfile(cand) else None
+
+
+def _ssl_data_args():
+    pem = _ssl_reject_pem()
+    return ["--add-data", pem + os.pathsep + "."] if pem else []
+
+
+def _project_version():
+    """发布版本：优先 TGDL_VERSION，其次 CHANGELOG 最新条目标题，最后 dev。"""
+    env = os.environ.get("TGDL_VERSION", "").strip()
+    if env:
+        return env
+    try:
+        with open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r"##\s*\[([^\]]+)\]", line)
+                if m and re.match(r"\d", m.group(1)):
+                    return "v" + m.group(1)
+    except OSError:
+        pass
+    return "dev"
+
+
+def _write_version_stamp():
+    """桌面包没有 Docker 的 TGDL_VERSION 注入，把版本写进 assets/version.json
+    随包带走；server_config.build_info() 在冻结态读它，登录页页脚才有版本号。"""
+    path = os.path.join(WORK, "assets", "version.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    data = {
+        "version": _project_version(),
+        "build": os.environ.get("TGDL_BUILD", "").strip()[:7],
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    return path
 
 
 def build_windows_gui(dist):
@@ -83,9 +166,21 @@ def build_windows_gui(dist):
         # onefile 解包后 wv2_app 按相对路径找 lib/<arch>/WebView2Loader.dll，
         # 两个架构的 loader 都随包带上（每个约 0.2MB，壳按架构选用）
         "--add-data", os.path.join(lib_dir, "*") + os.pathsep + "lib",
+        # gui._choose_folder_win compiles folderpicker.cs at runtime with the
+        # system .NET compiler, so the shim has to sit beside gui.py inside the
+        # bundle. Without it, 浏览 dies with "缺少 folderpicker.cs".
+        "--add-data", os.path.join(HERE, "folderpicker.cs") + os.pathsep + ".",
+        # 窗口类图标与 exe 图标同一母版；冻结态由 wv2_native 从 assets/ 载入
+        "--add-data", os.path.join(HERE, "build", "tvg.ico") + os.pathsep + "assets",
+        # 版本戳：登录页页脚显示版本号（桌面端无 TGDL_VERSION 注入）
+        "--add-data", _write_version_stamp() + os.pathsep + "assets",
+        "--icon", os.path.join(HERE, "build", "tvg.ico"),
         # 见 _write_stdio_runtime_hook：修复 windowed 态 stdout=None 崩溃
         "--runtime-hook", rthook,
         "--collect-submodules", "telethon",
+        # 冻结态的 OpenSSL 找不到系统证书路径，cacert.pem 必须随包（见 hook）
+        "--collect-data", "certifi",
+    ] + _ssl_data_args() + [
         "--hidden-import", "PIL",
         "--distpath", dist,
         "--workpath", WORK,
@@ -104,14 +199,17 @@ def build_windows_gui(dist):
 
 
 def build_windows_tui(dist):
-    machine = platform.machine().lower()
-    name = ("TG视频下载器_TUI_ARM64" if machine in ("arm64", "aarch64")
+    name = ("TG视频下载器_TUI_ARM64" if is_arm64_windows()
             else "TG视频下载器_TUI")
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--onefile", "--console",
         "--name", name,
+        "--icon", os.path.join(HERE, "build", "tvg.ico"),
         "--collect-submodules", "telethon",
+        "--collect-data", "certifi",
+        "--runtime-hook", _write_stdio_runtime_hook(),
+    ] + _ssl_data_args() + [
         "--distpath", dist,
         "--workpath", WORK,
         "--specpath", WORK,
@@ -136,6 +234,9 @@ def build_cli(dist):
         "--noconfirm", "--onefile", "--console",
         "--name", name,
         "--collect-submodules", "telethon",
+        "--collect-data", "certifi",
+        "--runtime-hook", _write_stdio_runtime_hook(),
+    ] + _ssl_data_args() + [
         "--distpath", dist,
         "--workpath", WORK,
         "--specpath", WORK,

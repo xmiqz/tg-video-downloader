@@ -1,0 +1,60 @@
+﻿
+########## BEFORE (v2.4.0) ##########
+--- ps ---
+ghcr.io/xmiqz/tg-video-downloader:v2.4.0|Up 2 hours (healthy)
+--- readonly ---
+ReadOnlyRootfs= None
+--- tasks ---
+1
+--- data_sums ---
+3a8bb13a0bff6768  /volume1/docker/tgvd/data/auth.json
+ed2fe71c4b9d8538  /volume1/docker/tgvd/data/tg_config.json
+--- data_listing ---
+total 60
+-rw------- 1 10001 10001   196 Nov  1 01:25 auth.json
+drwx------ 1 10001 10001    74 Nov  1 01:40 cache
+drwx------ 1 10001 10001    60 Nov  1 02:34 downloads
+drwx------ 1 10001 10001   190 Nov  1 02:53 tasks
+-rw------- 1 10001 10001   145 Nov  1 02:58 tg_config.json
+-rw------- 1 10001 10001 40960 Nov  1 03:12 tg_session.session
+-rw------- 1 10001 10001  8720 Nov  1 03:12 tg_session.session-journal
+--- healthz ---
+{"ok":true,"service":"tg-video-downloader"}
+
+########## UPGRADE ##########
+
+[stderr] Container tg-video-downloader  Recreate
+ Container tg-video-downloader  Recreated
+ Container tg-video-downloader  Starting
+ Container tg-video-downloader  Started
+
+########## AFTER (v2.4.1 local build) ##########
+--- ps_image ---
+tgvd-v2.4.1-local:arm64|Up 9 seconds (health: starting)
+--- created ---
+Created= 2026-10-31T19:12:25.866321027Z
+ReadOnlyRootfs= None
+CapDrop= ['ALL']
+SecurityOpt= ['no-new-privileges:true']
+User= 10001:10001
+--- healthz ---
+(empty)
+[stderr] curl: (56) Recv failure: Connection reset by peer
+--- tasks ---
+1
+--- data_sums ---
+3a8bb13a0bff6768  /volume1/docker/tgvd/data/auth.json
+ed2fe71c4b9d8538  /volume1/docker/tgvd/data/tg_config.json
+--- data_listing ---
+total 48
+-rw------- 1 10001 10001   196 Nov  1 01:25 auth.json
+drwx------ 1 10001 10001    74 Nov  1 01:40 cache
+drwx------ 1 10001 10001    60 Nov  1 02:34 downloads
+drwx------ 1 10001 10001   190 Nov  1 02:53 tasks
+-rw------- 1 10001 10001   145 Nov  1 02:58 tg_config.json
+-rw------- 1 10001 10001 40960 Nov  1 03:12 tg_session.session
+--- logs ---
+(empty)
+--- version ---
+REMEMBER_DAYS= 7
+RPC_METHODS= 56

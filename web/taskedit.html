@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>任务编辑</title>
+  <!--
+    T19h：独立任务编辑窗（2.1 双窗模式恢复，用户裁决）。
+    布局/样式沿用 2.1 editor.html 原样：
+    - 本页 = web/editor.html（2.1）DOM 原样（editor-app/editor-head/ed-* 族）
+    - css/taskedit.css = 2.1 web/style.css 原样承载（像素级还原）
+    - js/taskedit.js = 2.1 web/editor.js 原样（+外观跟随适配，见其尾部）
+    文件名避开 WC-4d 旧壳四资源断言（app.js/style.css/editor.html/editor.js 零残留口径）。
+  -->
+  <link rel="stylesheet" href="css/taskedit.css">
+</head>
+<body>
+
+  <div id="sh-backdrop"></div>
+
+  <div class="ambient">
+    <div class="blob b1"></div>
+    <div class="blob b2"></div>
+    <div class="blob b3"></div>
+    <div class="blob b4"></div>
+  </div>
+
+  <div class="editor-app">
+    <!-- 任务设置 -->
+    <header class="glass editor-head">
+      <div class="ed-task-info">
+        <input id="ed2-title" class="ed-title-input" spellcheck="false">
+        <div class="ed-meta">
+          <span id="ed2-channel"></span>
+          <span id="ed2-created"></span>
+        </div>
+      </div>
+      <div class="ed-settings">
+        <div class="ed-field">
+          <label>保存目录</label>
+          <div class="path-row">
+            <input id="ed2-folder" type="text" readonly>
+            <button id="ed2-folder-browse" class="btn glass-btn sm"
+              onclick="edChooseFolder()">浏览</button>
+          </div>
+        </div>
+        <div class="ed-field narrow">
+          <label>并发 (1-8)</label>
+          <input id="ed2-parallel" type="number" min="1" max="8">
+        </div>
+        <div class="ed-field narrow">
+          <label>重试次数 (0-8)</label>
+          <input id="ed2-retries" type="number" min="0" max="8" placeholder="默认">
+        </div>
+        <label class="check-line"><input id="ed2-move" type="checkbox">
+          同时移动已下载文件</label>
+        <button class="btn primary" onclick="edSave()">保存设置</button>
+      </div>
+    </header>
+
+    <!-- 工具栏 -->
+    <div class="glass editor-toolbar">
+      <div class="search-box grow">
+        <span class="search-ico">⌕</span>
+        <input id="ed2-q" type="text" placeholder="筛选文件名 / TG 消息原文…"
+               oninput="edRender()">
+      </div>
+      <div class="segmented" id="ed2-filter">
+        <button class="seg active" data-f="all" onclick="edSetFilter('all')">全部</button>
+        <button class="seg" data-f="done" onclick="edSetFilter('done')">已完成</button>
+        <button class="seg" data-f="pending" onclick="edSetFilter('pending')">未下载</button>
+        <button class="seg" data-f="failed" onclick="edSetFilter('failed')">失败</button>
+        <button class="seg" data-f="skipped" onclick="edSetFilter('skipped')">跳过</button>
+      </div>
+      <button class="btn glass-btn sm" onclick="edSelectAll(true)">全选</button>
+      <button class="btn glass-btn sm" onclick="edSelectAll(false)">清空</button>
+      <span id="ed2-counts" class="ed-counts"></span>
+    </div>
+
+    <!-- 2.3 智能重命名（高级）：命名前后预览可编辑；勾选=按新名命名，
+         取消勾选=使用并展示原文件名；还原命名支持多选 -->
+    <div class="glass ed-rename">
+      <label class="check-line"><input id="ed2-rn-toggle" type="checkbox"
+        title="命名前后预览，可编辑；未下载条目下载完成即按此命名"
+        onchange="edRenameTogglePanel()"> 智能重命名（高级）</label>
+      <div id="ed2-rn-panel" class="ed-rn-panel hidden">
+        <div class="ed-rn-acts">
+          <button class="btn glass-btn sm" onclick="edRenameAll(true)">命名全选</button>
+          <button class="btn glass-btn sm" onclick="edRenameAll(false)">命名全不选</button>
+          <button class="btn primary sm" onclick="edRenameApply(this)">应用命名</button>
+          <button class="btn glass-btn sm" onclick="edRenameRestore(this)">还原命名</button>
+          <label class="check-line"><input type="radio" name="ed2-rn-tier"
+            value="rename" checked onchange="edRenameTier('rename')"> 改名</label>
+          <label class="check-line"><input type="radio" name="ed2-rn-tier"
+            value="wide" onchange="edRenameTier('wide')"> 更宽上下文命名</label>
+          <span class="ed-rn-note">勾选=参与命名；取消勾选=使用原文件名；未下载条目下载完成即按此命名</span>
+        </div>
+        <div id="ed2-rn-rows"></div>
+      </div>
+    </div>
+
+    <!-- 条目表格 -->
+    <div class="glass editor-main">
+      <table class="ed-table">
+        <thead>
+          <tr>
+            <th class="c-check"></th>
+            <th class="c-name">文件名</th>
+            <th class="c-msg">TG 消息原文</th>
+            <th class="c-dur">时长</th>
+            <th class="c-date">日期</th>
+            <th class="c-size">大小</th>
+            <th class="c-st">状态</th>
+            <th class="c-act">操作</th>
+          </tr>
+        </thead>
+        <tbody id="ed2-rows"></tbody>
+      </table>
+    </div>
+
+    <!-- 批量操作（选中时常驻底部） -->
+    <div id="ed2-bulk" class="bulk-bar hidden">
+      <span id="ed2-bulk-count" class="bulk-count">已选 0</span>
+      <button class="btn glass-btn sm" onclick="edBulkStatus('pending')">标记重新下载</button>
+      <button class="btn glass-btn sm" onclick="edBulkStatus('skipped')">标记跳过</button>
+      <button class="btn danger sm" onclick="edBulkRemove()">移除条目</button>
+    </div>
+  </div>
+
+  <div id="ed2-folder-modal" class="modal-mask hidden" role="dialog"
+       aria-modal="true" aria-labelledby="ed2-folder-modal-title">
+    <div class="modal glass ed-folder-modal">
+      <div class="modal-head">
+        <h3 id="ed2-folder-modal-title">选择保存目录</h3>
+        <button class="icon-btn" type="button" aria-label="关闭"
+                onclick="edCloseFolderPicker()">×</button>
+      </div>
+      <p class="modal-sub">仅显示服务器允许目录内的文件夹。</p>
+      <div id="ed2-folder-roots" class="ed-folder-roots"></div>
+      <div class="ed-folder-location">
+        <button id="ed2-folder-up" class="btn glass-btn sm" type="button"
+                onclick="edFolderUp()">上一级</button>
+        <input id="ed2-folder-current" type="text" readonly
+               aria-label="当前目录">
+      </div>
+      <div id="ed2-folder-list" class="ed-folder-list"></div>
+      <p id="ed2-folder-status" class="modal-sub ed-folder-status"></p>
+      <div class="ed-folder-actions">
+        <button class="btn glass-btn" type="button"
+                onclick="edCloseFolderPicker()">取消</button>
+        <button class="btn primary" type="button"
+                onclick="edUseCurrentFolder()">选择此目录</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/bridge.js"></script>
+  <script src="js/taskedit.js"></script>
+</body>
+</html>

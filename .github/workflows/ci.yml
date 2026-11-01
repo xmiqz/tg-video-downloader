@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - v2.5-dev
+      - main
+  pull_request:
+    branches:
+      - main
+      - "v2.*"
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          # setup-python's pip cache only auto-detects requirements.txt /
+          # pyproject.toml. This repo has neither, so without an explicit path
+          # the action fails before any test runs with
+          # "No file in ... matched to [**/requirements.txt or **/pyproject.toml]".
+          cache-dependency-path: requirements-dev.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Compile
+        run: python -m py_compile server_app.py server_auth.py server_config.py gui.py tg_video_dl.py docker-entrypoint.py
+
+      - name: Test (backend)
+        run: python -m pytest -q
+
+      # The UI layer had no automated coverage before v2.4 hardening. Keep this
+      # step so the 39-case node:test suite actually gates merges.
+      - name: Test (frontend)
+        run: node --test "tests/js/*.test.mjs"

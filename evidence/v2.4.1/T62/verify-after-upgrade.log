@@ -1,0 +1,62 @@
+﻿[wait] healthz ok after 0 s
+
+--- ps ---
+tgvd-v2.4.1-local:arm64|Up 56 seconds (healthy)
+
+--- healthz_host ---
+{"ok":true,"service":"tg-video-downloader"}
+
+--- hostconfig_keys ---
+['BlkioDeviceReadBps', 'BlkioDeviceReadIOps', 'ReadonlyPaths', 'ReadonlyRootfs']
+{'ReadonlyRootfs': True}
+
+--- readonly_probe ---
+touch: cannot touch '/rootfs-probe': Read-only file system
+READ-ONLY
+
+--- tmpfs ---
+drwxr-xr-x 1 tgdl tgdl 172 Oct 31 19:13 /data
+drwxrwxrwt 2 root root  40 Oct 31 19:13 /tmp
+tmpfs_writable
+
+--- tasks ---
+1
+
+--- data_sums ---
+859f5d0a9881e035  /volume1/docker/tgvd/data/auth.json
+ed2fe71c4b9d8538  /volume1/docker/tgvd/data/tg_config.json
+
+--- data_listing ---
+total 56
+-rw------- 1 10001 10001   307 Nov  1 03:13 auth.json
+drwx------ 1 10001 10001    74 Nov  1 01:40 cache
+drwx------ 1 10001 10001    60 Nov  1 02:34 downloads
+drwx------ 1 10001 10001   190 Nov  1 02:53 tasks
+-rw------- 1 10001 10001   145 Nov  1 02:58 tg_config.json
+-rw------- 1 10001 10001 40960 Nov  1 03:13 tg_session.session
+-rw------- 1 10001 10001  4616 Nov  1 03:13 tg_session.session-journal
+
+--- logs ---
+[telethon.network.mtprotosender] INFO Connection to 91.108.56.150:443/TcpFull complete!
+[server_app] INFO 已从本地会话恢复 Telegram 登录
+[server_app] data=/data listen=0.0.0.0:8787 auth=required
+[server_app] 警告：远程访问当前使用 HTTP。跨不可信网络访问时请置于 HTTPS 反向代理之后并设置 TGDL_COOKIE_SECURE=1；若由反代提供 HTTPS，也可设置 TGDL_TRUST_PROXY=1 与 TGDL_TRUSTED_PROXIES=<反代地址>，由服务按 X-Forwarded-Proto 自动加 Secure
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8787 (Press CTRL+C to quit)
+INFO:     172.20.0.1:58236 - "WebSocket /events" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:44652 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     172.20.0.1:58258 - "WebSocket /events" [accepted]
+INFO:     connection open
+INFO:     172.20.0.1:58292 - "WebSocket /events" [accepted]
+INFO:     connection open
+INFO:     172.20.0.1:58300 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     172.20.0.1:58304 - "GET /healthz HTTP/1.1" 200 OK
+
+--- web_index ---
+303
+
+--- compose_config_readonly ---
+35:    read_only: true

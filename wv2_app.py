@@ -96,6 +96,8 @@ SLOT_SET_GET_AREDEVTOOLSENABLED = 11
 SLOT_SET_PUT_AREDEVTOOLSENABLED = 12
 SLOT_SET_GET_AREDEFAULTCONTEXTMENUSENABLED = 13
 SLOT_SET_PUT_AREDEFAULTCONTEXTMENUSENABLED = 14
+SLOT_SET_GET_ISSTATUSBARENABLED = 9
+SLOT_SET_PUT_ISSTATUSBARENABLED = 10
 SLOT_SET_GET_ISZOOMCONTROLENABLED = 17
 SLOT_SET_PUT_ISZOOMCONTROLENABLED = 18
 
@@ -366,6 +368,11 @@ class _WindowView:
                  SLOT_SET_GET_AREDEVTOOLSENABLED, want_devtools),
                 ("IsZoomControlEnabled", SLOT_SET_PUT_ISZOOMCONTROLENABLED,
                  SLOT_SET_GET_ISZOOMCONTROLENABLED, 0),
+                # WebView2 shows a hover URL strip along the bottom edge. In a
+                # native shell that reads as browser chrome ("像套壳应用"), so
+                # turn it off - there is no address bar for it to belong to.
+                ("IsStatusBarEnabled", SLOT_SET_PUT_ISSTATUSBARENABLED,
+                 SLOT_SET_GET_ISSTATUSBARENABLED, 0),
             ]
             readback = {}
             for name, put_slot, get_slot, want in plan:
@@ -498,6 +505,15 @@ class ShellWindow(wn.NativeWindow):
         self.view = _WindowView(self)
         super().__init__(title, int(width), int(height))
         host_app.register_window(self)
+        # T19c：沉浸式标题栏随建窗底色定深浅（深底=深色 caption + Mica），
+        # 对齐 Windows 自带软件窗口标签观感；失败静默不阻塞建窗
+        try:
+            rgb = parse_color(background_color)
+            lum = (((rgb >> 16) & 0xFF) + ((rgb >> 8) & 0xFF) +
+                   (rgb & 0xFF)) / 3.0
+            wn.set_immersive_caption(self.hwnd, lum < 128.0)
+        except Exception as ex:
+            host_app.record_failure("沉浸式标题栏初始化异常：%r" % ex)
 
     # -- host.HostWindow -----------------------------------------------------
 
@@ -865,10 +881,15 @@ class NativeHost(host.HostApp):
             raise RuntimeError(detail)
 
     def emit(self, obj):
-        sys.stdout.write("EVIDENCE: "
-                         + json.dumps(obj, ensure_ascii=True,
-                                      default=str) + "\n")
-        sys.stdout.flush()
+        # Packaged --windowed builds can expose an invalid stdout handle
+        # (not None). Diagnostics must never take down the app.
+        try:
+            sys.stdout.write("EVIDENCE: "
+                             + json.dumps(obj, ensure_ascii=True,
+                                          default=str) + "\n")
+            sys.stdout.flush()
+        except (OSError, ValueError, AttributeError):
+            pass
 
 
 def threading_get_ident():
@@ -1285,7 +1306,7 @@ def run_liquid_sink(args):
             try:
                 if cap.version == last:
                     continue
-                changed, url, ver = cap.render_jpeg()
+                changed, url, ver, _lum = cap.render_jpeg()
                 if changed and url:
                     with sink_lock:
                         sink.append((time.perf_counter(), url))

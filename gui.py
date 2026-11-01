@@ -9,6 +9,7 @@ HTTP/JSON-RPC 桥接，把引擎的异步能力暴露给 web/ 下的界面。引
 """
 import asyncio
 import base64
+import contextlib
 import ctypes
 import io
 import json
@@ -16,6 +17,7 @@ import logging
 import os
 import pathlib
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -24,7 +26,9 @@ import uuid
 
 import host
 
+import taskport
 import tg_video_dl as core
+import wallpaper
 from telethon import TelegramClient
 from telethon.errors import (
     SessionPasswordNeededError,
@@ -319,6 +323,13 @@ class Api:
         # 进程内 HTTP/WS 连接信息（main 启动时从 server_app 句柄注入）
         self.base_url = ""
         self.token = ""
+        # v2.4：同一 Api 同时服务桌面与无头浏览器。无头模式禁用服务器
+        # 上的本地打开/文件选择动作，并把目录写操作限制在允许根目录内。
+        self.runtime_mode = "desktop"
+        self.allowed_roots = ()
+        # Explicit data directory for on-disk caches (wallpaper). Falls back to
+        # core.DATA_DIR only when nothing injected it, e.g. in unit tests.
+        self.data_dir = None
         # 事件推送句柄（main 注入；签名 push_event(name:str, params:list)）
         self.push_event = None
         # 实时取光相关（仅 Windows 液态玻璃模式使用）
@@ -365,13 +376,51 @@ class Api:
         # 唯一信号——connect 早退分支与 login_state 的 has_session 共用。
         self._code_sent = False
 
+    def _resolve_runtime_folder(self, raw, *, create=False):
+        """校验无头模式目录；桌面模式保持原有任意目录语义。"""
+        value = str(raw or "").strip()
+        if not value:
+            value = str(core.DEFAULT_DOWNLOAD_ROOT)
+        path = pathlib.Path(value).expanduser()
+        if not path.is_absolute():
+            path = core.DATA_DIR / path
+        path = path.resolve()
+        if self.runtime_mode != "headless":
+            if create:
+                path.mkdir(parents=True, exist_ok=True)
+            return path, ""
+        roots = tuple(
+            pathlib.Path(root).expanduser().resolve()
+            for root in (self.allowed_roots or (core.DATA_DIR,))
+        )
+        inside = False
+        for root in roots:
+            try:
+                path.relative_to(root)
+                inside = True
+                break
+            except ValueError:
+                continue
+        if not inside:
+            roots_text = "、".join(str(root) for root in roots)
+            return None, f"目录必须位于允许范围内：{roots_text}"
+        if create:
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                return None, f"目录不可用：{type(exc).__name__}: {exc}"
+        return path, ""
+
     # ---------- 外观模式 ----------
     def get_appearance(self):
         """外观：dark=静态暗（默认）/ light=静态亮 / liquid=实时透明液态玻璃。"""
         return {"ok": True, "mode": self.cfg.get("appearance", "dark")}
 
     def set_appearance(self, mode):
-        if mode not in ("dark", "light", "liquid"):
+        # "bing" is the daily-wallpaper theme. Its image is fetched by the
+        # wallpaper cache, not by the Windows backdrop sampler, so it is valid
+        # on every host (desktop, browser, container).
+        if mode not in ("dark", "light", "liquid", "bing"):
             return {"ok": False, "error": "未知外观模式"}
         self.cfg["appearance"] = mode
         core.save_config(self.cfg)
@@ -454,6 +503,26 @@ class Api:
             return f"{type(e).__name__}: {e}"
         self.client = client
         return None
+
+    def set_api_credentials(self, api_id, api_hash):
+        """Web 首跑向导写入 api_id/api_hash；不改 Telethon 登录流程。"""
+        if self.client is not None:
+            return {"ok": False, "error": "已连接 Telegram，请先退出登录"}
+        aid = str(api_id or "").strip()
+        ahash = str(api_hash or "").strip()
+        if not aid.isdigit() or not 1 <= int(aid) <= 9_999_999_999:
+            return {"ok": False, "error": "api_id 必须是正整数"}
+        if len(ahash) != 32 or any(c not in "0123456789abcdefABCDEF"
+                                   for c in ahash):
+            return {"ok": False, "error": "api_hash 必须是 32 位十六进制字符串"}
+        core.ensure_dirs_and_migrate()
+        cfg = core.load_config()
+        cfg["api_id"] = int(aid)
+        cfg["api_hash"] = ahash.lower()
+        cfg.pop("builtin_api", None)
+        core.save_config(cfg)
+        self.cfg = cfg
+        return {"ok": True}
 
     # ---------- 退出登录 ----------
     def logout(self):
@@ -777,6 +846,27 @@ class Api:
         return {"ok": True, "stage": "need_phone",
                 "phone_prefill": self.cfg.get("phone") or ""}
 
+    @staticmethod
+    def _is_net_exc(e):
+        """网络族异常判定（Timeout/Connection/OSError 族）。按异常类名匹配
+        （不新增 telethon import 依赖），_map_send_code_exc/_map_verify_exc
+        与 _submit_net_retry 共用同一口径。"""
+        ename = type(e).__name__
+        return (ename in ("TimeoutError", "ConnectionError", "OSError")
+                or "Timeout" in ename or "Connection" in ename
+                or isinstance(e, (asyncio.TimeoutError, TimeoutError,
+                                  ConnectionError, OSError)))
+
+    def _submit_net_retry(self, coro_fn):
+        """engine.submit 网络族异常恰重试一次（环境网络瞬时劫持自愈）；
+        非网络族异常或重试仍失败原样上抛，由调用方映射。"""
+        try:
+            return self.engine.submit(coro_fn())
+        except Exception as e:
+            if not self._is_net_exc(e):
+                raise
+            return self.engine.submit(coro_fn())
+
     def _map_send_code_exc(self, e):
         """T58 2.4：send_code/account_add_start 共用的异常→返回形状映射。
 
@@ -805,10 +895,7 @@ class Api:
         if ename in ("ApiIdInvalidError", "ApiIdPublishedFloodError"):
             return {"ok": False, "code": "api_invalid",
                     "error": "内置 API 凭证失效，请更换凭证后重试"}
-        if (ename in ("TimeoutError", "ConnectionError", "OSError")
-                or "Timeout" in ename or "Connection" in ename
-                or isinstance(e, (asyncio.TimeoutError, TimeoutError,
-                                  ConnectionError, OSError))):
+        if self._is_net_exc(e):
             return {"ok": False, "recoverable": True,
                     "error": "网络异常，验证码可能已发送到你的 Telegram；"
                              "如已收到可直接点下方入口输入"}
@@ -830,7 +917,7 @@ class Api:
             await self.client.send_code_request(phone)
 
         try:
-            self.engine.submit(_do())
+            self._submit_net_retry(_do)   # 网络族异常恰重试一次（D1 加固）
         except Exception as e:
             ename = type(e).__name__
             if ename == "AuthKeyDuplicatedError":
@@ -855,6 +942,20 @@ class Api:
         self._code_sent = True
         return {"ok": True}
 
+    def _map_verify_exc(self, e):
+        """verify_code/verify_password 共用的异常→返回形状映射（D1 加固）。
+        网络族→可恢复；PhoneCodeHash 缺失（从其他渠道直验无 hash）→引导
+        重新发码且不可恢复；未知→可恢复附原始 type:message。"""
+        ename = type(e).__name__
+        if self._is_net_exc(e):
+            return {"ok": False, "recoverable": True,
+                    "error": "网络异常，请稍后重试"}
+        if "PhoneCodeHash" in ename:
+            return {"ok": False,
+                    "error": "验证码会话已失效，请重新点击「发送验证码」获取新验证码后输入"}
+        return {"ok": False, "recoverable": True,
+                "error": f"登录异常，请稍后重试（{ename}: {e}）"}
+
     def verify_code(self, code):
         async def _do():
             try:
@@ -864,7 +965,12 @@ class Api:
                 return "need_password"
             except (PhoneCodeInvalidError, PhoneCodeExpiredError) as e:
                 return f"__err__{type(e).__name__}: {e}"
-        r = self.engine.submit(_do())
+        try:
+            r = self.engine.submit(_do())
+        except Exception as e:
+            # D1 加固：网络异常不再裸抛（"验证码登录也报错"根因），
+            # 统一映射为 UI 可消费的返回形状
+            return self._map_verify_exc(e)
         if r.startswith("__err__"):
             # PhoneCodeInvalid/Expired：仍在 code 步，_code_sent 保持 True
             return {"ok": False, "error": r[len("__err__"):]}
@@ -885,7 +991,11 @@ class Api:
                 return "ready"
             except PasswordHashInvalidError as e:
                 return f"__err__{e}"
-        r = self.engine.submit(_do())
+        try:
+            r = self.engine.submit(_do())
+        except Exception as e:
+            # D1 加固：同 verify_code，网络异常统一映射不裸抛
+            return self._map_verify_exc(e)
         if r.startswith("__err__"):
             return {"ok": False, "error": r[len("__err__"):]}
         if r == "ready" and self.guest:
@@ -899,19 +1009,31 @@ class Api:
         if self.client is None:
             print("[GUI] need_login: me")
             return {"ok": False, "need_login": True}
+        # 账号资料先吃池内缓存（_adopt_and_cache_me 登录就绪时已预热）：
+        # get_me 是一次真实网络往返，登录成功后再等它会把「获取账号资料中…」
+        # 挂在卡上好几秒（用户实测等待过长）。缓存命中直接返回，0 等待。
+        cached = self._pool.me_cache.get(core.ACCT_MAIN) or {}
+        if cached.get("name") or cached.get("username") or cached.get("phone"):
+            return {"ok": True, "cached": True,
+                    "name": cached.get("name", ""),
+                    "username": cached.get("username", ""),
+                    "phone": cached.get("phone", "")}
         async def _do():
-            u = await self.client.get_me()
-            return {"name": (u.first_name or ""), "username": u.username or "",
-                    "phone": u.phone or ""}
+            # 冷缓存：限时取一次；网络慢也不让登录卡无限转圈
+            return await asyncio.wait_for(self.client.get_me(), timeout=8)
         try:
-            r = self.engine.submit(_do())
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+            u = self.engine.submit(_do())
+        except Exception:
+            # 拿不到资料不该挡住登录成功：回退手机号（或空串），卡片不再转圈
+            phone = str(self.cfg.get("phone") or "")
+            return {"ok": True, "partial": True, "name": "", "username": "",
+                    "phone": phone}
         # T58 2.6：成功同步回填主号 me 缓存（account_list 只读该缓存）
         self._pool.me_cache[core.ACCT_MAIN] = {
-            "name": r["name"], "username": r["username"],
-            "phone": r["phone"]}
-        return {"ok": True, **r}
+            "name": u.first_name or "", "username": u.username or "",
+            "phone": u.phone or ""}
+        return {"ok": True, "name": u.first_name or "", "username": u.username or "",
+                "phone": u.phone or ""}
 
     # ---------- T51 账号池 RPC（5 个；除 account_list 外主号就绪+非游客闸门） ----------
 
@@ -1045,9 +1167,11 @@ class Api:
         return {"ok": True, "job_id": job_id}
 
     @staticmethod
-    def _search_item_of(r):
+    def _search_item_of(r, query="", name_wide=False):
         """record → 前端 item 序列化：T47 6 键纯增 match_in/ref_text 2 键
-        （.get 取值，缺省 "self"/None 与 record 一致），无其它形变。"""
+        （.get 取值，缺省 "self"/None 与 record 一致），无其它形变；
+        2.3 智能重命名再纯增 rename 1 键（关键词命中句拟名，可为空串；
+        前端行内可编辑，创建任务后下载完成即按所登记名命名）。"""
         return {
             "mid": r["msg"].id,
             "src": r.get("src", core.SRC_CHANNEL),
@@ -1057,6 +1181,9 @@ class Api:
             "text": r["text"],
             "match_in": r.get("match_in", "self"),
             "ref_text": r.get("ref_text"),
+            "rename": core.smart_name_for(
+                r.get("text", "") or "", query, r["name"],
+                r.get("ref_text"), wide=name_wide),
         }
 
     def _search_push(self, job_id, data):
@@ -1091,6 +1218,9 @@ class Api:
         _search_previews（cancelled 后已到达部分仍可建任务）。"""
         p = dict(params)
         p.pop("channel", None)
+        # 2.3「更宽上下文命名」开关（与 deep_scan 同款布尔词表解析）
+        name_wide = str(p.get("name_wide", "")).strip().lower() in (
+            "1", "true", "yes", "y", "on")
         job0 = self.jobs.snapshot(job_id) or {}
         t0 = float(job0.get("created_ts", time.time()))
         items_seq = []       # 已到达序列化 item（按到达序，键唯一）
@@ -1112,7 +1242,8 @@ class Api:
                     self._preview[key] = r
                     fresh.append(r)
             for r in fresh:
-                items_seq.append(self._search_item_of(r))
+                items_seq.append(self._search_item_of(
+                    r, p.get("query", ""), name_wide))
             return len(fresh)
 
         def _maybe_push():
@@ -1149,6 +1280,13 @@ class Api:
                 self.jobs.update(job_id, phase=ev["phase"],
                                  phase_detail=detail,
                                  done=len(items_seq), total=0)
+                # T19f-E：内核 items 帧稀疏（仅 _flush 非空才 yield），
+                # progress 帧每消息一条；若早到少量匹配后只剩 progress，
+                # 「≥2.0s 且 ≥1 条」首帧规则在 items 节拍上永不触发，
+                # 匹配项滞留到 done 终帧才下发（前端流式行空转）。progress
+                # 节拍同评估 _maybe_push 使首帧/追加帧即时下发（幂等：
+                # 无新增条目时 n<=pushed_n 直接返回）。
+                _maybe_push()
             elif kind == "items":
                 _absorb(ev["items"])
                 _maybe_push()
@@ -1182,7 +1320,9 @@ class Api:
                 final_store = {
                     (r.get("src", core.SRC_CHANNEL), r["msg"].id): r
                     for r in records}
-                final_items = [self._search_item_of(r) for r in records]
+                final_items = [self._search_item_of(r, p.get("query", ""),
+                                                    name_wide)
+                               for r in records]
                 with self._preview_lock:
                     self._search_previews[job_id] = final_store
                     self._preview = dict(final_store)
@@ -1263,7 +1403,7 @@ class Api:
         return cb
 
     def _dl_worker(self, job_id, cancel_event, task_id, task, sess,
-                   lazy_statuses, do_reconcile):
+                   lazy_statuses):
         """download 作业 daemon 线程（仿 _search_worker 范式）：run_
         download_session 提交到 engine.loop，按返回 status 收口
         done/cancelled/error（错误文案透传）；线程兜底 except 同样
@@ -1274,8 +1414,7 @@ class Api:
             fut = asyncio.run_coroutine_threadsafe(
                 core.run_download_session(
                     self.client, task, sess, gui={},
-                    lazy_statuses=lazy_statuses,
-                    do_reconcile=do_reconcile),
+                    lazy_statuses=lazy_statuses),
                 self.engine.loop)
             result = fut.result()
         except Exception as e:  # noqa: BLE001 - worker 线程兜底
@@ -1325,7 +1464,7 @@ class Api:
 
     # ---------- 建任务并下载 ----------
     def start_download(self, channel, title, keys, parallel, folder="",
-                       job_id=""):
+                       job_id="", query="", name_wide=""):
         """T48：job_id 非空 → 从 _search_previews[job_id] 取记录（作业已
         cancelled 也允许用其已到达部分建任务）；job_id 空/缺失 → 走遗留
         全局 _preview（兼容窗口，至少保留一个版本）。其余逻辑逐行不变。"""
@@ -1349,10 +1488,16 @@ class Api:
         if not todo:
             return {"ok": False, "error": "没有选择视频"}
         if not folder:
-            root = core.get_download_root(self.cfg)
+            raw_root = self.cfg.get("download_root") or str(
+                core.DEFAULT_DOWNLOAD_ROOT
+            )
         else:
-            root = pathlib.Path(folder)
-            root.mkdir(parents=True, exist_ok=True)
+            raw_root = folder
+        root, folder_error = self._resolve_runtime_folder(
+            raw_root, create=True
+        )
+        if folder_error:
+            return {"ok": False, "error": folder_error}
         safe = "".join(c for c in (title or channel) if c not in '\\/:*?"<>|').strip()
         folder_dest = root / (safe or "channel")
         folder_dest.mkdir(parents=True, exist_ok=True)
@@ -1360,7 +1505,11 @@ class Api:
         task_items = [core.make_task_item(r) for r in todo]
         tasks = core.build_task_dicts(
             channel, title,
-            {"parallel": max(1, min(int(parallel), 8))},
+            # 2.3：query/name_wide 随任务落盘（params 子字典自由扩展）——
+            # 编辑窗/续传的智能重命名按搜索上下文与档位生成拟名的依据
+            {"parallel": max(1, min(int(parallel), 8)),
+             "query": str(query or ""),
+             "name_wide": str(name_wide or "")},
             str(folder_dest), task_items,
         )
         for t in tasks:
@@ -1416,7 +1565,7 @@ class Api:
         threading.Thread(
             target=self._dl_worker,
             args=(job_id, cancel_event, first["id"], first, sess,
-                  None, False),
+                  None),
             daemon=True, name="dl-" + job_id,
         ).start()
         self._start_dl_cancel_watcher(job_id, cancel_event, first["id"])
@@ -1607,12 +1756,24 @@ class Api:
         t = core.load_task(task_id)
         if t is None or t.get("id") != task_id:
             return {"ok": False, "error": "任务不存在"}
+        task_folder, folder_error = self._resolve_runtime_folder(
+            t.get("folder"), create=True
+        )
+        if folder_error:
+            return {"ok": False, "error": folder_error}
+        t["folder"] = str(task_folder)
         if task_id in core.ACTIVE_SESSIONS:
             return {"ok": False, "error": "该任务已在下载中，请勿重复开始"}
         # T50 反向防线：目录搬运中禁开下载（补 worker 已建作业、会话
         # 未注册的窗口；open_download_session 内另有同源兜底）
         if task_id in core.MOVING_TASKS:
             return {"ok": False, "error": "任务目录正在移动中，暂不能开始下载"}
+        # T23：会话启动前对账（FR-10）——与 run_download_session d 段
+        # 同的对账内核。此处先行的原因是：本方法后续的 n 计数与
+        # build_planned 都基于清单 status，必须在磁盘事实重建后取值。
+        r = core.reconcile_task(t)
+        if r["changed"]:
+            core.save_task(t, force=True)
         # T57：only_skipped 只拉 skipped（C10：语义单一，不兼带
         # pending/failed）；pull_records 的 make 确认消息后自动重置
         # pending 清错，全链复用既有 statuses 通路，零分支新增
@@ -1667,7 +1828,7 @@ class Api:
         threading.Thread(
             target=self._dl_worker,
             args=(job_id, cancel_event, task_id, t, sess,
-                  statuses, False),
+                  statuses),
             daemon=True, name="dl-" + job_id,
         ).start()
         self._start_dl_cancel_watcher(job_id, cancel_event, task_id)
@@ -1714,19 +1875,102 @@ class Api:
                     sp.pop("acct_pref", None)
                 else:
                     sp["acct_pref"] = pref
+        # T22：任务级重试次数（不加新 RPC；可选字段 params.retries，
+        # 位于 acct_pref 块之后、folder 块之前）。字段存在才处理：
+        # 仅接受 0..8 整数（bool/float/字符串均拒绝且不落盘）；
+        # null/空串=恢复默认（pop 键）。合法值写 params、force 落盘、
+        # live sess.task 同步——正在下载的条目下次重试生效
+        # （download_one 每个 attempt 头经 sess.task 重取）。
+        if "retries" in fields:
+            raw = fields["retries"]
+            if raw is None or raw == "":
+                params = t.setdefault("params", {})
+                params.pop("retries", None)
+                core.save_task(t, force=True)
+                sess = core.ACTIVE_SESSIONS.get(task_id)
+                if sess is not None:
+                    sess.task.setdefault("params", {}).pop("retries", None)
+            elif (isinstance(raw, int) and not isinstance(raw, bool)
+                    and 0 <= raw <= 8):
+                params = t.setdefault("params", {})
+                params["retries"] = raw
+                core.save_task(t, force=True)
+                sess = core.ACTIVE_SESSIONS.get(task_id)
+                if sess is not None:
+                    sess.task.setdefault("params", {})["retries"] = raw
+            else:
+                return {"ok": False,
+                        "error": "retries 仅支持 0..8 的整数"}
+        # 2.3 智能重命名（不加新 RPC；与 T52 同走 edit_task，单发语义）：
+        # renames=[{src,mid,name}]——已下载条目立即落盘改名（重名
+        # ' (N)' 后缀、orig_name 记原名），未下载条目登记 ti["rename"]
+        # 待下载完成即按此命名；restore=[{src,mid}]——多选还原命名
+        # （回到 orig_name）。任一存在即返回本块结果（不与 folder 混用）。
+        if "renames" in fields:
+            rows = fields["renames"]
+            if not isinstance(rows, list):
+                return {"ok": False, "error": "renames 必须为列表"}
+            renamed = recorded = 0
+            warnings = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    return {"ok": False, "error": "renames 条目必须为对象"}
+                try:
+                    key = (row.get("src", core.SRC_CHANNEL),
+                           int(row.get("mid")))
+                except (TypeError, ValueError):
+                    return {"ok": False, "error": "renames 条目 mid 无效"}
+                ti = core.find_item(t, key)
+                if ti is None:
+                    warnings.append(f"条目不存在：{key[1]}")
+                    continue
+                name = str(row.get("name") or "").strip()
+                if not name:
+                    continue
+                r = core.apply_item_rename(t, ti, name)
+                if not r["ok"]:
+                    warnings.append(f"#{key[1]} {r['error']}")
+                elif r["renamed"]:
+                    renamed += 1
+                else:
+                    recorded += 1
+            core.save_task(t, force=True)
+            return {"ok": True, "renamed": renamed, "recorded": recorded,
+                    "warnings": warnings}
+        if "restore" in fields:
+            rows = fields["restore"]
+            if not isinstance(rows, list):
+                return {"ok": False, "error": "restore 必须为列表"}
+            rkeys = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    return {"ok": False, "error": "restore 条目必须为对象"}
+                try:
+                    rkeys.append((row.get("src", core.SRC_CHANNEL),
+                                  int(row.get("mid"))))
+                except (TypeError, ValueError):
+                    return {"ok": False, "error": "restore 条目 mid 无效"}
+            out = core.restore_item_names(t, rkeys)
+            core.save_task(t, force=True)
+            return out
         folder = (fields.get("folder") or "").strip()
         if not folder:
             return {"ok": True, "warnings": []}
-        new_norm = os.path.abspath(os.path.expanduser(folder))
+        resolved_folder, folder_error = self._resolve_runtime_folder(
+            folder, create=False
+        )
+        if folder_error:
+            return {"ok": False, "error": folder_error}
+        folder = str(resolved_folder)
+        new_norm = str(resolved_folder)
         cur_norm = os.path.abspath(os.path.expanduser(
             str(t.get("folder") or "")))
         if new_norm == cur_norm:
             # 路径未变化：不写 folder、不建作业
             return {"ok": True, "warnings": []}
-        # 移动目录是写操作：登录闸门（任何写盘/建作业之前）
-        if self.client is None:
-            print("[GUI] need_login: edit_task")
-            return {"ok": False, "need_login": True}
+        # Folder changes are local file operations. They must stay available
+        # while Telegram is offline (notably after copying a data directory
+        # from another machine), so do not gate them behind login.
         # 状态闸：下载中禁搬 / 同任务防重复提交
         if task_id in core.ACTIVE_SESSIONS:
             return {"ok": False, "error": "该任务正在下载中，无法移动目录"}
@@ -1978,6 +2222,9 @@ class Api:
                 self.jobs.update(job_id, phase=ev["phase"],
                                  phase_detail=detail,
                                  done=added_total, total=0)
+                # T19f-E：与 _search_coro 同款——progress 节拍同评估
+                # _maybe_push，防 items 帧稀疏时已追加条目滞留到终帧
+                _maybe_push()
             elif kind == "items":
                 # 每批重读任务对象（获取最新已落盘条目）
                 t = core.load_task(task_id)
@@ -2028,26 +2275,7 @@ class Api:
         if cancel_event.is_set():
             self.jobs.update(job_id, state="cancelled")
 
-    # ---------- 独立编辑窗口（Task 16 将改为应用内全屏路由） ----------
-    def open_editor(self, task_id):
-        """弹出第二个专业编辑窗口（任务/条目管理）。"""
-        t = self._load_one(task_id)
-        if t is None:
-            return {"ok": False, "error": "任务不存在"}
-        url = (self.base_url + "/editor.html?id=" + task_id
-               + "#t=" + self.token)
-        s = _dpi_scale()
-        bg = "#e9ecf5" if self.cfg.get("appearance") == "light" else "#07080f"
-        self.host.create_aux_window(
-            "任务编辑 · " + t.get("channel_title", ""),
-            url, self,
-            int(1080 * s), int(740 * s),
-            (int(880 * s), int(580 * s)),
-            bg,
-        )
-        return {"ok": True}
-
-    def editor_data(self, task_id, enrich=True):
+    def editor_data(self, task_id, enrich=True, name_wide=None):
         """任务与全部条目（含 TG 消息原文、时长、日期）。
         enrich=True 时后台补全缺失 text/duration；回捞时传 False 仅取本地。"""
         t = self._load_one(task_id)
@@ -2072,6 +2300,31 @@ class Api:
                     print("[GUI] 条目详情补全失败：", e)
 
             threading.Thread(target=_bg_enrich, daemon=True).start()
+        # 2.3 智能重命名：缺 rename 的条目按搜索上下文补「拟用名」建议——
+        # 仅响应侧副本不落盘（用户点「应用命名」才经 edit_task 登记，避免
+        # 未确认就改盘）。query 取任务落盘的 params.query（新建时记录）；
+        # 旧任务无 query 时 smart_name_for 回退正文头部上下文命名。
+        # name_wide=None 跟随任务建档档位（params.name_wide），显式布尔覆盖
+        # （编辑窗「更宽上下文命名」开关即时切换）。
+        tp = t.get("params") or {}
+        q = str(tp.get("query") or "")
+        if name_wide is None:
+            wide = str(tp.get("name_wide", "")).strip().lower() in (
+                "1", "true", "yes", "y", "on")
+        else:
+            wide = bool(name_wide)
+        items_out = []
+        for ti in t["items"]:
+            if str(ti.get("rename") or "").strip():
+                items_out.append(ti)
+                continue
+            it2 = dict(ti)
+            sug = core.smart_name_for(ti.get("text", "") or "", q,
+                                      ti.get("name", ""),
+                                      ti.get("ref_text"), wide=wide)
+            if sug:
+                it2["rename"] = sug
+            items_out.append(it2)
         return {
             "ok": True,
             "task": {
@@ -2081,8 +2334,10 @@ class Api:
                 "folder": t.get("folder", ""),
                 "parallel": t.get("params", {}).get("parallel", 1),
                 "created": t.get("created", ""),
+                "name_wide": "1" if wide else "",
+                "retries": t.get("params", {}).get("retries", ""),
             },
-            "items": t["items"],
+            "items": items_out,
             "counts": core.task_counts(t),
         }
 
@@ -2128,6 +2383,23 @@ class Api:
         return {"ok": True, "items": out}
 
     def open_item_file(self, task_id, src, mid):
+        if self.runtime_mode == "headless":
+            # No server-side desktop exists to open files on, but the file is
+            # reachable over HTTP. Return a same-origin URL so the browser can
+            # stream/play it (and still save it locally).
+            info = self.item_file_info(task_id, src, mid)
+            if not info.get("exists"):
+                return {"ok": False, "error": "文件不存在"}
+            from urllib.parse import quote
+            rel = ("/media/file?task=" + quote(str(task_id))
+                   + "&src=" + quote(str(src))
+                   + "&mid=" + quote(str(mid)))
+            return {
+                "ok": False,
+                "headless": True,
+                "url": rel,
+                "error": "浏览器模式不能在服务器本机打开文件",
+            }
         r = self.item_file_info(task_id, src, mid)
         if r.get("exists"):
             return self._open_path(r["path"])
@@ -2146,7 +2418,51 @@ class Api:
             return {"ok": False, "error": str(e)}
 
     # ---------- 其它 ----------
+    def open_editor(self, task_id):
+        """弹出独立任务编辑窗口（2.1 双窗模式；T19h 用户裁决恢复）。
+        加载 web/taskedit.html（2.1 editor.html 布局/样式/行为原样承载，
+        文件名避开 WC-4d 旧壳四资源断言），create_aux_window 与主窗同壳。"""
+        if not self.host:
+            # Headless: there is no window host, but taskedit.html is a plain
+            # browser page. Hand the URL back so the caller can open a tab
+            # instead of falling back to the in-shell /task/:id/edit route,
+            # whose layout is not usable at browser widths.
+            from urllib.parse import quote
+            if self._load_one(task_id) is None:
+                return {"ok": False, "error": "任务不存在"}
+            return {
+                "ok": False,
+                "headless": True,
+                "url": ("/taskedit.html?id=" + quote(str(task_id))
+                        + "#t=" + self.token),
+                "error": "窗口宿主未就绪",
+            }
+        t = self._load_one(task_id)
+        if t is None:
+            return {"ok": False, "error": "任务不存在"}
+        from urllib.parse import quote
+        url = (self.base_url + "/taskedit.html?id=" + quote(str(task_id))
+               + "#t=" + self.token)
+        mode = str(self.cfg.get("appearance") or "")
+        bg = "#e9ecf5" if mode == "light" else "#07080f"
+        self.host.create_aux_window(
+            "任务编辑 · " + str(t.get("channel_title", "")),
+            url, self,
+            1080, 740,
+            # T19i：尺寸裸传同主窗口径（gui.py 主窗 create_window 同款，
+            # 不乘 _dpi_scale——否则最小 518x921 放不到主窗的 360x640）
+            (360, 640),
+            bg,
+        )
+        return {"ok": True}
+
     def open_folder(self, path):
+        if self.runtime_mode == "headless":
+            return {
+                "ok": False,
+                "error": "浏览器模式不能在服务器本机打开目录",
+                "unsupported_in_headless": True,
+            }
         if not path:
             path = str(core.get_download_root(self.cfg))
         try:
@@ -2160,7 +2476,88 @@ class Api:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    def browse_folders(self, path=""):
+        """List server directories without escaping the configured roots.
+
+        The browser cannot use a native folder dialog, so the editor needs a
+        small server-side picker. Symlinked directories are deliberately not
+        listed: resolving them would make containment depend on the target and
+        can change after validation.
+        """
+        roots = []
+        for raw_root in (self.allowed_roots or (core.DATA_DIR,)):
+            try:
+                root = pathlib.Path(raw_root).expanduser().resolve()
+            except OSError:
+                continue
+            if root.is_dir():
+                roots.append(root)
+        if not roots:
+            return {"ok": False, "error": "没有可浏览的目录根"}
+
+        raw = str(path or "").strip()
+        if not raw:
+            raw = str(core.get_download_root(self.cfg))
+        current, error = self._resolve_runtime_folder(raw)
+        if error:
+            return {"ok": False, "error": error}
+        if not current.is_dir():
+            return {"ok": False, "error": f"目录不存在：{current}"}
+
+        dirs = []
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        if not entry.is_dir(follow_symlinks=False):
+                            continue
+                    except OSError:
+                        continue
+                    child = current / entry.name
+                    resolved, child_error = self._resolve_runtime_folder(child)
+                    if child_error or not resolved.is_dir():
+                        continue
+                    dirs.append({
+                        "name": entry.name,
+                        "path": str(resolved),
+                    })
+        except OSError as exc:
+            return {
+                "ok": False,
+                "error": f"目录不可读取：{type(exc).__name__}: {exc}",
+            }
+        dirs.sort(key=lambda item: item["name"].casefold())
+
+        parent = ""
+        for root in roots:
+            if current == root:
+                break
+            try:
+                current.relative_to(root)
+                parent = str(current.parent)
+                break
+            except ValueError:
+                continue
+
+        return {
+            "ok": True,
+            "roots": [{"name": root.name or str(root), "path": str(root)}
+                      for root in roots],
+            "path": str(current),
+            "parent": parent,
+            "dirs": dirs,
+            "writable": os.access(current, os.W_OK),
+        }
+
     def choose_folder(self):
+        if self.runtime_mode == "headless":
+            return {
+                "ok": False,
+                "error": "浏览器模式请直接输入服务器路径",
+                "unsupported_in_headless": True,
+            }
+        if sys.platform == "win32":
+            return self._choose_folder_win()
         try:
             import tkinter as tk
             from tkinter import filedialog
@@ -2170,18 +2567,185 @@ class Api:
             p = filedialog.askdirectory()
             root.destroy()
             return {"ok": True, "path": p}
+        except ImportError:
+            # tkinter 缺失（ARM64 打包排除）→ Windows 原生目录选择兜底
+            # （PowerShell STA FolderBrowserDialog：与 tkinter 同为系统经典
+            #  目录选择器，打包零依赖；取消返回空串同 tkinter 口径）
+            try:
+                import base64
+                import subprocess
+                import sys as _sys
+
+                ps = (
+                    "Add-Type -AssemblyName System.Windows.Forms; "
+                    "$d = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                    "$d.ShowNewFolderButton = $true; "
+                    "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK)"
+                    " { [Console]::Out.Write($d.SelectedPath) }"
+                )
+                enc = base64.b64encode(ps.encode("utf-16le")).decode("ascii")
+                argv = ["powershell.exe", "-NoProfile", "-STA", "-EncodedCommand", enc]
+                kw = {"capture_output": True, "timeout": 600}
+                if _sys.platform == "win32":
+                    kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                out = subprocess.run(argv, **kw)
+                p = (out.stdout or b"").decode("utf-8", "ignore").strip()
+                return {"ok": True, "path": p}
+            except Exception as e2:
+                return {"ok": False, "error": str(e2)}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    @staticmethod
+    def _choose_folder_win():
+        """Windows folder picker via IFileOpenDialog.
+
+        The legacy FolderBrowserDialog (and tkinter's askdirectory) has no
+        address bar, so the user can only click down through the tree and
+        cannot paste a path. IFileOpenDialog is the Vista+ dialog Explorer
+        itself uses: editable address bar, breadcrumbs and a search box.
+
+        The COM shim lives in folderpicker.cs beside this file and is
+        compiled in-memory by Add-Type, so there is no build step.
+        """
+        try:
+            import base64
+            import subprocess
+
+            shim = pathlib.Path(__file__).with_name("folderpicker.cs")
+            try:
+                cs = shim.read_text(encoding="utf-8")
+            except OSError as exc:
+                return {"ok": False, "error": f"缺少 {shim.name}：{exc}"}
+            payload = base64.b64encode(cs.encode("utf-8")).decode("ascii")
+            ps = (
+                "$c = [Text.Encoding]::UTF8.GetString("
+                "[Convert]::FromBase64String('" + payload + "')); "
+                "Add-Type -TypeDefinition $c -Language CSharp; "
+                "$p = [TgvdFolderPicker]::Pick("
+                "'选择保存目录（可直接粘贴路径）'); "
+                "if ($p) { [Console]::Out.Write($p) }"
+            )
+            enc = base64.b64encode(ps.encode("utf-16le")).decode("ascii")
+            argv = ["powershell.exe", "-NoProfile", "-STA",
+                    "-EncodedCommand", enc]
+            kw = {"capture_output": True, "timeout": 600}
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            out = subprocess.run(argv, **kw)
+            p = (out.stdout or b"").decode("utf-8", "ignore").strip()
+            return {"ok": True, "path": p}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # ---------- 任务导入 / 导出（仅元数据，绝不含视频本体）----------
+    def tasks_exportable(self):
+        """List tasks the user can pick for export."""
+        out = []
+        for t in core.load_tasks():
+            items = t.get("items") or []
+            out.append({
+                "id": str(t.get("id") or ""),
+                "title": str(t.get("channel_title") or ""),
+                "channel": str(t.get("channel") or ""),
+                "created": str(t.get("created") or ""),
+                "count": len(items),
+                "done": sum(1 for i in items
+                            if str(i.get("status")) == "done"),
+            })
+        return {"ok": True, "tasks": out}
+
+    def export_tasks(self, ids, keep_status=True):
+        """Build a portable bundle for the selected task ids."""
+        wanted = [str(x) for x in (ids or [])]
+        if not wanted:
+            return {"ok": False, "error": "没有选择任务"}
+        root = core.get_download_root(self.cfg)
+        picked = [t for t in core.load_tasks()
+                  if str(t.get("id")) in wanted]
+        if not picked:
+            return {"ok": False, "error": "所选任务不存在"}
+        bundle = taskport.build_bundle(picked, root,
+                                       keep_status=bool(keep_status))
+        return {"ok": True, "bundle": bundle,
+                "filename": taskport.safe_bundle_filename(),
+                "count": len(bundle["tasks"])}
+
+    def import_tasks(self, bundle):
+        """Recreate tasks from a bundle, re-anchoring folders to this root."""
+        try:
+            parsed = taskport.parse_bundle(bundle)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        root = core.get_download_root(self.cfg)
+        tasks = taskport.materialize(parsed, root,
+                                     new_task_id=core.new_task_id)
+        saved = []
+        for t in tasks:
+            with contextlib.suppress(OSError):
+                pathlib.Path(t["folder"]).mkdir(parents=True, exist_ok=True)
+            core.save_task(t, force=True)
+            saved.append({"id": t["id"], "title": t["channel_title"]})
+        return {"ok": True, "count": len(saved), "tasks": saved}
+
+    # ---------- 每日壁纸（Bing 图片，缓存到 data_dir/cache）----------
+    def _wallpaper(self):
+        wp = getattr(self, "_wallpaper_cache", None)
+        if wp is None:
+            data_dir = getattr(self, "data_dir", None) or core.DATA_DIR
+            wp = wallpaper.WallpaperCache(data_dir)
+            self._wallpaper_cache = wp
+        return wp
+
+    def wallpaper_status(self):
+        return self._wallpaper().status()
+
+    def wallpaper_refresh(self, force=False):
+        return self._wallpaper().refresh(force=bool(force))
+
+    def wallpaper_history(self):
+        return self._wallpaper().history()
+
+    def wallpaper_select(self, date):
+        return self._wallpaper().select(date)
+
+    def wallpaper_delete(self, date):
+        return self._wallpaper().delete(date)
+
+    def set_wallpaper_history(self, enabled):
+        return self._wallpaper().set_save_history(enabled)
+
     def get_settings(self):
+        roots = [str(pathlib.Path(root).resolve())
+                 for root in (self.allowed_roots or ())]
         return {
             "download_root": str(
                 self.cfg.get("download_root") or core.DEFAULT_DOWNLOAD_ROOT
             ),
+            "mode": self.runtime_mode,
+            "allowed_roots": roots,
+            "can_open_local": self.runtime_mode != "headless",
+            "can_choose_folder": self.runtime_mode != "headless",
+        }
+
+    def disk_space(self):
+        """保存位置（下载根目录）的剩余/总容量：舞台磁盘节点显示「剩余 x GB」。"""
+        try:
+            root = core.get_download_root(self.cfg)
+            usage = shutil.disk_usage(str(root))
+        except Exception:
+            return {"ok": False}
+        return {
+            "ok": True,
+            "path": str(root),
+            "free": int(usage.free),
+            "total": int(usage.total),
         }
 
     def set_download_root(self, path):
-        self.cfg["download_root"] = path
+        resolved, error = self._resolve_runtime_folder(path, create=True)
+        if error:
+            return {"ok": False, "error": error}
+        self.cfg["download_root"] = str(resolved)
         core.save_config(self.cfg)
         core.get_download_root(self.cfg)
         return {"ok": True}
@@ -2192,8 +2756,14 @@ class Api:
         if cap is None:
             return {"ok": False}
         try:
-            changed, url, ver = cap.render_jpeg()
-            return {"ok": True, "changed": changed, "url": url, "v": ver}
+            changed, url, ver, lum = cap.render_jpeg()
+            return {
+                "ok": True,
+                "changed": changed,
+                "url": url,
+                "v": ver,
+                "lum": lum,
+            }
         except Exception as e:
             print("[GUI] backdrop_frame 失败：", e)
             return {"ok": False}
@@ -2297,6 +2867,7 @@ class AmbientCapture:
         self.version = 0
         self._cache_key = None
         self._prev_bytes = None       # 上一次 JPEG 字节，用于内容去重
+        self._cache_lum = None
 
     def _main_rect(self):
         r = wintypes.RECT()
@@ -2408,11 +2979,11 @@ class AmbientCapture:
     def render_jpeg(self, out_w=None, quality=82):
         """按主窗当前屏幕位置，从最新全屏帧裁剪背后区域，降采样并烘焙
         模糊，编码为 JPEG data URL。
-        返回 (是否有变化, url或None, 版本号)。可从任意线程调用。"""
+        返回 (是否有变化, url或None, 版本号, 感知亮度)。可从任意线程调用。"""
         rect = self._main_rect()
         with self._lock:
             if self._frame is None:
-                return False, None, 0
+                return False, None, 0, None
             fw, fh, buf = self._frame
             ver = self.version
             if out_w is None:
@@ -2423,12 +2994,12 @@ class AmbientCapture:
                 out_w = max(640, min(1600, round(rw * 0.5)))
             key = (ver, rect, out_w, quality)
             if key == self._cache_key:
-                return False, None, ver
+                return False, None, ver, self._cache_lum
             x, y, w, h = rect
             x0, y0 = max(0, x), max(0, y)
             x1, y1 = min(fw, x + w), min(fh, y + h)
             if x1 <= x0 or y1 <= y0:
-                return False, None, ver
+                return False, None, ver, self._cache_lum
             from PIL import Image
             full = Image.frombuffer("RGBA", (fw, fh), buf, "raw", "BGRA", 0, 1)
             # crop 在锁内完成，得到独立图像，避免 buf 被 pump 复用
@@ -2441,7 +3012,7 @@ class AmbientCapture:
         # 对角冷色液晶染色。旧版“盒式 resize 霜化”（先缩到约 74px 再放大
         # 回全尺寸）会让文本行变成横向条带，深色 IDE 背景整体 murky 灰暗，
         # 故彻底删除。注：仅 liquid 主题调用，静态主题不受影响。
-        from PIL import Image, ImageFilter, ImageEnhance
+        from PIL import Image, ImageFilter, ImageEnhance, ImageStat
         phys_w = rect[2] or cw
         # 输出宽约为主窗物理宽的一半，半径按比例反推，目标≈28 物理像素霜化
         r_eff = max(8, min(22, round(28 * cw / max(1, phys_w))))
@@ -2471,18 +3042,20 @@ class AmbientCapture:
         tint = Image.composite(purple, blue, self._diag_mask)
         tint = tint.resize((cw, ch), Image.BILINEAR)
         baked = Image.blend(baked, tint, 0.10)
+        lum = round(float(ImageStat.Stat(baked.convert("L")).mean[0]), 1)
+        self._cache_lum = lum
         bio = io.BytesIO()
         baked.save(bio, format="JPEG", quality=quality)
         data = bio.getvalue()
         if data == self._prev_bytes:
             # 裁剪内容真正未变，不重复推送（静止画面零 JS 通信）
             self._cache_key = key
-            return False, None, ver
+            return False, None, ver, lum
         self._prev_bytes = data
         url = ("data:image/jpeg;base64,"
                + base64.b64encode(data).decode("ascii"))
         self._cache_key = key
-        return True, url, ver
+        return True, url, ver, lum
 
 
 def _dpi_scale():
@@ -2527,9 +3100,18 @@ class _BackdropDriver:
         self.user32 = user32
         self.last_ver = 0
         self.n = 0
+        self.mode = "dark"
 
     def set_mode(self, mode):
         """UI 线程调用：进入液态玻璃才创建放大镜并启动泵，其余模式停止。"""
+        self.mode = mode
+        # T19c：沉浸式标题栏随外观联动（light=浅色 caption，
+        # dark/liquid=深色 caption + Mica）；失败不阻塞外观切换
+        try:
+            import wv2_native
+            wv2_native.set_immersive_caption(self.hwnd, mode != "light")
+        except Exception as ex:
+            print("[GUI] 标题栏外观同步失败：", ex)
         if mode == "liquid":
             if self.cap is None:
                 cap = AmbientCapture()
@@ -2552,19 +3134,49 @@ class _BackdropDriver:
         except Exception as ex:
             print("[GUI] pump 失败：", ex)
 
+    # A page that reloads (entering 设置 re-renders the view, and a hash change
+    # can reload the document) loses the backdrop image: it lives only in a CSS
+    # background-image set by the last pushed frame. Because this loop only
+    # pushed on *change*, a static scene never sent anything again, so the
+    # background stayed blank until the user moved the window. Re-push the last
+    # encoded frame on a slow heartbeat so any fresh document recovers on its
+    # own.
+    BACKDROP_REPUSH_SECS = 2.0
+
     def push_loop(self):
         # 后台线程：编码并经 main 注入的推送句柄发出事件（不直接触碰页面）
         last = 0
+        last_url = None
+        last_lum = None
+        last_push = 0.0
         while True:
             time.sleep(0.2)              # 5fps 推送；环境光变化缓慢，足够流畅，
                                         # 静止画面字节去重零通信
             try:
-                if self.cap is None or self.cap.version == last:
+                # A stopped timer does not stop this already-running thread.
+                # Without the mode gate it kept re-pushing the last liquid
+                # frame every 2s after the user switched to Bing wallpaper.
+                if self.cap is None or self.mode != "liquid":
+                    last_url = None
+                    last_lum = None
+                    last_push = 0.0
                     continue
-                changed, url, ver = self.cap.render_jpeg()
-                if changed and url:
-                    self.api.push_event("_setBackdrop", [url])
-                last = ver
+                if self.cap.version != last:
+                    changed, url, ver, lum = self.cap.render_jpeg()
+                    if changed and url:
+                        self.api.push_event("_setBackdrop", [url, lum])
+                        last_url = url
+                        last_lum = lum
+                        last_push = time.monotonic()
+                    last = ver
+                    continue
+                # Static scene: heartbeat re-push so a reloaded document gets
+                # its backdrop back without waiting for motion.
+                now = time.monotonic()
+                if (last_url is not None
+                        and now - last_push >= self.BACKDROP_REPUSH_SECS):
+                    self.api.push_event("_setBackdrop", [last_url, last_lum])
+                    last_push = now
             except Exception as ex:
                 print("[GUI] 背景推送失败：", ex)
                 time.sleep(0.5)
@@ -2650,7 +3262,9 @@ def main():
             handle.base_url + "/#t=" + handle.token,
             api,
             1180, 780,
-            (960, 640),
+            # 最小尺寸放宽至移动宽度（360 对齐 T18 视口矩阵移动档），
+            # 使窗口可拉伸到移动尺寸并展示 <768 移动适配页
+            (360, 640),
             _bg,
             on_shown,
         )

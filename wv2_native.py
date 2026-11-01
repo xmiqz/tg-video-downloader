@@ -7,6 +7,8 @@
     与 gui.py main() 既有链一致），逻辑尺寸（CSS 像素语义，默认 1180x780）
     按窗口所在显示器 DPI 换算为物理客户区，再用 AdjustWindowRectEx 求外框；
   - WM_DESTROY / WM_CLOSE / WM_SIZE / WM_MOVE / WM_DPICHANGED 带毫秒时间戳日志；
+  - 窗口类图标取自 build/tvg.ico（冻结态读 _MEIPASS/assets/tvg.ico），
+    缺失或载入失败时静默降级为无图标，不影响窗口创建；
   - SetTimer/WM_TIMER 无人值守自动关闭；PrintWindow(PW_RENDERFULLCONTENT)
     截图，失败回退 BitBlt，zlib+struct 手写最小 PNG（Truecolor, 8bit/RGB）。
 
@@ -76,6 +78,12 @@ SWP_NOACTIVATE = 0x0010
 
 SM_CXSCREEN = 0
 SM_CYSCREEN = 1
+SM_CXICON = 11
+SM_CXICONSM = 49
+
+# 图标载入（winuser.h：LoadImageW）
+IMAGE_ICON = 1
+LR_LOADFROMFILE = 0x0010
 
 # 截图（winuser.h / wingdi.h）
 PW_RENDERFULLCONTENT = 2
@@ -253,6 +261,10 @@ user32.PostQuitMessage.argtypes = [ctypes.c_int]
 user32.PostQuitMessage.restype = None
 user32.LoadCursorW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR]
 user32.LoadCursorW.restype = wintypes.HCURSOR
+user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR,
+                              wintypes.UINT, ctypes.c_int, ctypes.c_int,
+                              wintypes.UINT]
+user32.LoadImageW.restype = wintypes.HANDLE
 user32.DestroyWindow.argtypes = [wintypes.HWND]
 user32.DestroyWindow.restype = wintypes.BOOL
 user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
@@ -331,6 +343,60 @@ kernel32.GetTickCount64.argtypes = []
 kernel32.GetTickCount64.restype = ctypes.c_ulonglong
 kernel32.GetNativeSystemInfo.argtypes = [ctypes.POINTER(SYSTEM_INFO)]
 kernel32.GetNativeSystemInfo.restype = None
+
+# --- dwmapi（T19c 沉浸式标题栏） -------------------------------------------
+# DWMWA_USE_IMMERSIVE_DARK_MODE=20（Win10 1809+；旧内测值 19 不再回溯）、
+# DWMWA_WINDOW_CORNER_PREFERENCE=37（Win11）、DWMWA_SYSTEMBACKDROP_TYPE=38
+# （Win11 22H2+）。属性不被系统支持时 DwmSetWindowAttribute 返回失败
+# HRESULT，调用侧一律静默忽略（系统版本差异不阻塞建窗）。
+DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+DWMWA_BORDER_COLOR = 34
+DWMWA_CAPTION_COLOR = 35
+DWMWA_TEXT_COLOR = 36
+DWMWA_WINDOW_CORNER_PREFERENCE = 37
+DWMWA_SYSTEMBACKDROP_TYPE = 38
+
+try:
+    dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
+    dwmapi.DwmSetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD,
+                                             ctypes.c_void_p, wintypes.DWORD]
+    dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long   # HRESULT
+except Exception:
+    dwmapi = None
+
+
+def set_immersive_caption(hwnd, dark, backdrop=True):
+    """沉浸式标题栏（T19c）：深/浅色 caption + Win11 圆角 + Mica 背景，
+    对齐 Windows 自带软件（计算器/设置）的窗口标签观感。
+
+    dark=True 深色 caption（白字白钮），False 浅色；backdrop=True 附加
+    Mica 主窗背景（DWMSBT_MAINWINDOW=2）。任何属性写失败（Win10 无
+    Mica/旧构建属性号差异）静默忽略，绝不抛异常阻塞建窗。
+    """
+    if not hwnd or dwmapi is None:
+        return
+
+    def _set(attr, val):
+        v = ctypes.c_int(val)
+        try:
+            dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(v),
+                                         ctypes.sizeof(v))
+        except Exception:
+            pass
+
+    _set(DWMWA_USE_IMMERSIVE_DARK_MODE, 1 if dark else 0)
+    # Immersive dark mode alone still follows the OS accent/theme in some
+    # Win11 builds, which made the owned task-editor window look like a light
+    # tab under a dark app. Pin caption/border/text colors to the app palette
+    # so every top-level window stays visually consistent.
+    caption = 0x000F0807 if dark else 0x00F5ECE9   # COLORREF #07080F / #E9ECF5
+    text = 0x00FFFFFF if dark else 0x002E1A10      # white / #101A2E
+    _set(DWMWA_BORDER_COLOR, caption)
+    _set(DWMWA_CAPTION_COLOR, caption)
+    _set(DWMWA_TEXT_COLOR, text)
+    _set(DWMWA_WINDOW_CORNER_PREFERENCE, 2)      # DWMWCP_ROUND
+    if backdrop:
+        _set(DWMWA_SYSTEMBACKDROP_TYPE, 2)      # DWMSBT_MAINWINDOW（Mica）
 
 
 # ============================================================================
@@ -473,10 +539,40 @@ WNDPROC = ctypes.CFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT,
 
 _CLASS_ATOM = 0          # 进程内只注册一次窗口类
 _WNDPROC_REF = None      # 模块级保活
+_ICON_HANDLES = []       # 窗口类引用图标句柄，类存活期间不可释放
 _MSG_NAMES = {WM_CREATE: "WM_CREATE", WM_DESTROY: "WM_DESTROY",
               WM_MOVE: "WM_MOVE", WM_SIZE: "WM_SIZE", WM_CLOSE: "WM_CLOSE",
               WM_TIMER: "WM_TIMER", WM_NCCREATE: "WM_NCCREATE",
               WM_DPICHANGED: "WM_DPICHANGED"}
+
+
+def _app_icon_path():
+    """定位随包的 build/tvg.ico（源码态在仓库里，冻结态经 --add-data 进
+    _MEIPASS/assets）。本模块导入白名单不含 os，路径拼接走字符串操作。"""
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return base + "\\assets\\tvg.ico"
+    here = globals().get("__file__") or ""
+    if not here:
+        return ""
+    here = here.replace("/", "\\")
+    cut = here.rfind("\\")
+    return (here[:cut] + "\\build\\tvg.ico") if cut >= 0 else ""
+
+
+def _load_app_icon(small):
+    """载入窗口图标；任何失败都返回 None——图标缺失不应阻止窗口创建。"""
+    path = _app_icon_path()
+    if not path:
+        return None
+    try:
+        px = user32.GetSystemMetrics(SM_CXICONSM if small else SM_CXICON)
+        px = px or (16 if small else 32)
+        handle = user32.LoadImageW(None, path, IMAGE_ICON, px, px,
+                                   LR_LOADFROMFILE)
+    except Exception:
+        return None
+    return handle or None
 
 
 def _ensure_window_class():
@@ -493,12 +589,15 @@ def _ensure_window_class():
     wc.cbClsExtra = 0
     wc.cbWndExtra = 0
     wc.hInstance = hinst
-    wc.hIcon = None
+    icon = _load_app_icon(False)
+    icon_sm = _load_app_icon(True) or icon
+    _ICON_HANDLES.extend([h for h in (icon, icon_sm) if h])
+    wc.hIcon = icon
     wc.hCursor = user32.LoadCursorW(None, wintypes.LPCWSTR(IDC_ARROW))
     wc.hbrBackground = gdi32.GetStockObject(WHITE_BRUSH)  # 白底，便于取证
     wc.lpszMenuName = None
     wc.lpszClassName = CLASS_NAME
-    wc.hIconSm = None
+    wc.hIconSm = icon_sm
     atom = user32.RegisterClassExW(ctypes.byref(wc))
     if not atom:
         raise ctypes.WinError(ctypes.get_last_error())

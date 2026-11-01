@@ -1,0 +1,17 @@
+[PASS] bootstrap setup completes
+[PASS] setup writes session_key + revoked_sessions (keys=['created_at', 'digest', 'iterations', 'revoked_sessions', 'salt', 'session_key', 'version'])
+[PASS] remember login issues r1 token (token=r1.259...<masked>)
+[PASS] r1 expires_at == now + 30d (expires_at=2593000)
+[PASS] remembered token valid after restart
+[PASS] plain login still issues opaque token (token=eYvKVw...<masked>)
+[PASS] plain token rejected after restart
+[PASS] revoked remembered token rejected after restart
+[PASS] no plaintext tokens persisted (sha256 id only) (revoked_entries=1)
+[PASS] revocation entry matches sha256(token) + expires_at
+[PASS] remembered token expires after 30 days
+[PASS] legacy 4-key auth.json loads and is backfilled (keys=['digest', 'iterations', 'revoked_sessions', 'salt', 'session_key', 'version'])
+[PASS] legacy password still logs in after backfill
+[PASS] no auth.json created when unconfigured
+
+checks: 14/14 passed
+T60 结论：PASS（14 项）

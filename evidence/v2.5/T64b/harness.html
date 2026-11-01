@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>T64b 命名区渲染夹具</title>
+  <link rel="stylesheet" href="../../../web/css/tokens.css">
+  <link rel="stylesheet" href="../../../web/css/shell.css">
+  <link rel="stylesheet" href="../../../web/css/views/new.css">
+  <style>
+    /* 夹具专用：把结果区放在卡片里，模拟新建下载步骤 2 的纵向布局 */
+    .fx-root { padding: 24px; max-width: 1080px; margin: 0 auto; }
+    .fx-head { font-size: 20px; color: var(--color-text-strong); margin: 0 0 16px; }
+    .fx-wiz { display: flex; flex-direction: column; gap: var(--space-3); }
+    .fx-toolbar { display: flex; gap: var(--space-2); align-items: center; }
+    .fx-note { margin: 0 0 8px; color: var(--color-text-muted); font-size: var(--text-sm); }
+  </style>
+</head>
+<body>
+  <div class="fx-root">
+    <h1 class="fx-head" id="fx-title"></h1>
+    <p class="fx-note" id="fx-sub"></p>
+    <div class="fx-wiz" id="fx-host"></div>
+  </div>
+
+  <script type="module">
+    import { el } from "../../../web/js/ui/index.js";
+    import { createNamingBar, NAMING_COPY } from "../../../web/js/naming.js";
+
+    const state = (new URLSearchParams(location.search).get("state") || "off");
+    const labels = {
+      off: ["默认态（不改名）", "命名档位默认关闭：行只展示原文件名，命名全选/全不选禁用。"],
+      rename: ["改名态（窄上下文）", "开启智能重命名，档位「改名」：每行给出拟命名并登记（未下载）。"],
+      wide: ["更宽上下文命名态", "档位切到「更宽上下文命名」：搜索参数 name_wide=1，拟名取更宽前后文。"],
+    };
+    const [t, s] = labels[state] || labels.off;
+    document.getElementById("fx-title").textContent = t;
+    document.getElementById("fx-sub").textContent = s;
+
+    const host = document.getElementById("fx-host");
+    const bar = createNamingBar(el, {
+      mode: state,
+      note: NAMING_COPY.note,
+      onModeChange: function () {},
+      onSelectAll: function () {},
+    });
+
+    // 工具条（筛选框 + 全选/清空，命名全选/全不选已并入命名块）
+    const toolbar = el("div", { class: "nw-toolbar fx-toolbar" }, [
+      el("div", { class: "nw-searchbox" }, [
+        el("span", { class: "nw-search-ico", "aria-hidden": "true", text: "⌕" }),
+        el("input", {
+          class: "nw-input nw-search-input", type: "text",
+          placeholder: "在结果中筛选名称/消息原文…",
+        }),
+      ]),
+      el("div", { class: "nw-selact" }, [
+        el("button", { class: "u-btn u-btn--ghost", type: "button", text: "全选" }),
+        el("button", { class: "u-btn u-btn--ghost", type: "button", text: "清空" }),
+      ]),
+    ]);
+
+    // 两行样例（脱敏：仅占位名，不含真实频道/文件信息）
+    const rows = [];
+    for (let i = 1; i <= 2; i++) {
+      const k = "示例频道|" + (100 + i);
+      const name = "示例文件 " + i + ".mp4";
+      const eff = "示例拟命名 " + i + "（已登记）";
+      const useRn = state !== "off";
+      const nameText = document.createTextNode(useRn ? eff : name);
+      const rnWrap = el("div", { class: "nw-rename" });
+      if (useRn) {
+        rnWrap.append(
+          el("input", { class: "nw-rn-check", type: "checkbox", checked: true }),
+          el("span", { class: "nw-rename-label", text: NAMING_COPY.fieldLabel }),
+          el("input", { class: "nw-rn-input", type: "text", value: eff }),
+          el("span", { class: "nw-rn-state is-on", text: NAMING_COPY.stateRecorded })
+        );
+      }
+      rnWrap.append(el("button", {
+        class: "nw-det-btn", type: "button", text: "详情",
+      }));
+      rows.push(el("div", {
+        class: "nw-row is-sel", role: "checkbox", "aria-checked": "true",
+        dataset: { key: k },
+      }, [
+        el("div", { class: "nw-cbox", "aria-hidden": "true", text: "✓" }),
+        el("div", { class: "nw-info" }, [
+          el("div", { class: "nw-name" }, [nameText]),
+          rnWrap,
+          el("div", { class: "nw-sub" }, [
+            document.createTextNode("2026-01-0" + i + " · 示例正文摘要，仅用于布局取证"),
+          ]),
+        ]),
+        el("div", { class: "nw-side" }, [
+          el("span", { class: "nw-size", text: (i * 120) + " MB" }),
+          el("span", { class: "nw-srctag", text: "示例频道" }),
+        ]),
+      ]));
+    }
+
+    host.append(toolbar, bar.el, el("div", { class: "nw-list" }, rows));
+  </script>
+</body>
+</html>

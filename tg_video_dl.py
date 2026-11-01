@@ -59,11 +59,35 @@ CONFIG_PATH = DATA_DIR / "tg_config.json"
 SESSION_PATH = str(DATA_DIR / "tg_session")
 DEFAULT_DOWNLOAD_ROOT = DATA_DIR / "downloads"
 TASK_ROOT = DATA_DIR / "tasks"          # 任务清单（断点续传）
+_TASK_RELOCATION_DONE = False
+
+
+def configure_data_dir(path):
+    """覆盖进程级数据目录。
+
+    必须在 EngineLoop / Telethon client 启动前调用。桌面端不调用时保持
+    「程序平级 TG视频下载器数据」的便携语义；无头服务与容器传入卷路径。
+    """
+    global DATA_DIR, CONFIG_PATH, SESSION_PATH
+    global DEFAULT_DOWNLOAD_ROOT, TASK_ROOT, _TASK_RELOCATION_DONE
+
+    DATA_DIR = pathlib.Path(path).expanduser().resolve()
+    CONFIG_PATH = DATA_DIR / "tg_config.json"
+    SESSION_PATH = str(DATA_DIR / "tg_session")
+    DEFAULT_DOWNLOAD_ROOT = DATA_DIR / "downloads"
+    TASK_ROOT = DATA_DIR / "tasks"
+    _TASK_RELOCATION_DONE = False
+    return DATA_DIR
+
 
 PART = 8 * 1024 * 1024     # 分片大小
 CONCURRENT = 4             # 并行连接数
 RETRIES = 3                # 单视频重试次数
 STALL_SECS = 90            # 停滞判定秒数
+# ---- T24 断网感知与停滞分片重置（FR-11 / AC-9）----
+SHARD_RESET_MAX = 3        # 单分片停滞重置上限（首取 +3 次重置 = 至多 4 个迭代器）
+NET_POLL_SECS = 2.0        # 断网轮询间隔（生产 2s；测试 monkeypatch 即退）
+SIMPLE_TIMEOUT_SECS = 1800 # simple_download 总超时（断网期间暂停计时）
 SPEED_WIN_SEC = 10.0       # 总速度滑动窗口：统计最近 10 秒下载量，每秒更新
 # T50 目录搬运跨卷分块大小。依据：单搬运线程内存上限 ≤4 MiB；4 MiB 在
 # 10 MB/s 慢速 U 盘上单块约 0.4s，满足作业帧 ≤500ms 节拍预算；NVMe/SSD
@@ -100,8 +124,78 @@ ACCT_COOLDOWN_MAX = 300.0
 # acct_hint 事件去抖：同 task+reason 最小间隔（channel_private 不受限）。
 ACCT_HINT_MIN_INTERVAL = 30.0
 
+# ---- T59 账号健康巡检阈值（FR-41 收口 / tasks.md Task 59）----
+# warm_alt 由一次性 20s fire-and-forget 预热升级为有界后台巡检
+# （health loop）。以下阈值全部可被 cfg.acct_policy 可选键覆盖
+# （load_acct_policy——与 T51 慢速阈值同源，无第二配置源）：
+#   warm_poll_sec=60：巡检轮询间隔（10..600）；
+#   warm_hard_fail_max=3：连续确定性硬错上限→标 unhealthy（1..10）；
+#   warm_unhealthy_backoff_sec=600：unhealthy 退避秒（30..3600）；
+#   warm_transient_backoff_sec=30：瞬时错指数退避基值（1..300）。
+WARM_POLL_SEC = 60.0
+WARM_HARD_FAIL_MAX = 3
+WARM_UNHEALTHY_BACKOFF = 600.0
+# 瞬时退避序列钉死 30/60/120/300/300…（任务书 TR-59.1①）：前 3 次
+# 指数 2 倍，第 4 次起一律封顶本值。
+WARM_TRANSIENT_BACKOFF = 30.0
+WARM_TRANSIENT_BACKOFF_MAX = 300.0
+
+# ---- T25 慢任务让路（FR-12 / tasks.md Task 25，默认关）----
+# 判定阈值四件（独立于 ACCT_* 账号级常量——那是"账号慢→改派分流"，
+# 本组是"条目慢→暂停让路"；缺省值与 ACCT_* 同源取值但不共享变量）：
+#   SLOW_YIELD_BPS=200KB/s：条目档典型限速体感（同 ACCT_SLOW_BPS 档位）；
+#   SLOW_YIELD_WIN_SEC=20：持续低速满 20s 才触发（跨短抖动，同
+#     ACCT_SLOW_WIN_SEC 两倍于速度采样窗以避开启动爬坡）；
+#   SLOW_YIELD_COOLDOWN_SEC=60：让路后最短暂停时长（到期才谈恢复）；
+#   SLOW_YIELD_MAX=3：单条目单会话让路上限（防抖/防饿死）。模块常量、
+#     不提供任务级键——task["params"] 四可选键被红线钉死（§2.1），
+#     上限唯一来源即本常量（测试经 monkeypatch 独立验证生效）。
+SLOW_YIELD_BPS = 200 * 1024        # 204800 B/s ≈ 200 KB/s
+SLOW_YIELD_WIN_SEC = 20.0
+SLOW_YIELD_COOLDOWN_SEC = 60.0
+SLOW_YIELD_MAX = 3
+
 # 无权限频道错误类名钉死集合（用 type(e).__name__ 与真 telethon 类比较）。
 PRIVATE_ERROR_NAMES = {"ChannelPrivateError"}
+
+# ---- T21 持久化防抖与 .bak 轮转（FR-8 / AC-8）----
+PERSIST_DEBOUNCE_SECS = 1.0      # 合并窗口（FR-8 要求 1–2s，取 1.0）
+PERSIST_MAX_WAIT_SECS = 2.0      # 自首次脏起的保底落盘上限
+PERSIST_BAK_COUNT = 3            # .bak 轮转保留份数
+# 终态状态词集合（判定 force 落盘；沿用既有状态词，不新造）
+PERSIST_FORCE_STATUSES = ("done", "exists", "failed", "skipped", "cancelled")
+
+# ---- T22 错误分类重试与 file_reference 刷新（FR-9 / AC-6）----
+# 瞬时退避序列钉死 3s/6s/12s，超过 3 次间隔后一律封顶 12s（§2 契约）。
+RETRY_BACKOFF = (3.0, 6.0, 12.0)
+RETRY_BACKOFF_CAP = 12.0       # 越界取此封顶值
+FILE_REFRESH_MAX = 3           # file_reference 单条刷新上限（第 4 次过期=确定性失败）
+RETRIES_MIN = 0                # 任务级/全局 retries 合法区间（0..8；
+                               # 0=不重试即仅 1 次尝试，由 download_one 兑现）
+RETRIES_MAX = 8
+RETRY_FLOOD_SPARE = 32         # flood 不计次的有界安全阀（§2“任何路径
+                               # 不得无限重试”）；一次性会话远达不到，
+                               # 仅防极端 flood 背靠背导致循环无界续转。
+# 确定性错误名集合（按 type(e).__name__ 判定，不硬 import；与
+# PRIVATE_ERROR_NAMES 同风格）。三件均已在当前 telethon 1.45.0
+# 验证存在（t22_result.md 形状备忘逐项证明）：
+#   ChannelPrivateError——频道私有/无权限（该账号永不可访问此频道）
+#   MediaEmptyError——引用消息无文档/无媒体
+#   MessageIdInvalidError——消息 ID 无效/已删除
+# 候选剔除记录（不存在或非永久无效，终版不入集）：DiscussionGroup
+# UnavailableError / EntitySizeKnownError（当前 telethon 无此类）；
+# ChatWriteForbiddenError / SlowModeWaitError（存在但下载场景非永久
+# 无效/属等待语义）；MsgIdInvalidError（存在但为旧别名，避免双名歧义）。
+DETERMINISTIC_ERROR_NAMES = frozenset({
+    "ChannelPrivateError", "MediaEmptyError", "MessageIdInvalidError",
+})
+# 控制类名集合（分类器归档 control；download_one 侧维持现状
+# 穿透（AccountDenied/CancelledError 走 BaseException）或经专属
+# except 原样返回 paused/removed/skipped——分类器不得截留）。
+CONTROL_ERROR_NAMES = frozenset({
+    "PauseFile", "RemoveFile", "SkipFile",
+    "AccountDenied", "CancelledError",
+})
 
 
 # ---------------- 配置与登录 ----------------
@@ -124,6 +218,8 @@ def save_config(cfg):
     tmp.write_text(
         json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    if os.name != "nt":
+        os.chmod(tmp, 0o600)
     os.replace(tmp, CONFIG_PATH)
 
 
@@ -133,6 +229,74 @@ def get_download_root(cfg):
     root = pathlib.Path(raw) if raw else DEFAULT_DOWNLOAD_ROOT
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def relocate_imported_tasks():
+    """Repair task folders after a data directory is copied to another machine.
+
+    Task JSON stores absolute paths, so a copied ``tasks`` directory can point
+    at a path that only existed on the source machine (for example
+    ``C:\\Users\\old\\...\\TG视频下载器数据\\downloads``). For every task whose
+    folder is missing, re-anchor it under this instance's current download
+    root while preserving the trailing channel folder when possible.
+
+    This is intentionally startup-only, conservative, and idempotent:
+    existing folders are never rewritten, and a missing task folder with no
+    recognizable name falls back to the current root instead of creating a
+    path from another machine.
+    """
+    global _TASK_RELOCATION_DONE
+    if _TASK_RELOCATION_DONE:
+        return []
+    _TASK_RELOCATION_DONE = True
+
+    cfg = load_config()
+    root = get_download_root(cfg)
+    changed = []
+    if not TASK_ROOT.exists():
+        return changed
+    for path in TASK_ROOT.glob("*.json"):
+        try:
+            task = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(task, dict) or not task.get("id"):
+            continue
+        raw = str(task.get("folder") or "").strip()
+        if not raw:
+            continue
+        old = pathlib.Path(raw).expanduser()
+        if old.exists():
+            continue
+        # Keep the last path component (usually the channel folder) when it
+        # is safe; otherwise use the current root. Parse both separators so a
+        # Windows task copied into a Linux/NAS data volume (and vice versa)
+        # does not turn the whole foreign path into one directory name.
+        leaf = raw.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        if leaf and leaf not in (".", ".."):
+            target = root / leaf
+        else:
+            target = root
+        # If the copied task still has an old folder on this machine, the
+        # leaf may already be a valid but unrelated sibling. Do not overwrite
+        # it: leave that task untouched so the user can choose the correct
+        # destination explicitly in the editor.
+        if target.exists():
+            continue
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            task["folder"] = str(target)
+            # force=True bypasses the startup write coalescer. A plain
+            # save_task here could leave the repaired path only in memory
+            # until the process exits, so a copied-data user would see the
+            # same bad folder on the next launch.
+            if save_task(task, force=True):
+                changed.append((task["id"], raw, str(target)))
+        except OSError:
+            continue
+    if changed:
+        print(f"[task] 已自动重定位 {len(changed)} 个迁移任务的保存目录")
+    return changed
 
 
 def setup_console_utf8():
@@ -197,6 +361,24 @@ def ensure_dirs_and_migrate():
 
     # T56 Bug5：提升流程中断对账（零网络；正常态零动作）
     reconcile_session_promotion()
+
+    # T59：异常手机号启动对账（只标记不删除；零网络；正常态零写盘）
+    reconcile_phones(load_config())
+
+    # T21：tasks 目录原子写残留 .*.json.tmp 清理（只清 tmp，绝不碰 bak）
+    try:
+        for tmp_task in TASK_ROOT.glob("*.json.tmp"):
+            try:
+                tmp_task.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+    # Copied data directories retain absolute task folders from the source
+    # machine. Repair those once at startup so the task library/editor do not
+    # show unusable paths after moving the data directory between devices.
+    relocate_imported_tasks()
 
 
 # 内置凭证：Telegram 官方桌面客户端公开使用的 api_id/api_hash，
@@ -279,6 +461,15 @@ def load_acct_policy():
                              1024, 100 * 1024 * 1024)),
         "slow_win_sec": _num("slow_win_sec", ACCT_SLOW_WIN_SEC, 5, 300),
         "cooldown_sec": _num("cooldown_sec", ACCT_COOLDOWN_SECS, 10, 1800),
+        # T59 巡检阈值（§2.4：可选键；缺省=内置默认，非法值回落默认，
+        # 与 T51 阈值同源——本函数是唯一配置覆盖入口）
+        "warm_poll_sec": _num("warm_poll_sec", WARM_POLL_SEC, 10, 600),
+        "warm_hard_fail_max": int(_num("warm_hard_fail_max",
+                                       WARM_HARD_FAIL_MAX, 1, 10)),
+        "warm_unhealthy_backoff_sec": _num(
+            "warm_unhealthy_backoff_sec", WARM_UNHEALTHY_BACKOFF, 30, 3600),
+        "warm_transient_backoff_sec": _num(
+            "warm_transient_backoff_sec", WARM_TRANSIENT_BACKOFF, 1, 300),
     }
 
 
@@ -407,6 +598,105 @@ def reconcile_session_promotion():
         save_config(cfg)
         print("[acct] reconcile: 检测到提升后残留的小号配置/附属文件，"
               "已收敛（新主号授权完好）")
+
+
+def validate_phone(p):
+    """T59 §2.2 异常手机号校验（纯函数；规则写死如下，禁自由发挥）：
+      1) 空值（None/空串/纯空白）→ "empty"；
+      2) 允许恰好一个前导 '+'，其余必须全为 ASCII 数字 → 否则
+         "non-digit"；
+      3) 数字总位数 7..15（E.164）→ 否则 "length"；
+      4) 总位数 >7 时国家码段首位不得为 0（"国家码 1-3 位非零开头"
+         规则的可判定投影：仅 >7 位时校验首位）→ 否则 "country-code"。
+    合法返回 ""。钉死用例：q→non-digit；""→empty；123→length；
+    "+"+90 位数字→length；+0123456789→country-code；+8613800138000
+    →合法。"""
+    s = str(p or "").strip()
+    if not s:
+        return "empty"
+    if s.startswith("+"):
+        s = s[1:]
+    if not s or not (s.isascii() and s.isdigit()):
+        return "non-digit"
+    if not (7 <= len(s) <= 15):
+        return "length"
+    if len(s) > 7 and s[0] == "0":
+        return "country-code"
+    return ""
+
+
+def _mask_phone(p):
+    """T59 §2.2 手机号脱敏（日志强制）：显示为 ****+末 2 位；长度 <2
+    （含空值）一律 ****。任何 [acct]/[wacct]/巡检/校验日志输出手机号
+    必须经本助手，禁明文。"""
+    s = str(p or "")
+    return "****" + s[-2:] if len(s) >= 2 else "****"
+
+
+def reconcile_phones(cfg):
+    """T59 §2.2 启动对账：异常手机号清洗——只标记不删除（零网络、
+    幂等）。由 ensure_dirs_and_migrate 在 reconcile_session_promotion
+    之后调用（入参为现读 cfg）。
+
+    校验范围与落点（规则钉死）：
+      - cfg["phone"]（主号顶层键；键缺席=未登录/已登出，正常态不算脏）
+        与 cfg["accounts"][*]["phone"]（历史遗留可选键；键缺席=小号
+        phone 本就不落盘的正常态，不算脏）；
+      - 脏值 → 对应 accounts 条目加可选键 "phone_invalid": true；
+        合法且该条目曾被标 → 清除标记自愈（不删除任何条目/文件/
+        既有键；合法号零触碰）；
+      - 主号标记落在 id=="main" 条目：accounts 键缺席但主号 phone 脏
+        时补建仅含 main 的最小条目承载标记（T58 提升流程实测形态：
+        脏 phone 写入顶层的同时 accounts 被 pop——不补建则该脏值
+        永远不可见、不可清洗）；
+      - 主号脏 phone 只影响可见性/登录预填，不进调度排除（主号是
+        唯一回退号，_eligible 的 invalid 守卫仅对小号生效）。
+    幂等：重复跑 changed=0、零写盘（mtime 不变）。返回 changed 计数。
+    [wacct] invalid 行：id/reason/脱敏 phone，一行一条（仅首标时）。"""
+    if not isinstance(cfg, dict):
+        return 0
+    accts = cfg.get("accounts")
+    if not isinstance(accts, list):
+        accts = None
+    main_phone = cfg.get("phone")
+    # 主号需要标记但无承载条目：补建仅含 main 的最小条目（红线 5：
+    # cfg 仅 accounts 条目允许加可选标记键；不写任何 alt 配置）
+    if (main_phone is not None and validate_phone(main_phone)
+            and not any(isinstance(a, dict) and a.get("id") == ACCT_MAIN
+                        for a in (accts or []))):
+        if accts is None:
+            accts = []
+            cfg["accounts"] = accts
+        accts.insert(0, {"id": ACCT_MAIN})
+    if accts is None:
+        return 0
+    changed = 0
+    for a in accts:
+        if not isinstance(a, dict):
+            continue
+        aid = a.get("id")
+        cand = []                       # (脏值, 原因)：main 含顶层键
+        if aid == ACCT_MAIN and main_phone is not None:
+            r = validate_phone(main_phone)
+            if r:
+                cand.append((main_phone, r))
+        if "phone" in a:
+            r = validate_phone(a.get("phone"))
+            if r:
+                cand.append((a.get("phone"), r))
+        if cand:
+            phone, reason = cand[0]
+            if not a.get("phone_invalid"):
+                a["phone_invalid"] = True
+                changed += 1
+                _wacct_log(f"id={aid} event=invalid reason={reason} "
+                           f"phone={_mask_phone(phone)}")
+        elif a.get("phone_invalid"):
+            a.pop("phone_invalid", None)   # 自愈：清除过期标记
+            changed += 1
+    if changed:
+        save_config(cfg)
+    return changed
 
 
 def prompt_manual_api(cfg):
@@ -612,6 +902,9 @@ REF_TEXT_MAX_CHARS = 120    # record["ref_text"] 最大字符数（空白压缩�
 
 # ---- T48 流式搜索（search_videos_stream）----
 STREAM_FLUSH_ITEMS = 40     # 脊线扫描中每攒满 40 条可下发命中即出一批 items 增量帧
+STREAM_FLUSH_SECS = 0.8     # 2.3：出帧时间维——命中零散时也持续出帧（实测
+                            # 44 条命中攒到第 40 条才首出帧，前端列表整程空转；
+                            # 帧协议/每帧 ≤40 条/T48 上界断言均不变）
 # progress.phase → 中文展示映射（TUI 与前端同源同文，逐字钉死）
 SEARCH_PHASE_TEXT = {
     "server_search": "服务端搜索",
@@ -774,7 +1067,8 @@ async def _pull_ids_retry(client, ent, chunk):
 
 
 async def _search_ref_matches(client, pending, entity, discuss, pools,
-                               terms, mode, excludes, raw, cancel=None):
+                               terms, mode, excludes, raw, cancel=None,
+                               max_batches=ENRICH_MAX_BATCHES):
     """T47：为"自身文本未命中"的候选补全外部文本并二次匹配。
 
     外部文本三桶（self 桶已在 search_videos 主循环判定）：
@@ -795,7 +1089,8 @@ async def _search_ref_matches(client, pending, entity, discuss, pools,
 
     批量与缓存：先把全部待补候选的目标 id 汇总（跨候选去重、剔除
     池内已有、剔除候选自身 id），按 entity 分组、id 升序，每
-    ENRICH_BATCH_SIZE 个一批 get_messages；ENRICH_MAX_BATCHES 预算
+    ENRICH_BATCH_SIZE 个一批 get_messages；max_batches 批次预算
+    （缺省 ENRICH_MAX_BATCHES；search_videos_stream 按扫描窗口联动放大）
     耗尽即停（truncated），取回消息全部入池供同批其它候选复用。
 
     T48 起改为异步生成器（消费方：search_videos_stream）：
@@ -896,7 +1191,7 @@ async def _search_ref_matches(client, pending, entity, discuss, pools,
         ent_t = plan_ent[eid]
         pool = pools.setdefault(eid, {})
         for i in range(0, len(ids), ENRICH_BATCH_SIZE):
-            if batches >= ENRICH_MAX_BATCHES:
+            if batches >= max_batches:
                 truncated = True
                 break
             # T48 取消检查点：每批发请求前轮询（协作式，不用 task.cancel()）
@@ -1003,6 +1298,7 @@ async def search_videos(client, entity, p):
     date_from/date_to  日期区间 YYYY-MM-DD（含端点）
     scope       channel/comments/both
     sort        date/size
+    deep_scan   可选（1/true）：无起始日期也放开到 HARD_SCAN_CAP 深度扫描
     返回 (records, meta)。
     """
     final, meta = [], None
@@ -1059,6 +1355,10 @@ async def search_videos_stream(client, entity, p, cancel=None):
         dto = dto + _dt.timedelta(days=1)   # 含当天
     scope = p.get("scope", "channel")
     sort = p.get("sort", "date")
+    # 深度扫描（可选开关，缺省关）：无起始日期也放开到 HARD_SCAN_CAP，
+    # 让外部文本（引用/相册/转发）候选覆盖突破 MAX_LOCAL_SCAN 翻页窗口。
+    deep_scan = str(p.get("deep_scan", "")).strip().lower() in (
+        "1", "true", "yes", "y", "on")
 
     terms, excludes = parse_keywords(query)
     raw = query.split(",")[0] if mode == "phrase" else query
@@ -1068,7 +1368,15 @@ async def search_videos_stream(client, entity, p, cancel=None):
     # 指定起始日期时，日期本身就是天然的扫描停止点：允许突破
     # MAX_LOCAL_SCAN 继续向旧消息翻页，直到扫到早于 dfrom 的消息；
     # 否则频道历史超过上限时，日期符合的早期视频会被漏扫。
-    scan_cap = HARD_SCAN_CAP if dfrom is not None else MAX_LOCAL_SCAN
+    # deep_scan 显式开关同理放开（扫描停止点仍为 HARD_SCAN_CAP 安全阀）。
+    scan_cap = (HARD_SCAN_CAP
+                if (dfrom is not None or deep_scan) else MAX_LOCAL_SCAN)
+    # 补抓批次预算随扫描窗口乘法联动（×窗口倍数 = scan_cap //
+    # MAX_LOCAL_SCAN）：默认 5000 窗口 ×1 即既有 ENRICH_MAX_BATCHES，
+    # 行为不变（含 monkeypatch 精确生效面）；deep_scan/起始日期把窗口
+    # 放大到 HARD_SCAN_CAP 时 ×20，pending 候选同量增加，预算不联动
+    # 则外部文本补抓被截断、深度扫描白改。
+    enrich_max_batches = ENRICH_MAX_BATCHES * max(1, scan_cap // MAX_LOCAL_SCAN)
 
     def _cancelled():
         return cancel is not None and cancel.is_set()
@@ -1086,6 +1394,7 @@ async def search_videos_stream(client, entity, p, cancel=None):
     pending = []           # [(msg, src)]：已过体积/日期、terms 非空且自身未命中（判定序）
     emitted_keys = set()   # 已下发 (src, mid)（防"下发后被挤出 limit"）
     outbox = []            # items 待冲刷缓冲（帧内 ≤ STREAM_FLUSH_ITEMS）
+    flush_ts = [time.time()]  # 上次出帧时刻（2.3 时间维出帧）
     ref_confirmed = {}     # (src, mid) -> record：零请求/增量预确认（R 权威兜底）
     conf_keys = []         # 已确认命中排序键（有序；窗口计数 bisect 用）
     uk_keys = []           # unknown pending 排序键（有序）
@@ -1107,16 +1416,21 @@ async def search_videos_stream(client, entity, p, cancel=None):
         }
 
     def _flush(force=False):
-        """取走待发帧：默认攒满 STREAM_FLUSH_ITEMS 出一批；force 时出清
-        剩余并按 STREAM_FLUSH_ITEMS 切帧（尾帧可不满）。"""
+        """取走待发帧：默认攒满 STREAM_FLUSH_ITEMS 出一批，或距上批
+        ≥STREAM_FLUSH_SECS 且有余量即出（2.3 时间维：命中零散时也持续
+        出帧，修整程空转）；force 时出清剩余并按 STREAM_FLUSH_ITEMS
+        切帧（尾帧可不满）。每帧 ≤STREAM_FLUSH_ITEMS 不变。"""
         frames = []
         if force:
             while outbox:
                 frames.append(outbox[:STREAM_FLUSH_ITEMS])
                 del outbox[:STREAM_FLUSH_ITEMS]
-        elif len(outbox) >= STREAM_FLUSH_ITEMS:
+        elif outbox and (len(outbox) >= STREAM_FLUSH_ITEMS
+                         or time.time() - flush_ts[0] >= STREAM_FLUSH_SECS):
             frames.append(outbox[:STREAM_FLUSH_ITEMS])
             del outbox[:STREAM_FLUSH_ITEMS]
+        if frames:
+            flush_ts[0] = time.time()
         return frames
 
     def _confirm_hit(rec):
@@ -1205,6 +1519,8 @@ async def search_videos_stream(client, entity, p, cancel=None):
                     pool[m.id] = m
                     yield _progress("server_search")
         judged_ids = set()
+        local_n = 0        # 本地翻页条目计数（scan_cap 配额只计本地翻页，
+                           # 服务端入池不挤占本地扫描配额）
         agen = client.iter_messages(ent)
         async for m in agen:
             if _cancelled():
@@ -1212,13 +1528,14 @@ async def search_videos_stream(client, entity, p, cancel=None):
             # T47 local_scan 同序：入池 → 判定 → dfrom → cap
             pool[m.id] = m
             judged_ids.add(m.id)
+            local_n += 1
             _after_judge(_judge(m, src), m, src)
             yield _progress("local_scan")
             for frame in _flush():
                 yield {"kind": "items", "items": frame}
             if dfrom is not None and m.date is not None and m.date < dfrom:
                 break   # 已覆盖全部目标时间段，不算触顶
-            if len(pool) >= scan_cap:
+            if local_n >= scan_cap:
                 capped = True
                 # 触顶帧：让 capped=True 的首个 progress 帧落在
                 # local_scan 阶段（其后各帧粘滞携带）
@@ -1347,7 +1664,8 @@ async def search_videos_stream(client, entity, p, cancel=None):
             return
         agen = _search_ref_matches(
             client, pending, entity, discuss, pools,
-            terms, mode, excludes, raw, cancel=cancel)
+            terms, mode, excludes, raw, cancel=cancel,
+            max_batches=enrich_max_batches)
         try:
             async for ev in agen:
                 if ev["kind"] == "batch":
@@ -1872,18 +2190,34 @@ class Monitor:
     async def set_phase(self, phase, detail="", index=None, total=None):
         """切换阶段。未知阶段是编程错误（AssertionError）；非法转移拒绝并
         保持原阶段（打印技术日志）；终态幂等不可再变。detail 为裸细节，
-        phase_detail 存 phase_text 拼装产物（全链同源文案）。"""
+        phase_detail 存 phase_text 拼装产物（全链同源文案）。
+        T24：同相位 detail 刷新（old == phase 且 detail 非空）时就地
+        更新 phase_detail 并照常发通知——不校验转移表、不改 self.phase、
+        不重置 phase_entered、不动 index/total；供断网进入/恢复提示用
+        （断网期不新增 phase，用既有 downloading + detail 表达）。"""
         if phase not in PHASE_LABELS:
             raise AssertionError(f"未知下载阶段：{phase!r}")
         async with self.lock:
             old = self.phase
             if old == phase and not detail:
-                # 同阶段重申（open 的 preparing 首帧）：仍发一次通知
+                # 同阶段重申（open 的 preparing 首帧）：仍发一次通知；
+                # T24 恢复清空：detail 为空时把 phase_detail 复位为
+                # 该相位短名（断网提示语清除，同相位不改 self.phase）。
+                if self.phase_detail != phase_text(phase, ""):
+                    self.phase_detail = phase_text(phase, "")
                 self._fire_phase_cb(phase, self.phase_detail,
                                     self.phase_index, self.phase_total)
                 return
             if old in PHASE_TERMINAL:
                 return                      # 终态不可再变（幂等）
+            if old == phase and detail:
+                # T24 同相位 detail 刷新：就地更新文案并通知（不转移）
+                self.phase_detail = phase_text(phase, detail)
+                text = self.phase_detail
+                index_ = self.phase_index
+                total_ = self.phase_total
+                self._fire_phase_cb(phase, text, index_, total_)
+                return
             if not phase_transition_ok(old, phase):
                 print(f"[!] 忽略非法阶段转移 {old} -> {phase}")
                 return
@@ -2363,35 +2697,96 @@ async def parallel_download(client, item, target, ctl, state=None):
         if os.path.exists(mark):
             return
         got = 0
+        reset = 0               # T24 停滞重置计数（每代新迭代器超时 +1）
+        net_down = False        # T24 断网等待态（局部标志去重，每事件一行）
+        net_rounds = 0          # T24 断网轮询轮数（recover wait= 换算）
         async with sem:
             tripped = _ctl_or_abort(ctl, state)
             if tripped:
                 raise tripped
-            it = client.iter_download(
-                msg.media, offset=off,
-                request_size=512 * 1024, file_size=size
-            ).__aiter__()
-            # 独立文件句柄，直写到本分片的字节区间
-            with open(work, "r+b") as f:
-                f.seek(off)
-                while True:
+            while True:
+                if net_down:
+                    # 断网等待：暂停一切计时；每轮先过 ctl（暂停/取消/
+                    # 跳过同样一个轮询周期内生效，无不可取消阻塞），
+                    # 再按 _NET_SLEEP 轮询；恢复后丢弃旧迭代器从 off
+                    # 重下——不消耗分片重置次数、不消耗 T22 重试预算。
                     tripped = _ctl_or_abort(ctl, state)
                     if tripped:
                         raise tripped
-                    try:
-                        chunk = await asyncio.wait_for(
-                            it.__anext__(), timeout=STALL_SECS
-                        )
-                    except StopAsyncIteration:
-                        break
-                    take = min(len(chunk), ln - got)
-                    if take > 0:
-                        f.write(chunk[:take])
-                        got += take
-                        if mon:
-                            await mon.add(key, take)
-                    if got >= ln:
-                        break
+                    await _NET_SLEEP(NET_POLL_SECS)
+                    net_rounds += 1
+                    if not _net_is_connected(client):
+                        continue
+                    net_down = False
+                    _net_log(f"id={msg.id} part={idx} recover=1 "
+                             f"wait={net_rounds * NET_POLL_SECS:g}")
+                    if mon:
+                        await mon.set_phase("downloading", "")
+                # 每次（首取/断网恢复/停滞重置）重新取迭代器：从 off 起步
+                it = client.iter_download(
+                    msg.media, offset=off,
+                    request_size=512 * 1024, file_size=size
+                ).__aiter__()
+                complete = False
+                # 独立文件句柄，直写到本分片的字节区间
+                with open(work, "r+b") as f:
+                    f.seek(off)
+                    got = 0
+                    while True:
+                        tripped = _ctl_or_abort(ctl, state)
+                        if tripped:
+                            raise tripped
+                        try:
+                            chunk = await asyncio.wait_for(
+                                it.__anext__(), timeout=STALL_SECS
+                            )
+                        except StopAsyncIteration:
+                            if got < ln:
+                                raise IOError(f"分片 {idx} 不完整")
+                            complete = True
+                            break
+                        except asyncio.TimeoutError:
+                            # T24 超时分流：先探测连通性；FloodWait 路径
+                            # 不在此（T22 原链，互不交叉）
+                            if not _net_is_connected(client):
+                                # 断网：进入有界轮询等待（事件去重，
+                                # 不消耗重置次数）
+                                if not net_down:
+                                    net_down = True
+                                    net_rounds = 0
+                                    _net_log(
+                                        f"id={msg.id} part={idx} down=1")
+                                    if mon:
+                                        await mon.set_phase(
+                                            "downloading",
+                                            "网络断开，等待自动恢复")
+                                break
+                            # 连通正常：分片停滞重置（取消/丢弃旧迭代器）
+                            reset += 1
+                            if reset > SHARD_RESET_MAX:
+                                _shard_log(
+                                    f"id={msg.id} part={idx} giveup=1 "
+                                    f"reset={SHARD_RESET_MAX} reason=stall")
+                                raise ShardResetExhausted(msg.id, idx)
+                            _shard_log(
+                                f"id={msg.id} part={idx} "
+                                f"reset={reset}/{SHARD_RESET_MAX} "
+                                f"reason=stall")
+                            break
+                        take = min(len(chunk), ln - got)
+                        if take > 0:
+                            f.write(chunk[:take])
+                            got += take
+                            if mon:
+                                await mon.add(key, take)
+                        if got >= ln:
+                            complete = True
+                            break
+                if net_down:
+                    continue            # 外层 while 头：断网轮询等待
+                if complete:
+                    break               # 分片取满，收尾
+                # 停滞重置分支：got < ln 且非断网 → 外层循环重新取迭代器
         if got < ln:
             raise IOError(f"分片 {idx} 不完整")
         # 零字节完成标记
@@ -2432,6 +2827,12 @@ async def simple_download(client, item, target, ctl, state=None):
         task = asyncio.create_task(
             client.download_media(msg, file=target, progress_callback=prog)
         )
+        # T24：硬 wait_for(1800) 替换为基于循环时间的 deadline；断网期
+        # 每轮轮询给 deadline 顺延一个轮询周期时长（等价暂停计时，
+        # 断网前已用额度保留）。pump 控制轮询仍是 0.2s。
+        deadline = loop.time() + SIMPLE_TIMEOUT_SECS
+        net_down = False        # T24 断网等待态（simple 路径 part 用 -）
+        net_rounds = 0
         while not task.done():
             tripped = _ctl_or_abort(ctl, state)
             if tripped:
@@ -2441,17 +2842,208 @@ async def simple_download(client, item, target, ctl, state=None):
                 except asyncio.CancelledError:
                     pass
                 raise tripped
+            if not _net_is_connected(client):
+                # T24 断网：暂停总超时计时 + down/recover 事件（去重）
+                if not net_down:
+                    net_down = True
+                    net_rounds = 0
+                    _net_log(f"id={msg.id} part=- down=1")
+                    if mon:
+                        await mon.set_phase("downloading",
+                                            "网络断开，等待自动恢复")
+                # 每轮顺延一个轮询周期（=本轮等待时长）：等价暂停
+                # 计时——断网期不消耗总额度，断网前已用时间保留。
+                deadline += NET_POLL_SECS
+                await _NET_SLEEP(NET_POLL_SECS)
+                net_rounds += 1
+                continue
+            if net_down:
+                net_down = False
+                _net_log(f"id={msg.id} part=- recover=1 "
+                         f"wait={net_rounds * NET_POLL_SECS:g}")
+                if mon:
+                    await mon.set_phase("downloading", "")
+            if loop.time() >= deadline:
+                # 超过总额度：维持原 TimeoutError 语义
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                raise TimeoutError(f"simple 下载超时（{SIMPLE_TIMEOUT_SECS}s）")
             await asyncio.sleep(0.2)
         task.result()
 
-    await asyncio.wait_for(pump(), timeout=1800)
+    await pump()
+
+
+# ============ T22 重试分类公共件（FR-9 / AC-6，refresh/download 邻域） ============
+
+class DeterministicDownloadError(Exception):
+    """永久无效下载错误（消息已删除/无文档/评论组不可用）：
+    重试无意义，download_one 收到即零 sleep 快失败（§2 契约）。"""
+
+
+# 测试缝（照 _CLIENT_FACTORY 注释风格）：模块级可覆盖 sleep 句柄。
+# 生产恒为 asyncio.sleep；测试 monkeypatch 为即退收集器（TR 不得
+# 真实等 3+6+12 秒）。download_one 的瞬时退避与 FloodWait 无 mon
+# 等待统一走此句柄；其他路径（pump 轮询 0.2s 等）不经句柄。
+_RETRY_SLEEP = asyncio.sleep
+
+
+# ---- T24 断网感知公共件（FR-11 / AC-9；本任务唯一新增公共面）----
+# 测试缝（照 _RETRY_SLEEP 风格）：断网轮询专用可覆盖 sleep 句柄。
+# 生产恒为 asyncio.sleep；测试 monkeypatch 为即退收集器（TR 不得
+# 真实等 NET_POLL_SECS×N）。parallel 断网等待与 simple 断网期共用。
+_NET_SLEEP = asyncio.sleep
+
+
+# ---- T59 账号健康巡检公共件（FR-41 收口 / tasks.md Task 59）----
+# 测试缝（照 _NET_SLEEP 风格）：巡检排程等待专用可覆盖 sleep 句柄。
+# 生产恒为 asyncio.sleep；测试 monkeypatch 为假时钟推进器（TR 不得
+# 真实等 60s 轮询/30-300s 退避/600s unhealthy 窗）。health loop 的
+# 轮询等待一律走此句柄；单次预热 20s 限时仍走 asyncio.wait_for
+# （不在本缝——探测本身受 20s 上限约束）。
+_WARM_SLEEP = asyncio.sleep
+
+
+# ---- T25 慢任务让路公共件（FR-12 / tasks.md Task 25，默认关）----
+# 测试缝（照 _WARM_SLEEP 风格）：让路巡检专用可覆盖 sleep 句柄。
+# 生产恒为 asyncio.sleep（巡检节拍 1.0s，随 run_download_session
+# 生命周期启停）；测试 monkeypatch 为短真实 sleep（时间读数照常
+# 走 time.monotonic() 真时，压缩的是巡检等待成本，禁真实等 20s 窗
+# /60s 冷却；窗口与冷却秒数由 task.params 四键缩至秒级）。
+_YIELD_SLEEP = asyncio.sleep
+
+
+def _net_is_connected(client) -> bool:
+    """T24 连通探测：调 client.is_connected()；任何异常 fail-open 返回
+    True（探测失败不误判断网，保持旧行为——只有明确返回 False 才算
+    断网）。普通函数（可 monkeypatch；parallel/simple 两路共用）。"""
+    try:
+        return bool(client.is_connected())
+    except Exception:
+        return True
+
+
+class ShardResetExhausted(Exception):
+    """T24 分片停滞重置超限：同一分片 3 次重置（共 4 个迭代器）仍无
+    字节进账。带 msg/part 信息；经 classify_download_error 未知兜底落
+    transient（不得加入确定性集合），升级为条目级 3/6/12 重试。"""
+
+    def __init__(self, mid, part):
+        self.mid = mid
+        self.part = part
+        super().__init__(f"分片 {part} 停滞重置超限（3/3）")
+
+
+def _net_log(line):
+    """T24 机读日志：[net] 前缀，一行一条，字段稳定可 grep；
+    只含 msg id/分片号/秒数，禁带文件名/手机号/密钥/会话串。"""
+    print(f"[net] {line}", flush=True)
+
+
+def _shard_log(line):
+    """T24 机读日志：[shard] 前缀，一行一条，只含 msg id/分片号。"""
+    print(f"[shard] {line}", flush=True)
+
+
+def _retry_log(line):
+    """T22 机读日志：固定前缀 [retry]，一行一条，字段稳定可 grep；
+    只含 msg id/异常类名/秒数，禁带手机号/密钥/会话串。"""
+    print(f"[retry] {line}", flush=True)
+
+
+def _wacct_log(line):
+    """T59 机读日志：[wacct] 前缀（账号巡检专用），一行一条，字段稳定
+    可 grep；只含账号 id/秒数/计数/脱敏手机号，禁带明文手机号/密钥/
+    会话串。探测结果行 event 词表钉死：probe|recover|flood|backoff|
+    unhealthy|invalid；生命周期行（loop=exit，§2.1 循环退出一行）不带
+    event（六词均为探测结果语义）。"""
+    print(f"[wacct] {line}", flush=True)
+
+
+def _yield_log(line):
+    """T25 机读日志：[yield] 前缀（慢任务让路专用），一行一条，字段
+    稳定可 grep。事件行键序钉死六键 event/item/speed_bps/win/queued/
+    count（值均 int；win=与本事件相关的持续秒数：pause=低速已持续、
+    resume=暂停已持续、skip_trigger=低速已累计、exhausted=低速已
+    持续）；event 词表钉死 pause|resume|skip_trigger|exhausted；
+    生命周期行 loop=exit（循环退出唯一行，关态零行=管理器零启动）。
+    只含消息 id/秒数/计数，禁带文件名/路径/手机号/密钥/会话串。"""
+    print(f"[yield] {line}", flush=True)
+
+
+def classify_download_error(exc) -> str:
+    """T22 五档分类：control | flood | reference | deterministic | transient。
+    - control（PauseFile/RemoveFile/SkipFile/AccountDenied/CancelledError，
+      名字+isinstance 双保险）；AccountDenied/CancelledError 为
+      BaseException 本就穿出 except Exception——分类器只归档不截留。
+    - flood（FloodWaitError）/ reference（FileReferenceExpiredError）：
+      名字判定优先，兜底真类 isinstance。
+    - deterministic：DeterministicDownloadError，或名字命中
+      DETERMINISTIC_ERROR_NAMES（三件均已在 telethon 1.45.0 验证存在，
+      见常量区注释；T22/1.45+ 若更名按报告铁则剔除并记录）。
+    - 其余（TimeoutError/ConnectionError/OSError/asyncio.TimeoutError/
+      5xx/未知）一律 transient（保守，维持现行重试行为）。"""
+    name = type(exc).__name__
+    if (name in CONTROL_ERROR_NAMES
+            or isinstance(exc, (PauseFile, RemoveFile, SkipFile,
+                                AccountDenied))
+            or isinstance(exc, asyncio.CancelledError)):
+        return "control"
+    if name == "FloodWaitError" or isinstance(exc, FloodWaitError):
+        return "flood"
+    if (name == "FileReferenceExpiredError"
+            or isinstance(exc, FileReferenceExpiredError)):
+        return "reference"
+    if isinstance(exc, DeterministicDownloadError):
+        return "deterministic"
+    if name in DETERMINISTIC_ERROR_NAMES:
+        return "deterministic"
+    return "transient"
+
+
+def _valid_retries(v):
+    """retries 合法值：0..8 整数（bool 排除；float/str/越界均非法）。"""
+    return (isinstance(v, int) and not isinstance(v, bool)
+            and RETRIES_MIN <= v <= RETRIES_MAX)
+
+
+def _exec_cap(tries) -> int:
+    """retries 配置值 → 总尝试次数上限（§2/TR-22.5 联合锁定）：
+    0→1（不重试即仅 1 次尝试）；1→2（允许一次退避重试）；
+    >=2→retries 自身（2→2，默认 3→3，8→8）。由任务书 TR-22.5
+    （0→1 次尝试、1→2 次尝试）与 TR-22.2（默认 3 次执行、5 次执行）、
+    TR-22.5（cfg=2→2 次尝试）四点共同钉死，唯一自洽公式。"""
+    if tries <= 0:
+        return 1
+    return max(2, tries)
+
+
+def resolve_retries(task, cfg=None) -> int:
+    """T22 有效重试次数（总尝试次数上限；0=仅 1 次尝试由 download_one
+    兑现）：params.retries 合法→其值；否则 cfg['retries']（tg_config
+    可选键，仅读取无写入口）合法→其值；否则模块常量 RETRIES(=3)。
+    非法值一律回落不抛（核心侧读到无效值忽略回默认——§2）。"""
+    params = task.get("params") if isinstance(task, dict) else None
+    if isinstance(params, dict):
+        v = params.get("retries")
+        if _valid_retries(v):
+            return v
+    if isinstance(cfg, dict):
+        v2 = cfg.get("retries")
+        if _valid_retries(v2):
+            return v2
+    return RETRIES
 
 
 async def refresh_record(client, sess, item):
     """file_reference 过期刷新：按条目来源重取该条消息并**原地**更新
     item/rec 的 msg/doc/size（sess.records 与队列中的是同一对象引用），
     任务清单持久条目 size 同步（make_task_item 字段集不变，无 phase 键）。
-    消息已删除/无文档按确定性错误抛 RuntimeError。返回新 msg。"""
+    T22：消息已删除/无文档/评论组不可用按确定性错误抛
+    DeterministicDownloadError（原 RuntimeError，消息文本保留）。返回新 msg。"""
     task = sess.task
     src = item.get("src", SRC_CHANNEL)
     key = (src, item["msg"].id)
@@ -2463,13 +3055,15 @@ async def refresh_record(client, sess, item):
         else:
             ent = await get_discuss_entity(client, chan)
             if ent is None:
-                raise RuntimeError("评论组不可用，无法刷新引用")
+                # T22：评论组不可用=永久无效（重试无意义）
+                raise DeterministicDownloadError("评论组不可用，无法刷新引用")
         sess.entities[src] = ent
     m = await client.get_messages(ent, ids=item["msg"].id)
     if isinstance(m, list):
         m = m[0] if m else None
     if m is None or not getattr(m, "document", None):
-        raise RuntimeError(f"#{item['msg'].id} 消息已删除或无文档")
+        # T22：消息已删除/无文档=永久无效（重试无意义）
+        raise DeterministicDownloadError(f"#{item['msg'].id} 消息已删除或无文档")
     new_size = getattr(m.document, "size", 0) or item["size"]
     item["msg"] = m
     item["doc"] = m.document
@@ -2490,10 +3084,26 @@ async def refresh_record(client, sess, item):
 
 
 async def download_one(client, item, target, ctl, state=None):
-    """返回 ok / skipped / skip-exists / paused / removed / ('fail', reason)"""
+    """返回 ok / skipped / skip-exists / paused / removed / ('fail', reason)
+
+    T22 重试分类（§2 行为契约，入口/返回词表与现状一致）：
+      - flood：严格等待（UI 走 mon.enter_flood；无 mon 时句柄 sleep
+        seconds+1），不消耗任何重试预算，等待后原 attempt 重新执行；
+      - reference：独立刷新预算（单条上限 FILE_REFRESH_MAX=3），成功
+        刷新后重下且不占瞬时次数；第 4 次过期=确定性失败；刷新动作
+        异常按分类落入 deterministic（立即失败）/transient（占一次
+        瞬时预算并按退避）口径；
+      - deterministic：立即 fail（零 sleep）；
+      - transient：RETRY_BACKOFF 3/6/12 封顶 12s，总尝试次数=有效
+        retries（默认 RETRIES=3；params.retries 0..8 任务级可配，
+        cfg['retries'] 全局可选），上限即 failed（不自动重入队）。
+    机读日志前缀 [retry]（一行一条，仅 msg id/异常类名/秒数）。"""
     size = item["size"]
     mon = state["monitor"] if state else None
     key = (item.get("src", SRC_CHANNEL), item["msg"].id)
+    mid = item["msg"].id
+    sess = (state or {}).get("session")
+    cfg = (state or {}).get("cfg") if state else None
 
     if os.path.exists(target):
         if size and os.path.getsize(target) == size:
@@ -2503,7 +3113,20 @@ async def download_one(client, item, target, ctl, state=None):
         except OSError:
             pass
 
-    for attempt in range(RETRIES):
+    def _task_for_retries():
+        return getattr(sess, "task", None) if sess is not None else None
+
+    # T22：两类独立计数（flood/成功刷新不占任何预算）；有界 for——
+    # 界 = 执行上限 + 刷新上限 + flood 安全阀（§2：任何路径不得无限重试）。
+    transient_attempt = 0
+    ref_refresh = 0
+    base_tries = _exec_cap(resolve_retries(_task_for_retries(), cfg))
+    for _round in range(base_tries + FILE_REFRESH_MAX + RETRY_FLOOD_SPARE):
+        # 每 attempt 头重取有效 retries（正在下载的条目改
+        # params.retries/cfg 后下次重试即生效——edit_task live 同步依
+        # 赖此行为）。0=不重试即仅 1 次尝试在此兑现（见 _exec_cap）。
+        tries = resolve_retries(_task_for_retries(), cfg)
+        exec_cap = _exec_cap(tries)
         # 新一轮尝试开始即清掉上一轮的“限速等待/Ns 后重试”提示：
         # 否则本次成功后旧报错仍残留在卡片上。
         if mon:
@@ -2546,11 +3169,21 @@ async def download_one(client, item, target, ctl, state=None):
                     pass
             return "skipped"
         except FileReferenceExpiredError:
-            # 文件引用过期（T49）：刷新后重试，不计入 3/6/12 退避次数；
-            # 刷新失败回 downloading 并按普通异常分类退避（文案透传）。
-            sess = (state or {}).get("session")
+            # 文件引用过期（T49 刷新 + T22 独立预算）：成功刷新→重下
+            # 不占任何预算；上限后→确定性失败（reason 含刷新上限）；
+            # 刷新异常按分类落入 deterministic（立即失败）/transient
+            # （占一次瞬时预算并退避）口径（消息文本透传）。
+            if ref_refresh >= FILE_REFRESH_MAX:
+                _retry_log(f"giveup id={mid} reason=refresh_cap")
+                reason = (f"#{mid} 文件引用刷新已达上限"
+                          f"（{FILE_REFRESH_MAX} 次）——刷新上限")
+                if mon:
+                    await mon.error(key, reason)
+                return "fail", reason
+            _retry_log(f"kind=reference id={mid} "
+                       f"refresh={ref_refresh + 1}/{FILE_REFRESH_MAX}")
             if mon:
-                await mon.set_phase("refreshing", f"#{item['msg'].id}")
+                await mon.set_phase("refreshing", f"#{mid}")
             try:
                 if sess is None:
                     raise RuntimeError("会话缺失，无法刷新文件引用")
@@ -2560,10 +3193,45 @@ async def download_one(client, item, target, ctl, state=None):
                     await mon.set_phase(
                         "downloading",
                         f"引用刷新失败 {type(rexc).__name__}")
-                raise
+                rkind = classify_download_error(rexc)
+                if rkind == "deterministic":
+                    _retry_log(f"kind=deterministic id={mid} fail_fast=1 "
+                               f"exc={type(rexc).__name__}")
+                    _retry_log(f"giveup id={mid} reason=deterministic")
+                    reason = f"{type(rexc).__name__}: {str(rexc)[:100]}"
+                    if mon:
+                        await mon.error(key, reason)
+                    return "fail", reason
+                # transient（及同名怪例→旧通用退化口径）：
+                # 第 k=ta+1 个瞬时错误；k==exec_cap 即本尝试为第
+                # exec_cap 次（总尝试上限）的失败——直接 giveup。
+                if transient_attempt + 1 >= exec_cap:
+                    _retry_log(f"giveup id={mid} reason=exhausted")
+                    reason = f"{type(rexc).__name__}: {str(rexc)[:100]}"
+                    if mon:
+                        await mon.error(key, reason)
+                    return "fail", reason
+                wait = (RETRY_BACKOFF[transient_attempt]
+                        if transient_attempt < len(RETRY_BACKOFF)
+                        else RETRY_BACKOFF_CAP)
+                transient_attempt += 1
+                _retry_log(f"kind=transient id={mid} "
+                           f"attempt={transient_attempt}/{tries} "
+                           f"wait={wait:g} exc={type(rexc).__name__}")
+                if mon:
+                    await mon.error(
+                        key, f"{type(rexc).__name__} → {wait:g}s 后重试"
+                             f"（{transient_attempt}/{tries}）")
+                await _RETRY_SLEEP(wait)
+                continue
+            ref_refresh += 1
             if mon:
                 await mon.set_phase("downloading", "引用已刷新")
+            # 刷新成功：重下不占任何预算
         except FloodWaitError as e:
+            # T22：等待不消耗任何重试预算，等待后原 attempt 重新执行。
+            _retry_log(f"kind=flood id={mid} "
+                       f"seconds={getattr(e, 'seconds', '?')}")
             if mon:
                 await mon.error(key, f"限速等待 {e.seconds}s")
             if mon:
@@ -2593,19 +3261,41 @@ async def download_one(client, item, target, ctl, state=None):
                         else "skipped"
                 await mon.leave_flood()
             else:
-                await asyncio.sleep(e.seconds + 1)
+                await _RETRY_SLEEP(e.seconds + 1)
         except Exception as e:
-            if attempt == RETRIES - 1:
+            # T22：先分类。deterministic→零 sleep 快失败；control 真类
+            # （PauseFile 等）有专属 except 前置、BaseException 天然穿透——
+            # 到不了此分支；同名怪例（名字判定为 control/flood 但类型
+            # 不匹配者）按现状旧通用语义退避（分类器不截留，TR-22.8）。
+            kind = classify_download_error(e)
+            if kind == "deterministic":
+                _retry_log(f"kind=deterministic id={mid} fail_fast=1 "
+                           f"exc={type(e).__name__}")
+                _retry_log(f"giveup id={mid} reason=deterministic")
                 reason = f"{type(e).__name__}: {str(e)[:100]}"
                 if mon:
                     await mon.error(key, reason)
                 return "fail", reason
-            wait = [3, 6, 12][attempt]
+            # transient：第 k=ta+1 个瞬时错误；k==exec_cap 即本尝试为
+            # 第 exec_cap 次（总尝试上限）的失败——到达上限即 fail。
+            if transient_attempt + 1 >= exec_cap:
+                _retry_log(f"giveup id={mid} reason=exhausted")
+                reason = f"{type(e).__name__}: {str(e)[:100]}"
+                if mon:
+                    await mon.error(key, reason)
+                return "fail", reason
+            wait = (RETRY_BACKOFF[transient_attempt]
+                    if transient_attempt < len(RETRY_BACKOFF)
+                    else RETRY_BACKOFF_CAP)
+            transient_attempt += 1
+            _retry_log(f"kind=transient id={mid} "
+                       f"attempt={transient_attempt}/{tries} "
+                       f"wait={wait:g} exc={type(e).__name__}")
             if mon:
                 await mon.error(
-                    key, f"{type(e).__name__} → {wait}s 后重试（{attempt+1}/{RETRIES}）"
-                )
-            await asyncio.sleep(wait)
+                    key, f"{type(e).__name__} → {wait:g}s 后重试"
+                         f"（{transient_attempt}/{tries}）")
+            await _RETRY_SLEEP(wait)
     return "fail", "重试次数用完"
 
 
@@ -2626,23 +3316,272 @@ def task_file_path(task):
     return TASK_ROOT / f"{task['id']}.json"
 
 
-def save_task(task):
-    """原子写入任务清单：先写 .tmp 再改名，断电也不会写坏"""
-    TASK_ROOT.mkdir(parents=True, exist_ok=True)
+def save_task(task, *, force=False):
+    """保存任务清单（T21 防抖合卷 + .bak 轮转）。
+
+    force=False：默认合卷。若该任务正处于合并窗口（冷启动后 1s 内），本次
+    只把最新值入队合并、不阻塞调用方、返回 None；若窗口已关（冷启动），
+    本次同步落盘最新值（durable）后返回 None，保证“冷启动单次写”调用方
+    视角立即可见（兼容既有 保存→load 同进程读）。latest 值胜出；窗口由
+    周期兜底，自最近一次冷启动起 ≤ PERSIST_DEBOUNCE_SECS 必有新写。
+    force=True：走同一有序原子落盘路径并完成 .bak 轮转后同步返回；成功
+    返回 True、失败返回 False（不抛异常）。
+
+    并发一致性：入队即 deepcopy 一致快照（锁内），序列化期间调用方改原
+    dict 无影响；force 与合卷走同一通道、按任务 id 只留最新值。
+    """
+    if force:
+        return _persist_force(task)
+    return _persist_coalesce(task)
+
+
+# ===================== T21 合卷落盘器（模块级） =====================
+# 单 daemon writer 线程 + 每任务锁；按 task id 维护"最新待写 dict"；
+# 最新值胜出；线程在首次脏写时懒启动。全部写盘异常在持久化层捕获并
+# 输出机读日志（前缀 [persist]），绝不向 worker 调用栈抛异常。
+
+import copy as _copy
+import atexit as _atexit
+
+_PERSIST_LOCK = threading.Lock()        # 保护下方全部 _PERSIST_* 状态
+_PERSIST_PENDING = {}                  # task_id -> (snapshot, seq, force)
+_PERSIST_WINDOW = {}                   # task_id -> 合并窗口截止（monotonic）
+_PERSIST_WRITTEN = {}                  # task_id -> 已写 seq（同步等待用）
+_PERSIST_WRITTEN_OK = {}               # task_id -> 该次写是否成功
+_PERSIST_SEQ = 0                       # 单调递增请求序号（newest-only）
+_PERSIST_REPLACE_COUNT = 0             # 机读：实际 os.replace 成功次数（测试）
+_PERSIST_THREAD = None                 # daemon writer 线程
+_PERSIST_STOP = threading.Event()
+_PERSIST_COND = threading.Condition(_PERSIST_LOCK)
+_PERSIST_EXITING = False               # 解释器退出中：抑制 [persist] 打印
+
+
+def _persist_log(msg):
+    if _PERSIST_EXITING:
+        return
+    print(f"[persist] {msg}", flush=True)
+
+
+def _persist_snapshot(task):
+    """锁外 deepcopy 一致快照：worker 序列化期间调用方改 dict 无影响。"""
+    return _copy.deepcopy(task)
+
+
+def _persist_ensure_writer():
+    global _PERSIST_THREAD
+    with _PERSIST_LOCK:
+        if _PERSIST_THREAD is None or not _PERSIST_THREAD.is_alive():
+            _PERSIST_STOP.clear()
+            _PERSIST_THREAD = threading.Thread(
+                target=_persist_writer_main, name="t21-persist-writer",
+                daemon=True)
+            _PERSIST_THREAD.start()
+
+
+def _persist_coalesce(task):
+    """非 force 默认合卷。冷启动（窗口已关）本次同步 durable 落盘；
+    窗口内只合并最新值不阻塞。返回 None。"""
+    global _PERSIST_SEQ
+    tid = task["id"]
+    snap = _persist_snapshot(task)
+    _persist_ensure_writer()
+    with _PERSIST_LOCK:
+        _PERSIST_SEQ += 1
+        seq = _PERSIST_SEQ
+        now = time.monotonic()
+        if now < _PERSIST_WINDOW.get(tid, 0):
+            # 窗口内：只更新最新值，不阻塞调用方
+            _PERSIST_PENDING[tid] = (snap, seq, False)
+            _PERSIST_COND.notify_all()
+            return None
+        # 冷启动：开本轮窗口，本次同步写（durable）
+        _PERSIST_WINDOW[tid] = now + PERSIST_DEBOUNCE_SECS
+        _PERSIST_PENDING[tid] = (snap, seq, True)
+        _PERSIST_COND.notify_all()
+    _persist_wait_seq(tid, seq)
+    return None
+
+
+def _persist_force(task):
+    """force 同步落盘：走同一通道并等待该 seq 真正写出。"""
+    global _PERSIST_SEQ
+    tid = task["id"]
+    snap = _persist_snapshot(task)
+    _persist_ensure_writer()
+    with _PERSIST_LOCK:
+        _PERSIST_SEQ += 1
+        seq = _PERSIST_SEQ
+        _PERSIST_PENDING[tid] = (snap, seq, True)
+        _PERSIST_WINDOW[tid] = time.monotonic()   # 重开窗口：下一次视为冷
+        _PERSIST_COND.notify_all()
+    return _persist_wait_seq(tid, seq)
+
+
+def _persist_wait_seq(tid, seq):
+    """有界等待该 seq 的写入。成功返回 True、失败/超时返回 False。"""
+    with _PERSIST_LOCK:
+        deadline = time.monotonic() + PERSIST_MAX_WAIT_SECS * 2 + 2.0
+        while True:
+            if _PERSIST_WRITTEN.get(tid, -1) >= seq:
+                return bool(_PERSIST_WRITTEN_OK.get(tid, False))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            _PERSIST_COND.wait(remaining)
+
+
+def _persist_writer_main():
+    while True:
+        with _PERSIST_COND:
+            while True:
+                now = time.monotonic()
+                ready = [tid for tid, (_snap, _sq, force)
+                         in _PERSIST_PENDING.items()
+                         if force or now >= _PERSIST_WINDOW.get(tid, 0)]
+                if ready or _PERSIST_STOP.is_set():
+                    break
+                _PERSIST_COND.wait(0.05)
+            if _PERSIST_STOP.is_set() and not _PERSIST_PENDING:
+                break
+            if not ready:
+                continue
+            batch = [(tid, _PERSIST_PENDING.pop(tid)) for tid in ready]
+        # 锁外逐个写；失败保留最新快照（以非 force 重新入队、重开窗口）
+        for tid, (snap, seq, force) in batch:
+            ok = _persist_write_one(snap, force)
+            with _PERSIST_LOCK:
+                _PERSIST_WRITTEN[tid] = seq
+                _PERSIST_WRITTEN_OK[tid] = ok
+                if not ok:
+                    cur = _PERSIST_PENDING.get(tid)
+                    if cur is None or cur[1] <= seq:
+                        _PERSIST_PENDING[tid] = (snap, seq, False)
+                        _PERSIST_WINDOW[tid] = (time.monotonic()
+                                                 + PERSIST_DEBOUNCE_SECS)
+                _PERSIST_COND.notify_all()
+
+
+def _bak_rotate(path, tid):
+    """best-effort 3 份 .bak 轮转：replace 成功后把上一版正式内容滚入
+    bak1（copy 而非 move，绝不删/截断当前正式文件），bak1→bak2→bak3，
+    删 bak4。轮转失败只记机读日志、不影响正式写成功。"""
+    p = str(path)
+    b1, b2, b3, b4 = p + ".bak1", p + ".bak2", p + ".bak3", p + ".bak4"
+    if os.path.exists(b3):
+        os.replace(b3, b4)
+    if os.path.exists(b2):
+        os.replace(b2, b3)
+    if os.path.exists(b1):
+        os.replace(b1, b2)
+    if os.path.exists(b4):
+        os.remove(b4)
+    if os.path.exists(path):
+        shutil.copyfile(path, b1)
+
+
+def _persist_write_one(task, force):
+    """单任务原子落盘：json.dumps 预检 → 写 .tmp(flush+fsync) →
+    os.replace 12×25ms → replace 成功后再轮转备份。返回是否成功。"""
     path = task_file_path(task)
+    tid = task["id"]
+    try:
+        data = json.dumps(task, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError, RecursionError) as e:
+        # 不可序列化：丢弃该次脏值，正式与 bak 一律不动，不阻塞后续好写
+        _persist_log(f"serialize_error id={tid} "
+                     f"force={1 if force else 0} "
+                     f"exc={type(e).__name__} msg={e}")
+        return False
+    try:
+        TASK_ROOT.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        _persist_log(f"write_error id={tid} force={1 if force else 0} "
+                     f"attempt=0 exc={type(e).__name__} msg={e}")
+        return False
     tmp = str(path) + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(task, f, ensure_ascii=False, indent=2)
-    # Windows：目标文件被并发读（server 轮询/任务库渲染正打开同一 json）
-    # 时 os.replace 报拒绝访问；短退避重试即可恢复，用尽仍失败才上抛。
-    for _try in range(12):
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError as e:
+        _persist_log(f"write_error id={tid} force={1 if force else 0} "
+                     f"attempt=0 exc={type(e).__name__} msg={e}")
+        return False
+    ok = False
+    # 先轮转（把 replace 前正式内容滚入 bak1，bak1→bak2→bak3，绝不碰正式）
+    try:
+        _bak_rotate(path, tid)
+    except OSError as e:
+        _persist_log(f"rotate_error id={tid} exc={type(e).__name__} "
+                     f"msg={e}")
+    for attempt in range(12):
         try:
             os.replace(tmp, path)
-            return
+            ok = True
+            break
         except PermissionError:
-            if _try == 11:
-                raise
+            if attempt == 11:
+                _persist_log(
+                    f"write_error id={tid} force={1 if force else 0} "
+                    f"attempt={attempt + 1} exc=PermissionError "
+                    f"msg=replace 12 次仍被占用")
+                return False
             time.sleep(0.025)
+        except OSError as e:
+            _persist_log(f"write_error id={tid} force={1 if force else 0} "
+                         f"attempt={attempt + 1} exc={type(e).__name__} "
+                         f"msg={e}")
+            return False
+    global _PERSIST_REPLACE_COUNT
+    _PERSIST_REPLACE_COUNT += 1
+    return ok
+
+
+def reset_persistence():
+    """测试复位钩子：停 writer、清待写、join、复位状态（生产代码不调用）。"""
+    global _PERSIST_THREAD, _PERSIST_SEQ, _PERSIST_REPLACE_COUNT
+    _PERSIST_STOP.set()
+    with _PERSIST_LOCK:
+        _PERSIST_COND.notify_all()
+    t = _PERSIST_THREAD
+    if t is not None:
+        t.join(timeout=PERSIST_MAX_WAIT_SECS + 1.0)
+    with _PERSIST_LOCK:
+        _PERSIST_PENDING.clear()
+        _PERSIST_WINDOW.clear()
+        _PERSIST_WRITTEN.clear()
+        _PERSIST_WRITTEN_OK.clear()
+        _PERSIST_SEQ = 0
+        _PERSIST_REPLACE_COUNT = 0
+    _PERSIST_STOP.clear()
+
+
+def _persist_flush_on_exit():
+    """解释器退出有界 flush：先停 daemon writer（防 finalize 期其继续
+    打印/写盘），再兜底把剩余待写同步写掉（退出期静默，出错即丢）。"""
+    global _PERSIST_EXITING
+    try:
+        _PERSIST_EXITING = True
+        _PERSIST_STOP.set()
+        with _PERSIST_LOCK:
+            _PERSIST_COND.notify_all()
+        if _PERSIST_THREAD is not None:
+            _PERSIST_THREAD.join(timeout=PERSIST_MAX_WAIT_SECS + 1.0)
+        if _PERSIST_PENDING:
+            with _PERSIST_LOCK:
+                batch = list(_PERSIST_PENDING.items())
+                _PERSIST_PENDING.clear()
+            for tid, (snap, seq, force) in batch:
+                try:
+                    _persist_write_one(snap, force)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+_atexit.register(_persist_flush_on_exit)
 
 
 def load_tasks():
@@ -2687,22 +3626,162 @@ def delete_task(task):
         pass
 
 
+# T23 启动对账（FR-10/AC-7）：对账允许自动变更的状态集合。
+# downloading 仅是会话运行相位、正常路径从不持久化——出现在清单里即
+# 崩溃残留（旧版/脏 JSON），无活动会话（由调用时机保证：会话启动前/
+# 菜单入口均非运行期）一律回 pending。
+RECONCILE_ACTIVE = frozenset(("downloading",))
+# 反向补登：成品在且大小匹配时磁盘事实优先，未终态条目归 exists。
+# skipped 是用户意图终态，两个状态变更集合都不含它（判定表 3/7 行）。
+RECONCILE_PROMOTABLE = frozenset(("pending", "failed", "downloading"))
+
+
+def _reconcile_artifacts(folder, ti, *, finished_ok):
+    """T23 工件修复：只碰本条目严格命名的分片工件——work=<name>.dl 与
+    <work>.part<N>.done 标记（任何删除前断言路径仍在 folder 内，防
+    name 穿越；成品文件永不删，错误大小的 work 也保留——parallel_
+    download 开工时自行 truncate）。
+
+    - finished_ok（成品在且大小匹配）：work 与标记都属收尾 replace 后
+      清理窗口的残留，全部删除；
+    - 无匹配成品：size==0 无分片方案不动；work 在且大小==size 时仅删
+      越界/畸形标记（idx 解析不出或 idx>=nparts；界内零字节标记信任
+      ——Telegram 无 piece hash，FR-10 不做内容校验）；work 缺失或
+      大小不符时删全部标记（防零字节洞）。
+    返回 (purged, trimmed, kept, work_removed)：purged/trimmed 为删除
+    的标记数，kept 为界内保留数（无成品分支），work_removed 0/1。"""
+    folder = pathlib.Path(folder)
+    name = ti["name"]
+    size = ti.get("size") or 0
+    work = folder / (name + ".dl")
+    prefix = name + ".dl.part"
+    found = sorted(folder.glob(name + ".dl.part*.done"))
+    purged = trimmed = kept = work_removed = 0
+
+    def _safe_remove(p):
+        assert p.parent == folder, f"对账工件越界: {p}"
+        try:
+            os.remove(p)
+            return True
+        except OSError:
+            return False
+
+    if finished_ok:
+        for p in found:
+            if _safe_remove(p):
+                purged += 1
+        if work.exists() and _safe_remove(work):
+            work_removed = 1
+        return purged, trimmed, kept, work_removed
+    if size == 0:
+        return purged, trimmed, kept, work_removed
+    nparts = -(-size // PART)
+    work_ok = work.exists() and work.stat().st_size == size
+    for p in found:
+        token = p.name[len(prefix):-len(".done")]
+        in_range = token.isdigit() and int(token) < nparts
+        if work_ok:
+            if in_range:
+                kept += 1
+            elif _safe_remove(p):
+                trimmed += 1
+        elif _safe_remove(p):
+            purged += 1
+    return purged, trimmed, kept, work_removed
+
+
 def reconcile_task(task):
-    """对账本地文件：标记完成但成品缺失/大小不符的，改回 pending。
-    返回重置条数（.dl 分片续传不在这里处理）。"""
+    """启动对账（T23 重写，FR-10/AC-7）：按磁盘事实全量重建——成品/
+    .dl/.partN.done/大小四要素核对；崩溃活动态（downloading 残留）回
+    pending；反向补登（成品在且大小匹配的未终态 →exists）；残留分片
+    工件修复（孤儿 purge / 越界畸形 trim / 成品匹配的 stale 清理）。
+    纯磁盘、零网络、幂等（第二遍 changed=0 零机读行）；skipped 是用户
+    意图终态永不自动改。机读日志前缀 [reconcile]（仅任务 id/msg id/
+    状态名/字节数，禁文件名与敏感信息）。返回计数 dict：
+    {"changed": 变更条目数, "reset": 重置 pending 条数,
+     "promote": 补登 exists 条数, "markers": purge+trim 删除标记数,
+     "stale_work": 成品匹配清理的 work+markers 文件数}。"""
     folder = pathlib.Path(task["folder"])
-    changed = 0
+    tid = task.get("id", "?")
+    stats = {"changed": 0, "reset": 0, "promote": 0,
+             "markers": 0, "stale_work": 0}
+    touched = set()
+
+    def _ev(kind, ti, from_st=None, to_st=None, detail=None):
+        line = f"[reconcile] task={tid} item={ti.get('msg')} kind={kind}"
+        if from_st is not None:
+            line += f" from={from_st}"
+        if to_st is not None:
+            line += f" to={to_st}"
+        if detail is not None:
+            line += f" detail={detail}"
+        print(line)
+        touched.add(ti.get("msg"))
+
     for ti in task["items"]:
-        if ti["status"] in DONE_STATUSES:
-            p = folder / ti["name"]
-            ok = p.exists() and (
-                not ti.get("size") or p.stat().st_size == ti["size"]
-            )
-            if not ok:
+        target = folder / ti["name"]
+        size = ti.get("size") or 0
+        try:
+            finished = target.exists() and (
+                size == 0 or target.stat().st_size == size)
+        except OSError:
+            finished = False
+        st = ti["status"]
+        # ---- 状态判定（判定表；skipped 永不自动改） ----
+        if finished:
+            if st in RECONCILE_PROMOTABLE:       # done/exists/skipped 不动
+                ti["status"] = "exists"
+                ti.pop("error", None)
+                _ev("promote_exists", ti, from_st=st, to_st="exists")
+                stats["promote"] += 1
+        elif target.exists():                    # 成品在但大小不符
+            if st not in ("pending", "skipped"):
+                try:
+                    got = target.stat().st_size
+                except OSError:
+                    got = -1
                 ti["status"] = "pending"
                 ti.pop("error", None)
-                changed += 1
-    return changed
+                _ev("reset_size", ti, from_st=st, to_st="pending",
+                    detail=f"{got}/{size}")
+                stats["reset"] += 1
+        else:                                    # 成品缺失
+            if st in DONE_STATUSES:
+                ti["status"] = "pending"
+                ti.pop("error", None)
+                _ev("reset_missing", ti, from_st=st, to_st="pending")
+                stats["reset"] += 1
+            elif st in RECONCILE_ACTIVE:         # 崩溃活动态回 pending
+                ti["status"] = "pending"
+                ti.pop("error", None)
+                _ev("active_reset", ti, from_st=st, to_st="pending")
+                stats["reset"] += 1
+        # ---- 工件修复（与 status 无关，凡无匹配成品时执行；
+        #      成品匹配时清 replace 后清理窗口残留） ----
+        try:
+            purged, trimmed, kept, work_removed = _reconcile_artifacts(
+                folder, ti, finished_ok=finished)
+        except OSError:
+            purged = trimmed = kept = work_removed = 0
+        if finished:
+            if purged or work_removed:
+                _ev("stale_work", ti, detail=f"{purged}/{work_removed}")
+                stats["stale_work"] += purged + work_removed
+        else:
+            if purged:
+                _ev("markers_purge", ti, detail=f"{purged}/{-(-size // PART)}")
+                stats["markers"] += purged
+            if trimmed:
+                _ev("markers_trim", ti, detail=f"{trimmed}/{kept}")
+                stats["markers"] += trimmed
+
+    stats["changed"] = len(touched)
+    if touched:
+        print(f"[reconcile] task={tid} changed={stats['changed']} "
+              f"reset={stats['reset']} promote={stats['promote']} "
+              f"markers={stats['markers']} "
+              f"stale_work={stats['stale_work']}")
+    return stats
 
 
 def task_counts(task):
@@ -2731,6 +3810,9 @@ def make_task_item(record):
         "date": f"{m.date:%Y-%m-%d}", "status": "pending",
         "src": record.get("src", SRC_CHANNEL),
         "text": record.get("text", "") or "",
+        # T61c：reply/album/fwd 外部命中时消息自身无正文，引用文本随条目
+        # 落盘，否则编辑页与导出导入都会丢掉拟名依据（顶层键仍 7 个）
+        "ref_text": _clip_ref_text(record.get("ref_text") or ""),
         "duration": doc_duration(record.get("doc")),
     }
 
@@ -2808,13 +3890,222 @@ def rename_task(task, title):
     title = (title or "").strip()
     if title:
         task["channel_title"] = title[:80]
-        save_task(task)
+        save_task(task, force=True)
 
 
 def set_parallel(task, n):
     n = max(1, min(int(n), 8))
     task.setdefault("params", {})["parallel"] = n
-    save_task(task)
+    save_task(task, force=True)
+
+
+# ---------------- 智能重命名（2.3） ----------------
+NAME_MIN_LEN = 6       # 拟用新名主体最短字符数（不足视为无有效句）
+NAME_CTX_MIN = 30      # 命中句扩句目标：前后文上下文至少 30 字（2.3 加大）
+NAME_CTX_WIDE = 100    # 「更宽上下文命名」选项的扩句目标（2.3 追加开关）
+NAME_MAX_LEN = 200     # 拟用新名主体最长字符数（2.3 加大；留余量给 (N) 与扩展名）
+NAME_MAX_TOTAL = 240   # 落盘文件名总长上限（Windows 组件上限 255 内）
+_NAME_SPLIT = re.compile(r"[。！？!?；;，,、\n\r\t ]+")
+_NAME_EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,8}")
+
+
+def _split_name_stem(name):
+    """文件名 → (stem, ext)；ext 含点且限 1..8 位字母数字，否则归入 stem。"""
+    stem, ext = os.path.splitext(name or "")
+    if ext and _NAME_EXT_RE.fullmatch(ext):
+        return stem, ext
+    return name or "", ""
+
+
+def _name_segments(src_text):
+    """句段偏移表（边界符之间，去空段）。"""
+    parts, prev = [], 0
+    for m in _NAME_SPLIT.finditer(src_text):
+        parts.append((prev, m.start()))
+        prev = m.end()
+    parts.append((prev, len(src_text)))
+    return [(s, e) for s, e in parts if e > s]
+
+
+def smart_name_for(text, query, orig_name="", ref_text=None, wide=False):
+    """关键词命中句 → 拟用新名（原扩展名保留）；无命中回退正文头部
+    上下文；均无有效句返回 ""。
+
+    规则：取首个命中词所在句（空格/句读断句）；向前后文扩句至上下文
+    目标（宽窄两档：NAME_CTX_MIN / wide 时 NAME_CTX_WIDE）、过长以命中
+    词为中心向句界收缩；无关键词命中（含无关键词）回退正文头部句块
+    命名；非法字符走 safe_name 清洗；主体长度限 [NAME_MIN_LEN,
+    NAME_MAX_LEN]。重名 (N) 后缀在落盘改名时解析（预览/登记阶段不
+    预占）。单一 Python 实现，TUI/GUI/web 同源。
+    """
+    ctx = NAME_CTX_WIDE if wide else NAME_CTX_MIN
+    includes, _ = parse_keywords(query)
+    _stem, ext = _split_name_stem(orig_name)
+    for src_text in (text or "", ref_text or ""):
+        if not src_text:
+            continue
+        low = src_text.lower()
+        hit = None
+        for w in includes:
+            i = low.find(w)
+            if i >= 0 and (hit is None or i < hit[0]):
+                hit = (i, i + len(w))
+        if hit is None:
+            continue
+        hs, he = hit
+        segs = _name_segments(src_text)
+        if not segs:
+            continue
+        lo = hi = 0
+        for i, (s, e) in enumerate(segs):
+            if s <= hs and he <= e:
+                lo = hi = i
+                break
+        else:
+            lo = hi = min(range(len(segs)),
+                          key=lambda i: abs(segs[i][0] - hs))
+        # 扩句：上下文不足当前档目标（ctx）时左右交替逐句延伸（保前后文）
+        grow_right = True
+        while (segs[hi][1] - segs[lo][0]) < ctx:
+            if grow_right and hi + 1 < len(segs):
+                hi += 1
+            elif lo > 0:
+                lo -= 1
+            elif hi + 1 < len(segs):
+                hi += 1
+            else:
+                break
+            grow_right = not grow_right
+        s, e = segs[lo][0], segs[hi][1]
+        # 收缩：过长以命中词为中心截窗，两侧尽量贴句界/空格
+        if e - s > NAME_MAX_LEN:
+            pad = max(0, (NAME_MAX_LEN - (he - hs)) // 2)
+            s2 = max(s, hs - pad)
+            e2 = min(e, s2 + NAME_MAX_LEN)
+            s2 = max(s2, e2 - NAME_MAX_LEN)
+            for m in _NAME_SPLIT.finditer(src_text, s2, hs):
+                s2 = m.end()
+            for m in _NAME_SPLIT.finditer(src_text, he, e2):
+                e2 = m.start()
+                break
+            if e2 <= he or s2 >= hs:
+                s2 = max(s, hs - pad)
+                e2 = min(e, s2 + NAME_MAX_LEN)
+            s, e = s2, e2
+        raw = src_text[s:e].strip()
+        raw = raw.strip(" ,，、:：;；-_—.。!！?？\"'“”‘’()（）[]【】")
+        name = safe_name(raw, "").strip("_ ")
+        if len(name) < NAME_MIN_LEN:
+            continue
+        return name[:NAME_MAX_LEN] + ext
+    # 回退（2.3）：无关键词命中（含无关键词）→ 正文头部上下文命名。
+    # 语义：拟用名只是候选（前端「是否重命名」勾选显式控制），静默空串
+    # 会让整版「留空不改」不可用；正文头部句块是最稳的语义名。
+    for src_text in (text or "", ref_text or ""):
+        if not src_text:
+            continue
+        segs = _name_segments(src_text)
+        if not segs:
+            continue
+        lo = hi = 0
+        while hi + 1 < len(segs) and (segs[hi][1] - segs[lo][0]) < ctx:
+            hi += 1
+        raw = src_text[segs[lo][0]:segs[hi][1]][:NAME_MAX_LEN].strip()
+        raw = raw.strip(" ,，、:：;；-_—.。!！?？\"'“”‘’()（）[]【】")
+        name = safe_name(raw, "").strip("_ ")
+        if len(name) >= NAME_MIN_LEN:
+            return name[:NAME_MAX_LEN] + ext
+    return ""
+
+
+def _rename_on_disk(folder, cur, want):
+    """folder 内把 cur 改名为 want（重名自动 ' (N)' 后缀）。
+    返回 (最终名, 错误串)；错误时最终名为 None。want 需已含扩展名。"""
+    stem, ext = _split_name_stem(want)
+    if not stem:
+        return None, "新名为空"
+    if len(stem) > NAME_MAX_LEN:
+        stem = stem[:NAME_MAX_LEN]
+    n = 1
+    while True:
+        suffix = f" ({n})" if n > 1 else ""
+        cut = NAME_MAX_TOTAL - len(ext) - len(suffix)
+        cand = stem[:cut] + suffix + ext
+        if cand == cur:
+            return cur, ""
+        if not (folder / cand).exists():
+            try:
+                os.rename(folder / cur, folder / cand)
+            except OSError as e:
+                return None, f"{type(e).__name__}: {e}"
+            return cand, ""
+        n += 1
+
+
+def apply_item_rename(task, ti, new_name=None):
+    """执行单条目改名（新建任务下载完成命名 / 任务库确认改名共用）。
+
+    - 文件已落盘：os.rename（重名 ' (N)' 后缀），orig_name 记首次
+      原名（还原目标），name/rename 同步为最终名；
+    - 文件未落盘（未下载）：只登记 ti["rename"]（拟用新名），待下载
+      完成由 apply_pending_rename 收口。
+    返回 {"ok","renamed","name","error"}（不 print，P5）。"""
+    want = (new_name if new_name is not None else ti.get("rename", "")) or ""
+    want = safe_name(str(want).strip(), "").strip()
+    if not want:
+        return {"ok": False, "renamed": False, "name": ti["name"],
+                "error": "新名为空"}
+    _ws, wext = _split_name_stem(want)
+    if not wext:
+        _os, oext = _split_name_stem(ti["name"])
+        want = want + oext
+    cur = ti["name"]
+    folder = pathlib.Path(task["folder"])
+    if not (folder / cur).exists():
+        ti["rename"] = want
+        return {"ok": True, "renamed": False, "name": cur, "error": ""}
+    final, err = _rename_on_disk(folder, cur, want)
+    if err:
+        return {"ok": False, "renamed": False, "name": cur, "error": err}
+    if final != cur:
+        ti.setdefault("orig_name", cur)   # 只记首次原名（还原目标）
+        ti["name"] = final
+    ti["rename"] = final
+    return {"ok": True, "renamed": final != cur, "name": final, "error": ""}
+
+
+def apply_pending_rename(task, ti):
+    """下载完成收口：登记过拟用新名且与现名不同 → 落盘改名。
+    返回是否实际改名；失败静默保留现名（P5：不 print）。"""
+    want = ti.get("rename") or ""
+    if not want or want == ti["name"]:
+        return False
+    return apply_item_rename(task, ti)["renamed"]
+
+
+def restore_item_names(task, keys):
+    """还原命名（支持多选）：已改名条目回到 orig_name（重名自动
+    ' (N)' 后缀；文件缺失时仅复位 name 记录）。返回
+    {"ok","restored","skipped","errors"}（不 print，P5）。"""
+    folder = pathlib.Path(task["folder"])
+    out = {"ok": True, "restored": 0, "skipped": 0, "errors": []}
+    for key in keys:
+        ti = find_item(task, (key[0], key[1]))
+        if ti is None or not ti.get("orig_name"):
+            out["skipped"] += 1
+            continue
+        cur, orig = ti["name"], ti["orig_name"]
+        if (folder / cur).exists():
+            final, err = _rename_on_disk(folder, cur, orig)
+            if err:
+                out["errors"].append(f"#{ti['msg']} {err}")
+                continue
+            ti["name"] = final
+        else:
+            ti["name"] = orig
+        ti.pop("orig_name", None)
+        out["restored"] += 1
+    return out
 
 
 def _norm_dir(p):
@@ -2934,7 +4225,7 @@ def change_folder(task, new_path, move_files=False, progress=None):
     if not move_files:
         # 纯路径修改：不搬任何文件，一次 save_task（行为与旧版一致）
         task["folder"] = new_path
-        save_task(task)
+        save_task(task, force=True)
         return {"ok": True, "unchanged": False, "moved": [], "skipped": [],
                 "pending": [], "error": ""}
 
@@ -3029,7 +4320,7 @@ def change_folder(task, new_path, move_files=False, progress=None):
             _emit(done, n, bytes_done, total_bytes, disp)  # 文件完成帧
         # 全部确认到目标：folder 一次性更新落盘（仍在 MOVING_TASKS 内）
         task["folder"] = new_path
-        save_task(task)
+        save_task(task, force=True)
         return {"ok": True, "unchanged": False, "moved": moved,
                 "skipped": skipped, "pending": [], "error": ""}
     finally:
@@ -3044,7 +4335,7 @@ def set_item_status(task, key, status):
         return False
     ti["status"] = status
     ti.pop("error", None)
-    save_task(task)
+    save_task(task, force=True)
     return True
 
 
@@ -3060,7 +4351,7 @@ def set_items_status(task, keys, status):
             ti.pop("error", None)
             n += 1
     if n:
-        save_task(task)
+        save_task(task, force=True)
     return n
 
 
@@ -3103,7 +4394,7 @@ async def enrich_task_items(client, task):
                 ti["duration"] = dur
                 changed = True
     if changed:
-        save_task(task)
+        save_task(task, force=True)
 
 
 def remove_items(task, keys):
@@ -3113,7 +4404,7 @@ def remove_items(task, keys):
     task["items"] = [
         ti for ti in task["items"] if item_key(ti) not in ks
     ]
-    save_task(task)
+    save_task(task, force=True)
     return before - len(task["items"])
 
 
@@ -3157,7 +4448,7 @@ def append_records(task, records, status="pending"):
         content.add((r["name"], r["size"]))
         added += 1
     if added:
-        save_task(task)
+        save_task(task, force=True)
     return added
 
 
@@ -3225,7 +4516,7 @@ class DownloadSession:
                 elif action == "resume":
                     self._begin_resume(key)
 
-    def _begin_resume(self, key):
+    def _begin_resume(self, key, tail=False):
         rec = self.paused.pop(key, None) or self.records.get(key)
         if rec is None:
             return
@@ -3236,12 +4527,19 @@ class DownloadSession:
             if ti is not None and ti["status"] != "pending":
                 ti["status"] = "pending"
                 ti.pop("error", None)
-                save_task(self.task)
+                save_task(self.task, force=True)
             mode = rec.get("_mode") or (
                 "parallel" if rec["size"] > 4 * 1024 * 1024
                 else "simple")
             await self.mon.restart(key, keep_done=mode != "simple")
-            self.resume_q.append(rec)
+            # T25：tail=True（让路条目恢复）追加 sess.queue 尾——
+            # "排队尾"语义（入 resume_q 会前插抢在排队条目之前，违背
+            # 让路初衷）；缺省 False 手动暂停/失败恢复依旧前插
+            # resume_q，手动路径逐字零变化。
+            if tail:
+                self.queue.append(rec)
+            else:
+                self.resume_q.append(rec)
             self.wake.set()
 
         asyncio.ensure_future(_do())
@@ -3258,7 +4556,7 @@ class DownloadSession:
             self.task["items"] = [
                 x for x in self.task["items"] if item_key(x) != key
             ]
-            save_task(self.task)
+            save_task(self.task, force=True)
         await self.mon.remove(key)
         self.wake.set()
 
@@ -3269,6 +4567,252 @@ class DownloadSession:
         snap["task_total"] = c["total"]
         snap["task_finished"] = c["finished"]
         return snap
+
+
+# ---------------- T25 慢任务让路（FR-12；默认关——开关关时本段零实例化） ----------------
+
+def _slow_yield_cfg(task):
+    """任务级让路配置解析（每会话开始快照一次，运行中改任务文件
+    不热生效——与 parallel 键现状一致）。task["params"] 四可选键是
+    唯一配置入口（slow_yield/slow_yield_bps/slow_yield_win_sec/
+    slow_yield_resume_sec）；缺省 enabled=0（关）：直接短路返回，
+    不解析不打印其余键（默认态零行为变化/零新日志的解析面保障）。
+    开启后非法/缺失值回落缺省（数值夹紧参照 load_acct_policy 范式，
+    越界打印一行技术日志）。上限 max 恒源自模块常量 SLOW_YIELD_MAX
+    （不提供任务级键，§2.1 红线钉死 params 仅四键）。"""
+    raw = (task or {}).get("params") or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    try:
+        on = int(raw.get("slow_yield", 0)) == 1
+    except (TypeError, ValueError):
+        on = False
+    if not on:
+        return {"enabled": 0}
+
+    def _num(key, dflt, lo, hi):
+        try:
+            v = float(raw.get(key, dflt))
+        except (TypeError, ValueError):
+            print(f"[yield] params.{key} 非法，回退默认 {dflt}")
+            return dflt
+        if v < lo or v > hi:
+            print(f"[yield] params.{key}={v} 越界 [{lo},{hi}]，夹紧")
+            v = max(lo, min(v, hi))
+        return v
+
+    return {
+        "enabled": 1,
+        "bps": int(_num("slow_yield_bps", SLOW_YIELD_BPS,
+                        1024, 100 * 1024 * 1024)),
+        "win": _num("slow_yield_win_sec", SLOW_YIELD_WIN_SEC, 5.0, 300.0),
+        "resume": _num("slow_yield_resume_sec", SLOW_YIELD_COOLDOWN_SEC,
+                       5.0, 1800.0),
+        "max": int(SLOW_YIELD_MAX),
+    }
+
+
+class SlowYieldManager:
+    """T25 慢任务让路状态机（仅开启态随 run_download_session 生命周期
+    存在；全部状态在实例内——不进 task JSON、不进 snapshot 结构、
+    不发任何 WS 事件/reason）。每轮巡检（_YIELD_SLEEP 节拍，默认 1s）
+    直接消费 Monitor 既有速度数据（mon._snapshot() 现刷新全部
+    e["speed"]——窗口右端锚定当前时刻的现成语义——不另建测速器）：
+
+      触发（三者与，§2.2）：
+        1) 条目"下载中"且持续低速：低速 streak 满 win 秒（高速即清
+           累计——单帧低速/短暂停顿不触发；"下载中"覆盖不足 0.8*win
+           不判慢——参照 T51 cover 语义，避开启动爬坡）；
+        2) sess.queue 非空（严格只看 queue，feeder 未读完但 queue 空
+           不算）；
+        3) 本会话该条目让路次数 < max 且不在让路冷却中。
+      触发动作：ctl.pause.set()（复用 ItemCtl.pause→PauseFile→worker
+        收场置 sess.paused 的既有半途暂停路径，与用户按 P 完全同
+        一条路）；[yield] event=pause 机读行；槽位由 worker 收场释放，
+        排队条目经 schedule 自然插队。
+      恢复（两者与，§2.3）：冷却满 resume 秒且 queue 为空（冷却到期
+        但 queue 非空→保持暂停继续等，每轮重查——恢复与触发条件天然
+        互斥，无乒乓）→ sess._begin_resume(key, tail=True)：回
+        sess.queue 尾（"排队尾"语义；入 resume_q 会前插抢在排队条目
+        之前，故让路条目不走）。mon.restart 的 keep_done 语义照旧
+        （parallel 分片续传保留、simple 丢弃）。
+      边界：手动 pause/resume/remove 优先——条目不再呈现"已暂停"
+        （被用户恢复）即让位：waiting 除名、让路计数保留、低速窗口
+        从零重累计；条目落终态/被移除即除名；max 用尽后 event=
+        exhausted、照常下载到底。
+    单轮 tick 异常吞掉不炸循环（CancelledError 照常穿透拆除）；
+    退出前打印 loop=exit 生命周期行（关态不启动 → 零 [yield] 行）。
+    """
+
+    def __init__(self, sess, cfg, interval=1.0):
+        self.sess = sess
+        self.mon = sess.mon
+        self.cfg = cfg
+        self.interval = float(interval)   # 巡检节拍（生产 1.0s）
+        self._task = None
+        self.streak = {}          # key -> 低速起始时刻（高速即除名）
+        self.cover = {}           # key -> "下载中"连续覆盖秒
+        self.yields = {}          # key -> 本会话让路次数（跨让路保留）
+        self.waiting = {}         # key -> {"due": 冷却到期, "at": 让路时刻}
+        self.last_skip = {}       # key -> 上次 skip_trigger 行时刻（10s 节流）
+        self.exhausted_seen = set()   # key -> 本轮满窗已报 exhausted
+        self.ticks = 0
+        self._last = time.monotonic()   # 上轮巡检时刻（真实 dt 累计覆盖秒）
+
+    # ---------- 生命周期（start/stop 与 T51 慢速采样同范式） ----------
+    def start(self):
+        self._task = asyncio.ensure_future(self._run())
+        return self._task
+
+    def stop(self):
+        t = self._task
+        self._task = None
+        if t is not None and not t.done():
+            t.cancel()
+
+    async def _run(self):
+        try:
+            while True:
+                await _YIELD_SLEEP(self.interval)
+                try:
+                    self._tick()
+                except Exception:
+                    pass           # 单轮异常吞掉：循环必须有界不炸
+                self.ticks += 1
+        except asyncio.CancelledError:
+            raise
+        finally:
+            _yield_log(f"loop=exit task={self.sess.task_id} "
+                       f"ticks={self.ticks} "
+                       f"yields={sum(self.yields.values())}")
+
+    # ---------- 单轮巡检 ----------
+    def _tick(self):
+        now = time.monotonic()
+        # 眞实 dt：巡检节拍被测试缝压缩时覆盖秒不虚增（与 streak
+        # 的时刻语义同源，均走 time.monotonic 真时）
+        dt = max(0.0, min(now - self._last, self.interval * 3))
+        self._last = now
+        # 现刷新全部条目 e["speed"]（含窗口外样本清理/右端锚定语义，
+        # 与渲染/GUI 快照共用同一函数——速度数据唯一来源）
+        snap = self.mon._snapshot()
+        q = getattr(self.sess, "queue", None)
+        qn = len(q) if q is not None else 0
+        active = set()
+        for e in snap["active"]:
+            key = e["key"]
+            active.add(key)
+            if key in self.waiting:
+                continue           # 让路中短暂残留下载态：不累计
+            self.cover[key] = self.cover.get(key, 0.0) + dt
+            speed = e["speed"]
+            if self.cover[key] < self.cfg["win"] * 0.8:
+                # 覆盖不足（启动爬坡）不判慢；高速即清累计（照 T51）
+                if speed >= self.cfg["bps"]:
+                    self.streak.pop(key, None)
+                self._skip(key, speed, qn, now)
+                continue
+            if speed >= self.cfg["bps"]:
+                self.streak.pop(key, None)     # 抖动免疫：回高速清零
+                continue
+            since = self.streak.setdefault(key, now)
+            held = now - since
+            if held < self.cfg["win"]:
+                self._skip(key, speed, qn, now)
+                continue
+            # ---- 条件 1 成立：检查条件 2（queue）与条件 3（上限）----
+            if self.yields.get(key, 0) >= self.cfg["max"]:
+                self._exhausted(key, speed, qn, held)
+                continue
+            if qn == 0:
+                self._skip(key, speed, qn, now)
+                continue
+            self._trigger(key, speed, qn, now, held)
+        # 让路等待中的条目：恢复 / 除名 / 让位
+        for key, st in list(self.waiting.items()):
+            e = self.mon.order.get(key)
+            # 注意：“已暂停”同样置 e["final"]（mon.finish 既有语义），
+            # 只有四种真终态（完成/已存在/失败/已跳过）与移除才除名
+            if e is None or e.get("final") in (
+                    "完成", "已存在", "失败", "已跳过"):
+                # 终态/被移除：除名（让路计数与收割可见性保留在日志）
+                self.waiting.pop(key, None)
+                continue
+            # 让位判据：三者全不成立才让位于外部处置（手动 resume/
+            # 异常重入等重跑路径）：mon 已暂停 / sess.paused 存在 /
+            # 让路时的 ctl 还在跑（→只是触发后 worker 收场中的短暂
+            # 残留"下载中"帧，并非被外部恢复）
+            still_yielding = (
+                e["status"] == "已暂停"
+                or key in self.sess.paused
+                or self.sess.ctls.get(key) is st.get("ctl"))
+            if not still_yielding:
+                # 外部恢复：让位，计数保留、低速窗口从零重累计
+                # （不发事件零打扰）；仅下一轮正常巡检重新观察
+                self.waiting.pop(key, None)
+                continue
+            if now >= st["due"] and qn == 0:
+                self.waiting.pop(key, None)
+                self.sess._begin_resume(key, tail=True)
+                _yield_log(
+                    f"event=resume item=#{key[1]} speed_bps=0 "
+                    f"win={int(now - st['at'])} queued={qn} "
+                    f"count={self.yields.get(key, 0)}")
+                print(f"[yield] #{key[1]} 让路冷却已满并等到队列空闲，"
+                      f"自动恢复（回队尾，重新排队下载）")
+        # 非活跃条目：低速累计/覆盖清零（等待让路中的不重算）
+        for key in list(self.streak):
+            if key not in active and key not in self.waiting:
+                self.streak.pop(key, None)
+        for key in list(self.cover):
+            if key not in active and key not in self.waiting:
+                self.cover.pop(key, None)
+
+    # ---------- 边沿动作 ----------
+    def _trigger(self, key, speed, qn, now, held):
+        ctl = self.sess.ctls.get(key)
+        if ctl is None:
+            return                 # 条目已收场（终态竞态）：不触发
+        ctl.pause.set()
+        self.yields[key] = self.yields.get(key, 0) + 1
+        # 记下让路时的 ctl 引用：区分“收场中”（同一 ctl 仍在跑）与
+        # “已被外部恢复重跑”（新 worker 新 ctl）——让位判定的关键
+        self.waiting[key] = {"due": now + self.cfg["resume"],
+                             "at": now, "ctl": ctl}
+        self.streak.pop(key, None)
+        self.cover.pop(key, None)
+        self.exhausted_seen.discard(key)
+        _yield_log(
+            f"event=pause item=#{key[1]} speed_bps={int(speed)} "
+            f"win={int(held)} queued={qn} count={self.yields[key]}")
+        print(f"[yield] #{key[1]} 持续低速（已连续 {int(held)}s 低于 "
+              f"{human_speed(self.cfg['bps'])}），自动暂停让路"
+              f"（第 {self.yields[key]}/{self.cfg['max']} 次，冷却 "
+              f"{int(self.cfg['resume'])}s 后待队列空闲恢复）")
+
+    def _skip(self, key, speed, qn, now):
+        """低速监控中但触发条件未满足的状态行（覆盖不足/窗口未满/
+        queue 空），≤1 行/10s/条目；win=当前低速已累计秒。"""
+        if now - self.last_skip.get(key, 0.0) < 10.0:
+            return
+        self.last_skip[key] = now
+        since = self.streak.get(key)
+        held = int(now - since) if since is not None else 0
+        _yield_log(
+            f"event=skip_trigger item=#{key[1]} speed_bps={int(speed)} "
+            f"win={held} queued={qn} count={self.yields.get(key, 0)}")
+
+    def _exhausted(self, key, speed, qn, held):
+        """上限用尽：同一满窗段一行，不再让路、照常下载到底。"""
+        if key in self.exhausted_seen:
+            return
+        self.exhausted_seen.add(key)
+        _yield_log(
+            f"event=exhausted item=#{key[1]} speed_bps={int(speed)} "
+            f"win={int(held)} queued={qn} "
+            f"count={self.yields.get(key, 0)}")
+        print(f"[yield] #{key[1]} 本会话已让路 {self.cfg['max']} 次"
+              f"（上限），不再让路，照常下载到底")
 
 
 # ---------------- T51 多账号池（AccountPool；TUI/GUI 唯一调度内核） ----------------
@@ -3390,6 +4934,15 @@ class AccountPool:
         self._seq = 0                            # 选号决策日志序号（从 1 连续）
         self._last_hint = {}                     # (task_id, reason) -> monotonic 去抖
         self._sampler = None                     # 慢速采样任务
+        # T59 巡检状态（§2.1 有界后台巡检）：acct -> {probe_due, until,
+        # hard_fail, tries, mode}；mode ∈ idle|flood_wait|backoff|
+        # unhealthy。线程安全口径与 slow_*/flood_until 等既有状态字典
+        # 一致：asyncio 循环线程单写（tick/_warm_fail/_warm_recover），
+        # snapshot() 在 _lock 内读。
+        self.warm_state = {}
+        self._health_task = None                 # 巡检 asyncio task（自持）
+        self._health_stop = False                # 停止旗（stop_health_loop）
+        self._warm_inflight = False              # 单次探测进行中（防重入）
 
     # ---------- 事件出口 ----------
     def emit(self, name, payload):
@@ -3488,7 +5041,13 @@ class AccountPool:
         T58：connect/授权阶段异常维持 _cleanup_add 后 re-raise（码绝无
         发出）；send_code_request 阶段异常保留 _adding 与 client 原样
         上抛（码可能已在途，add_verify_code 仍可续走），由 gui 层
-        _map_send_code_exc 统一分类。"""
+        _map_send_code_exc 统一分类。
+        T59 §2.2：入参 phone 头部守卫——先过 validate_phone，非法立即
+        ValueError（错误文案含原因词；gui 层按既有未知异常形状映射），
+        不触网、不创建 client、不进 _adding/state。"""
+        reason = validate_phone(phone)
+        if reason:
+            raise ValueError(f"小号手机号不合法：{reason}")
         if account_id != ACCT_ALT:
             raise ValueError(f"不支持添加账号：{account_id!r}（仅 alt1）")
         if self._adding.get(ACCT_ALT) is not None:
@@ -3615,7 +5174,9 @@ class AccountPool:
 
     async def shutdown_alts(self):
         """主号 logout 时调用：断开 alt 连接、清运行态；
-        不删 alt 文件/配置（下次连接可复用授权）。"""
+        不删 alt 文件/配置（下次连接可复用授权）。
+        T59：先停有界巡检循环（拆除点，§2.1）。"""
+        self.stop_health_loop()
         self._adding.pop(ACCT_ALT, None)
         client = self.clients.pop(ACCT_ALT, None)
         self.state.pop(ACCT_ALT, None)
@@ -3694,44 +5255,247 @@ class AccountPool:
         self.state[ACCT_ALT] = "ready"
         return client
 
+    async def _warm_once(self):
+        """T59：单次预热尝试（自 warm_alt 连接块提炼；warm_alt 外部
+        签名/调用点零改）。返回 (ok, exc)：
+          ok=True → 成功（ready/缓存 me/回填 _alt_phone 在此完成）；
+          ok=False, exc=None → 前置不满足（不可懒连接/phone_invalid/
+            已连接/adding/探测重入），零动作零触网；
+          ok=False, exc 非 None → 连接/授权失败（已 disconnect 吞掉，
+            状态回落 has_session 绝不置 error；异常原样带回调用方
+            分类——warm_alt 打印后吞掉保 T56 语义，巡检 tick 走 T22
+            分类）。打印一律留在调用方（tick 巡检轮只出 [wacct] 行，
+            每轮恰一行）。"""
+        if self._warm_inflight:
+            return False, None            # 单次探测重入守卫（有界）
+        if not self._alt_lazy_ok():
+            return False, None
+        if self._phone_invalid_of(ACCT_ALT):
+            return False, None            # T59 §2.2：脏 phone 不进巡检
+        if self.clients.get(ACCT_ALT) is not None:
+            return False, None
+        if self._adding.get(ACCT_ALT) is not None:
+            return False, None
+        client = self._raw_client(ACCT_ALT)
+        self._warm_inflight = True
+        try:
+            try:
+                await asyncio.wait_for(client.connect(), timeout=20.0)
+                if not await client.is_user_authorized():
+                    raise RuntimeError("小号未授权")
+            except Exception as e:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                return False, e
+            self.clients[ACCT_ALT] = client
+            self.state[ACCT_ALT] = "ready"
+            try:
+                me = await client.get_me()
+                self.me_cache[ACCT_ALT] = {
+                    "name": me.first_name or "", "username": me.username or "",
+                    "phone": me.phone or ""}
+                if me.phone:
+                    self._alt_phone = me.phone
+            except Exception:
+                self.me_cache[ACCT_ALT] = None
+            return True, None
+        finally:
+            self._warm_inflight = False
+
     async def warm_alt(self):
         """T56 Bug3：主号就绪后静默预热小号（fire-and-forget 提交，
         绝不阻塞登录返回）。仅当可懒连接（已配置+session 文件在）且
         无 client、非 adding/error 时动作；construct→connect（限时
         20s）→is_user_authorized→成功置 ready+缓存 me（含回填
         _alt_phone）；任何失败 disconnect 吞掉、绝不置 error——状态
-        回落 has_session，保住下次选号资格（离线不能永久打掉 alt）。"""
-        if not self._alt_lazy_ok():
-            return False
-        if self.clients.get(ACCT_ALT) is not None:
-            return False
-        if self._adding.get(ACCT_ALT) is not None:
-            return False
-        client = self._raw_client(ACCT_ALT)
+        回落 has_session，保住下次选号资格（离线不能永久打掉 alt）。
+        T59：连接块提炼为 _warm_once()（语义等价：返回值/[acct] 行/
+        状态效果逐一不变）；首次调用同时启动有界后台巡检
+        （start_health_loop，§2.1）。"""
+        self.start_health_loop()
+        ok, exc = await self._warm_once()
+        if ok:
+            print("[acct] 小号预热成功（连接已就绪）")
+            return True
+        if exc is not None:
+            print(f"[acct] 小号预热失败（{type(exc).__name__}），保持待连接")
+        return False
+
+    # ---------- T59 有界后台巡检（§2.1 health loop；零新事件/零新 RPC） ----------
+    def _phone_invalid_of(self, acct):
+        """T59 §2.2：读 cfg accounts 条目的 phone_invalid 标记（只读；
+        标记由 reconcile_phones 启动对账幂等维护；运行期 add_start 只
+        放行合法号、remove_account 弹除整键，标记与账号态自洽）。
+        load_config 现读（小文件、低频调用点：选号决策/巡检 tick/
+        snapshot）；异常/缺键一律 False 保守放行。"""
         try:
-            await asyncio.wait_for(client.connect(), timeout=20.0)
-            if not await client.is_user_authorized():
-                raise RuntimeError("小号未授权")
-        except Exception as e:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
-            print(f"[acct] 小号预热失败（{type(e).__name__}），保持待连接")
-            return False
-        self.clients[ACCT_ALT] = client
-        self.state[ACCT_ALT] = "ready"
-        try:
-            me = await client.get_me()
-            self.me_cache[ACCT_ALT] = {
-                "name": me.first_name or "", "username": me.username or "",
-                "phone": me.phone or ""}
-            if me.phone:
-                self._alt_phone = me.phone
+            accts = load_config().get("accounts")
         except Exception:
-            self.me_cache[ACCT_ALT] = None
-        print("[acct] 小号预热成功（连接已就绪）")
-        return True
+            return False
+        if not isinstance(accts, list):
+            return False
+        for a in accts:
+            if isinstance(a, dict) and a.get("id") == acct:
+                return bool(a.get("phone_invalid"))
+        return False
+
+    @staticmethod
+    def _warm_st0():
+        """T59 巡检状态初值（mode=idle）。"""
+        return {"probe_due": 0.0, "until": 0.0, "hard_fail": 0,
+                "tries": 0, "mode": "idle"}
+
+    def start_health_loop(self):
+        """T59 §2.1：启动有界后台巡检（幂等；fire-and-forget——立即
+        返回，绝不阻塞调用方）。warm_alt 首次调用自动触发；循环自持，
+        随 shutdown_alts 停止；测试可显式 stop_health_loop。"""
+        if self._health_task is not None and not self._health_task.done():
+            return
+        self._health_stop = False
+        self._health_task = asyncio.ensure_future(self._health_loop())
+
+    def stop_health_loop(self):
+        """T59 测试缝/拆除：停巡检（幂等；cancel 即时打断排程等待，
+        循环 finally 打印退出行）。"""
+        self._health_stop = True
+        t = self._health_task
+        self._health_task = None
+        if t is not None and not t.done():
+            t.cancel()
+
+    async def _health_loop(self):
+        """T59 §2.1 巡检循环：轮询间隔 policy.warm_poll_sec（默认
+        60s）；每轮至多一次预热尝试（_warm_tick）；任何异常吞掉不炸
+        循环（CancelledError 照常穿透拆除）；退出前打印一行机读日志
+        （[wacct] loop=exit——生命周期行，无探测结果语义故不带
+        event=，字段另行稳定）。"""
+        pol = float(self.policy.get("warm_poll_sec", WARM_POLL_SEC))
+        ticks = 0
+        try:
+            while not self._health_stop:
+                await _WARM_SLEEP(pol)
+                if self._health_stop:
+                    break
+                try:
+                    await self._warm_tick()
+                except Exception:
+                    pass           # 巡检轮异常吞掉：循环必须有界不炸
+                ticks += 1
+        finally:
+            _wacct_log(f"loop=exit id={ACCT_ALT} ticks={ticks}")
+
+    async def _warm_tick(self):
+        """T59 §2.1 一轮巡检（有界）：仅小号、仅"待连接"态动作；
+        phone_invalid 号零触碰（§2.2）；排程（flood/退避/unhealthy）
+        未到期零动作零日志。单轮至多一次预热尝试。"""
+        if self._adding.get(ACCT_ALT) is not None:
+            return
+        if self.clients.get(ACCT_ALT) is not None:
+            return
+        if not self._alt_lazy_ok():
+            return
+        if self._phone_invalid_of(ACCT_ALT):
+            return
+        st = self.warm_state.get(ACCT_ALT) or {}
+        if time.monotonic() < float(st.get("probe_due", 0.0)):
+            return
+        ok, exc = await self._warm_once()
+        if ok:
+            self._warm_recover()
+        elif exc is not None:
+            self._warm_fail(exc)
+        # exc 为 None：前置竞态（探测重入/adding 刚开始等）——零动作
+
+    def _warm_classify(self, e):
+        """T59 §2.1：复用 T22 classify_download_error 取分类（不复制
+        实现）：flood→"flood"；deterministic→"deterministic"；其余
+        （transient/reference/control/未知兜底）一律按 transient 保守
+        再探（connect/get_me 链路不产 control；reference 不可达）。"""
+        kind = classify_download_error(e)
+        if kind == "flood":
+            return "flood"
+        if kind == "deterministic":
+            return "deterministic"
+        return "transient"
+
+    def _warm_backoff_delay(self, tries):
+        """T59 §2.1 瞬时退避序列（任务书钉死 30/60/120/300/300…）：
+        前 3 次指数 2 倍（base/2base/4base，逐项封顶），第 4 次起一律
+        WARM_TRANSIENT_BACKOFF_MAX；base 可经 policy
+        warm_transient_backoff_sec 覆盖。"""
+        base = float(self.policy.get("warm_transient_backoff_sec",
+                                     WARM_TRANSIENT_BACKOFF))
+        if tries <= 3:
+            return min(base * (2 ** (tries - 1)),
+                       WARM_TRANSIENT_BACKOFF_MAX)
+        return WARM_TRANSIENT_BACKOFF_MAX
+
+    def _warm_fail(self, e):
+        """T59 §2.1 一次巡检探测失败（[wacct] 恰一行）：
+        - flood：不计失败次、不进退避，按 wait 排程下轮（到期再探）；
+        - deterministic：hard_fail+=1；达 policy.warm_hard_fail_max →
+          标 unhealthy、退避 policy.warm_unhealthy_backoff_sec 后允许
+          一轮再探（再探成功→_warm_recover 复位；再探硬错→hard_fail
+          仍≥上限→重新标 unhealthy）；未达上限→下轮轮询再探；
+        - transient：不计硬错，指数退避再探（探测成功即复位）。
+        计数口径：flood/transient 不改 hard_fail、deterministic 不改
+        tries；仅 _warm_recover 复位二者（任务书未定义跨类清零）。"""
+        st = self.warm_state.setdefault(ACCT_ALT, self._warm_st0())
+        now = time.monotonic()
+        kind = self._warm_classify(e)
+        if kind == "flood":
+            wait = int(getattr(e, "seconds", 0) or 0)
+            if wait < 1:
+                wait = 1
+            st["mode"] = "flood_wait"
+            st["probe_due"] = now + wait
+            st["until"] = st["probe_due"]
+            _wacct_log(f"id={ACCT_ALT} event=flood wait={wait}")
+            return
+        if kind == "deterministic":
+            st["hard_fail"] = int(st.get("hard_fail", 0)) + 1
+            mx = int(self.policy.get("warm_hard_fail_max",
+                                     WARM_HARD_FAIL_MAX))
+            if st["hard_fail"] >= mx:
+                bo = float(self.policy.get(
+                    "warm_unhealthy_backoff_sec", WARM_UNHEALTHY_BACKOFF))
+                st["mode"] = "unhealthy"
+                st["probe_due"] = now + bo
+                st["until"] = st["probe_due"]
+                _wacct_log(f"id={ACCT_ALT} event=unhealthy "
+                           f"hard_fail={st['hard_fail']} backoff={int(bo)}")
+            else:
+                pol = float(self.policy.get("warm_poll_sec",
+                                            WARM_POLL_SEC))
+                st["mode"] = "backoff"
+                st["probe_due"] = now + pol
+                st["until"] = st["probe_due"]
+                _wacct_log(f"id={ACCT_ALT} event=probe outcome=fail "
+                           f"kind=deterministic hard_fail={st['hard_fail']}")
+            return
+        st["tries"] = int(st.get("tries", 0)) + 1
+        delay = self._warm_backoff_delay(st["tries"])
+        st["mode"] = "backoff"
+        st["probe_due"] = now + delay
+        st["until"] = st["probe_due"]
+        _wacct_log(f"id={ACCT_ALT} event=backoff delay={int(delay)} "
+                   f"tries={st['tries']}")
+
+    def _warm_recover(self):
+        """T59 §2.1 探测成功：ready/me/_alt_phone 已由 _warm_once 置好
+        → 自动回可调度池（_alt_lazy_ok 本就为真，无需额外动作）；复位
+        计数/模式（[wacct] 恰一行）。恢复边沿零 acct_hint（reason 词表
+        钉死），经 TUI 打印 + snapshot 可见。"""
+        st = self.warm_state.setdefault(ACCT_ALT, self._warm_st0())
+        prev = st.get("mode", "idle")
+        st["mode"] = "idle"
+        st["probe_due"] = 0.0
+        st["until"] = 0.0
+        st["hard_fail"] = 0
+        st["tries"] = 0
+        _wacct_log(f"id={ACCT_ALT} event=recover from={prev}")
 
     # ---------- 状态标注（下载侧经客户端视图回调） ----------
     def note_flood(self, acct, seconds, channel=None, item_msg=None):
@@ -3885,8 +5649,13 @@ class AccountPool:
 
     def _eligible(self, acct, channel):
         """该号当下是否可派新条目（返回 (ok, 过滤原因)）。
-        过滤原因字符串：flood:<s> / slow:cooldown<s> / denied / ""
-        （空=合格；main 永远不在 denied 集——note_deny 仅 alt 触发）。"""
+        过滤原因字符串：flood:<s> / slow:cooldown<s> / denied / invalid
+        / ""（空=合格；main 永远不在 denied 集——note_deny 仅 alt 触发）。
+        T59 §2.2 头部守卫：cfg 标 phone_invalid 的小号不进调度；过滤
+        原因经 select 决策日志 reason=invalid 落盘（pref=alt1/auto/
+        sticky 落到该号时可见）。主号不受本守卫影响（唯一回退号）。"""
+        if acct == ACCT_ALT and self._phone_invalid_of(ACCT_ALT):
+            return False, "invalid"
         now = time.monotonic()
         fu = self.flood_until.get(acct, 0.0)
         if now < fu:
@@ -4014,28 +5783,44 @@ class AccountPool:
     def snapshot(self):
         """线程安全账号状态列表（account_list RPC 消费）：
         main 恒在列；alt1 仅在已配置（或半成品文件在）或 adding 中时
-        在列。me 不触网（仅登录成功缓存的 get_me）。"""
+        在列。me 不触网（仅登录成功缓存的 get_me）。
+        T59 §2.3：账号条目加可选键——phone_invalid:true（cfg 标记脏
+        phone 时）/ health:"unhealthy"（巡检标 unhealthy 时），仅异常
+        时出现、缺省省略（旧前端零感知）。"""
         now = time.monotonic()
         with self._lock:
-            out = [{
+            main_row = {
                 "id": ACCT_MAIN, "label": "",
                 "state": self._state_of(ACCT_MAIN),
                 "phone": "", "me": self.me_cache.get(ACCT_MAIN),
                 "busy": self.busy.get(ACCT_MAIN, 0),
                 "flag": self._flag_of(ACCT_MAIN, now),
-            }]
+            }
+            out = [self._t59_marks(ACCT_MAIN, main_row)]
             alt_on = (self._alt_lazy_ok()
                       or self._adding.get(ACCT_ALT) is not None)
             if alt_on:
-                out.append({
+                alt_row = {
                     "id": ACCT_ALT, "label": "",
                     "state": self._state_of(ACCT_ALT),
                     "phone": self._alt_phone,
                     "me": self.me_cache.get(ACCT_ALT),
                     "busy": self.busy.get(ACCT_ALT, 0),
                     "flag": self._flag_of(ACCT_ALT, now),
-                })
+                }
+                out.append(self._t59_marks(ACCT_ALT, alt_row))
             return out
+
+    def _t59_marks(self, acct, row):
+        """T59 §2.3 snapshot 可选键（就地加；仅异常时出现）。
+        warm_state 读口与 snapshot 同锁（本方法仅在 _lock 内调用）；
+        phone_invalid 现读 cfg 标记（reconcile_phones 维护）。"""
+        if self._phone_invalid_of(acct):
+            row["phone_invalid"] = True
+        st = self.warm_state.get(acct)
+        if isinstance(st, dict) and st.get("mode") == "unhealthy":
+            row["health"] = "unhealthy"
+        return row
 
     def busy_snapshot(self):
         """线程安全 busy 快照（remove 等闸门用）。"""
@@ -4175,10 +5960,13 @@ async def _close_session(task_id, phase, detail, error=""):
     st = sess.state()
     ACTIVE_SESSIONS.pop(task_id, None)
     SESSION_TOMBSTONES[task_id] = (st, time.monotonic())
+    # T21 终态收口：显式 flush 该任务（force），终态 durably 可见
+    if getattr(sess, "task", None) is not None:
+        save_task(sess.task, force=True)
 
 
 async def run_download_session(client, task, sess, *, gui=None,
-                               lazy_statuses=None, do_reconcile=False):
+                               lazy_statuses=None):
     """执行已 open 的下载会话（T49）。返回
     {"status": "done"|"aborted"|"error", "error": str, "counters": {...}}。
     阶段时序：preparing(open 已置) -> disk_check -> (reconciling) ->
@@ -4188,6 +5976,14 @@ async def run_download_session(client, task, sess, *, gui=None,
     folder = pathlib.Path(task["folder"])
     planned_n = len(mon.entries)
     counters = {"ok": 0, "skipped": 0, "exists": 0, "fail": 0}
+    # T22 S3：会话级 tg_config 快照（仅读可选 retries 键；无全局写入口），
+    # 经 state["cfg"] 透传给 download_one，在循环内与 sess.task 同源解析
+    # （选型：download_one 内经 sess.task 解析 + state 增 cfg 键，报告说明）。
+    _cfg_snapshot = load_config()
+    # T25：慢任务让路配置每会话快照一次（运行中改 params 不热生效，
+    # 与 parallel 键现状一致）；缺省关——enabled=0 时管理器不构造、
+    # 不启动，零新代码路径执行（TR-25.2 默认态与基线零差异）。
+    _yield_cfg = _slow_yield_cfg(task)
 
     def persist(key, status, error=None):
         ti = find_item(task, key)
@@ -4198,7 +5994,12 @@ async def run_download_session(client, task, sess, *, gui=None,
             ti["error"] = error
         else:
             ti.pop("error", None)
-        save_task(task)
+        # 2.3 智能重命名收口：条目登记了拟用新名且已落盘
+        # （done/exists）→ 下载完成即按此命名（重名 (N) 后缀，
+        # orig_name 记原名供还原；失败静默保留现名）。
+        if status in ("done", "exists"):
+            apply_pending_rename(task, ti)
+        save_task(task, force=(status in PERSIST_FORCE_STATUSES))
 
     # ---- b. TUI 按键/显示任务（照现状创建：keys.start() 延后到磁盘
     #      y/N 询问之后——msvcrt 与 input 同抢控制台输入会把用户的
@@ -4227,13 +6028,16 @@ async def run_download_session(client, task, sess, *, gui=None,
             await _close_session(task["id"], "aborted", "已取消")
             return {"status": "aborted", "error": "", "counters": counters}
 
-    # ---- d. reconciling（仅显式 do_reconcile=True；GUI 永不传，
-    #      TUI 生产入口也不传，对账时机仍是 task_menu 入口） ----
-    if do_reconcile:
-        changed = reconcile_task(task)
-        if changed > 0:
-            save_task(task)
-            await mon.set_phase("reconciling", f"重置 {changed} 条缺失记录")
+    # ---- d. reconciling（T23：会话启动前强制对账——GUI/TUI 同一
+    #      chokepoint，磁盘事实优先重建后再进下载；changed=0 时静默
+    #      （不打 phase 零机读行），逐条/汇总行由 reconcile_task 输出） ----
+    r = reconcile_task(task)
+    if r["changed"]:
+        save_task(task, force=True)
+        await mon.set_phase(
+            "reconciling",
+            f"重置 {r['reset']} 条，补登 {r['promote']} 条，"
+            f"清理分片工件 {(r['markers'] + r['stale_work'])} 个")
 
     # 磁盘检查的交互输入结束后再启动按键监听（现状语义）
     if gui is None:
@@ -4378,7 +6182,7 @@ async def run_download_session(client, task, sess, *, gui=None,
                         ti["acct"] = ACCT_ALT
                     else:
                         ti.pop("acct", None)
-                    save_task(task)
+                    save_task(task, force=True)
                 try:
                     raw_client = await pool.aclient(acct)
                 except AccountUnavailable as ex:
@@ -4391,7 +6195,7 @@ async def run_download_session(client, task, sess, *, gui=None,
                         ment["acct"] = ACCT_MAIN
                     if ti is not None and "acct" in ti:
                         ti.pop("acct", None)
-                        save_task(task)
+                        save_task(task, force=True)
                     raw_client = client
                 # 客户端视图：FloodWait note_flood 后原样上抛（download_one
                 # 严格等待——FR-9 不变）；alt 上 ChannelPrivate 转池内
@@ -4418,7 +6222,8 @@ async def run_download_session(client, task, sess, *, gui=None,
                 try:
                     r = await download_one(
                         dl_client, it, str(folder / it["name"]), ctl,
-                        state={"monitor": mon, "session": sess},
+                            state={"monitor": mon, "session": sess,
+                                   "cfg": _cfg_snapshot},
                     )
                 except AccountDenied:
                     # ---- alt 无权限（ChannelPrivate）：仅一次回退 main。
@@ -4441,7 +6246,7 @@ async def run_download_session(client, task, sess, *, gui=None,
                     ti2 = find_item(task, key)
                     if ti2 is not None and "acct" in ti2:
                         ti2.pop("acct", None)
-                        save_task(task)
+                        save_task(task, force=True)
                     # main 接续 alt 的条目（跨号）：先刷新引用再重下
                     try:
                         await refresh_record(client, sess, it)
@@ -4455,7 +6260,8 @@ async def run_download_session(client, task, sess, *, gui=None,
                     try:
                         r = await download_one(
                             client, it, str(folder / it["name"]), ctl,
-                            state={"monitor": mon, "session": sess},
+                        state={"monitor": mon, "session": sess,
+                               "cfg": _cfg_snapshot},
                         )
                     except AccountDenied:
                         r = ("fail", "AccountDenied: 主号也无权限")
@@ -4540,8 +6346,11 @@ async def run_download_session(client, task, sess, *, gui=None,
                     k: t for k, t in sess.tasks.items() if not t.done()
                 }
                 # 队列暂时空了：工作任务全落定且消息也全部读取完才结束；
-                # 否则等 feeder 取下一批或有其他唤醒
-                if not sess.tasks and feeder_done:
+                # 否则等 feeder 取下一批或有其他唤醒。
+                # 还有「已暂停」条目时不得收场：会话一旦结束就会落终态墓碑、
+                # 3 秒后从「下载中」列表消失（用户实测「暂停一会就不在列表」），
+                # 且 Resume 需要 live 会话才走得通。留会话挂起等 wake。
+                if not sess.tasks and feeder_done and not sess.paused:
                     return
                 sess.wake.clear()
                 await sess.wake.wait()
@@ -4610,10 +6419,26 @@ async def run_download_session(client, task, sess, *, gui=None,
                                 f"已用 {int(now - mon.phase_entered)}s"))
     heartbeat = asyncio.create_task(phase_heartbeat())
 
+    # T25 慢任务让路（FR-12）：仅开启态启动巡检（随 run_download_
+    # session 生命周期：收尾 finally 取消，与 T51 慢速采样/
+    # phase_heartbeat 同生命周期范式）；默认关时零实例化、零
+    # [yield] 输出、零计时器。
+    yield_mgr = None
+    if _yield_cfg["enabled"]:
+        yield_mgr = SlowYieldManager(sess, _yield_cfg)
+        yield_mgr.start()
+
     try:
         await schedule()
     finally:
         heartbeat.cancel()
+        # T25：让路巡检随 run 收尾取消（退出前打 loop=exit 生命周期行）；
+        # cancel 后补一拍 0 秒让出——_run 的 finally 打印落在本会话
+        # 生命周期内（否则 asyncio.run 清理循环时才打，脱离调用方
+        # 的 stdout 捕获窗口），行为语义零变化。
+        if yield_mgr is not None:
+            yield_mgr.stop()
+            await asyncio.sleep(0)
         # T51：慢速采样任务随 run 收尾取消（与 open 的启动同生命周期）
         _pool = getattr(sess, "pool", None)
         if _pool is not None:
@@ -4812,7 +6637,7 @@ async def pull_records(client, task, statuses, progress=None, mon=None):
                     continue
                 batch_recs.append(make(ti, m, src))
             if dirty:
-                save_task(task)
+                save_task(task, force=True)
             done += len(grp)
             if progress:
                 progress(done, len(wanted))
@@ -5046,10 +6871,10 @@ def _ask_acct_pref(pool, task):
     params = task.setdefault("params", {})
     if pref in ("main", "alt1"):
         params["acct_pref"] = pref
-        save_task(task)
+        save_task(task, force=True)
     elif "acct_pref" in params:
         params.pop("acct_pref", None)
-        save_task(task)
+        save_task(task, force=True)
 
 
 async def resume_flow(client, task, statuses, pool=None):
@@ -5252,11 +7077,17 @@ async def task_edit_flow(client, task):
 
 
 async def task_menu(client, task, pool=None):
-    changed = reconcile_task(task)
-    if changed:
-        save_task(task)
-        print(paint(f"（{changed} 个已完成视频本地文件缺失，已重置为未下载）",
-                    YELLOW))
+    r = reconcile_task(task)
+    if r["changed"]:
+        save_task(task, force=True)
+        notes = []
+        if r["reset"]:
+            notes.append(f"{r['reset']} 条缺失/不符已重置为未下载")
+        if r["promote"]:
+            notes.append(f"{r['promote']} 条磁盘已有补记为已存在")
+        if r["markers"] or r["stale_work"]:
+            notes.append("残留分片工件已清理")
+        print(paint(f"（对账：{'，'.join(notes)}）", YELLOW))
 
     while True:
         c = task_counts(task)
@@ -5483,6 +7314,13 @@ async def account_menu(pool):
             nm = me.get("name") or ""
             line = (f"  {ACCT_MARK[a['id']]} {nm}  {who}  {st}"
                     f"  忙 {a['busy']}  {flag}")
+            # T59 §2.3：行尾追加 health/invalid 短词标记（既有字段与
+            # 顺序零改动，只在行尾追加；展示同源 snapshot 可选键，
+            # NFR-13 TUI 跟进）
+            if a.get("phone_invalid"):
+                line += "  手机号异常"
+            if a.get("health") == "unhealthy":
+                line += "  不健康"
             print(line if a["state"] == "ready" else paint(line, DIM))
         if not any(a["id"] == ACCT_ALT for a in rows):
             print(paint("  （无小号）", DIM))
@@ -5546,8 +7384,9 @@ async def main_menu(client, pool=None):
         title_bar("TG 视频下载器", f"{len(tasks)} 个任务")
         opts = [("1", "新建下载任务", True)]
         for i, t in enumerate(tasks, 2):
-            if reconcile_task(t):
-                save_task(t)
+            r = reconcile_task(t)
+            if r["changed"]:
+                save_task(t, force=True)
             c = task_counts(t)
             if c["unfinished"]:
                 state = paint(f"未完成 {c['unfinished']}（失败 {c['failed']}）", YELLOW)
@@ -5627,6 +7466,16 @@ def gather_search_params():
     params["scope"] = scope if scope in ("channel", "comments", "both") else "channel"
     sort = ask("排序方式 date/size", "date").lower()
     params["sort"] = "size" if sort == "size" else "date"
+    # 深度扫描开关：仅真实交互终端（TTY）提示。管道/脚本驱动（T47/T48
+    # 冻结应答序、生产 stdin 重定向）不插入额外问题——该提示位于 14 行
+    # 冻结序中段（sort 与 paged_view 之间），管道下提问会吃掉后续应答
+    # 造成序列错位/挂死；非 TTY 缺省 deep_scan=0（GUI/web 走参数下发）。
+    if sys.stdin.isatty():
+        deep = ask("深度扫描（突破 5000 条扫描上限，大频道耗时显著变长）y/N",
+                   "n").lower()
+        params["deep_scan"] = 1 if deep in ("y", "yes") else 0
+    else:
+        params["deep_scan"] = 0
     return params
 
 
@@ -5809,19 +7658,40 @@ async def preview_records(client, entity, title, params, auto_all):
     if stop.is_set():
         print(paint(f" 已中止搜索，已收到 {arrived} 条", YELLOW))
         return []
+    # 文案分流判据由调用侧参数计算（内核 meta 键集合冻结不变）：
+    # use_server 口径 = terms 非空且 mode 属服务端可搜（与内核同式）
+    _terms, _ex = parse_keywords(str(params.get("query", "")))
+    _use_server = (bool(_terms)
+                   and str(params.get("mode", "all"))
+                   in ("phrase", "all", "any"))
+    _deep_scan = str(params.get("deep_scan", "")).strip().lower() in (
+        "1", "true", "yes", "y", "on")
     if not items:
         if meta.get("capped"):
             print(paint(
                 f" 没有找到符合条件的视频（已扫描最近 {meta.get('scan_cap')} 条消息仍触顶）",
                 YELLOW))
-            print(paint(" 可改用关键词走服务端搜索，或放宽大小/日期条件", DIM))
+            if _use_server:
+                print(paint(
+                    " 已走服务端搜索：加词已不能扩大覆盖，可填起始日期扩大扫描范围"
+                    "，或放宽大小/日期条件", DIM))
+            else:
+                print(paint(" 可改用关键词走服务端搜索，或放宽大小/日期条件", DIM))
         else:
             print(paint(" 没有找到符合条件的视频", YELLOW))
         return []
     if meta.get("capped"):
-        print(paint(
-            f" 本地扫描已达 {meta.get('scan_cap')} 条上限，更早的结果未覆盖："
-            "加关键词可走服务端搜索", DIM))
+        head = (f" 本地扫描已达 {meta.get('scan_cap')} 条上限，更早的结果未覆盖："
+                if not _deep_scan else
+                f" 深度扫描已触 {meta.get('scan_cap')} 条安全上限，更早的结果未覆盖：")
+        if _use_server:
+            print(paint(head + "已走服务端搜索，加词已不能扩大覆盖：可填起始日期扩大扫描范围", DIM))
+        elif meta.get("ref_matched") and meta.get("ref_matched") >= len(items):
+            # 纯外部文本命中：关键词在引用/相册/转发原文里，服务端搜索
+            # 只索引消息自身文本，加词走服务端对这类命中无效
+            print(paint(head + "命中均为外部文本（引用/相册/转发），加词走服务端搜索对这类命中无效：可填起始日期扩大扫描范围", DIM))
+        else:
+            print(paint(head + "加关键词可走服务端搜索", DIM))
     before_d = len(items)
     items = dedup_records(items)
     if len(items) < before_d:
@@ -5835,8 +7705,8 @@ async def preview_records(client, entity, title, params, auto_all):
             f"缓存命中 {meta.get('enrich_cache_hits', 0)}）", DIM))
     if meta.get("truncated"):
         print(paint(
-            " 外部文本补抓已达批次预算上限，更早消息的引用/相册文本可能未覆盖",
-            YELLOW))
+            " 外部文本补抓已达批次预算上限，更早消息的引用/相册文本可能未覆盖："
+            "可填起始日期缩小扫描窗口后重试", YELLOW))
     rows = []
     for it in items:
         m = it["msg"]
@@ -5920,7 +7790,7 @@ async def new_task_flow(client, args=None, pool=None):
         str(folder), items,
     )
     for t in tasks:
-        save_task(t)
+        save_task(t, force=True)
     # T51：账号偏好问在任务落盘前（params 已并入首个任务 dict 时写键）；
     # 仅当已配置 alt 才问，无小号不问不写
     _ask_acct_pref(pool, tasks[0])

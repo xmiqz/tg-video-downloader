@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>T65 弦 XIAN 矩阵夹具</title>
+<link rel="stylesheet" href="../../../web/css/tokens.css">
+<link rel="stylesheet" href="../../../web/css/views/xian.css">
+<style>
+  /* 夹具专用排版（不消费生产布局；生产侧尺寸由 shell/login/active/editor 各自定） */
+  body {
+    margin: 0;
+    padding: 20px;
+    background: var(--color-surface);
+    color: var(--color-text);
+    font-family: system-ui, sans-serif;
+  }
+  .fx-title { margin: 0 0 4px; font-size: 18px; }
+  .fx-sub { margin: 0 0 14px; color: var(--color-text-muted); font-size: 12px; }
+  .fx-grid {
+    display: grid;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--color-border);
+    gap: 1px;
+  }
+  .fx-cell {
+    background: var(--color-surface-raise);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 62px;
+  }
+  .fx-head, .fx-name {
+    justify-content: center;
+    font-size: 12px;
+    color: var(--color-text-muted);
+    background: var(--color-surface-sunk);
+  }
+  .fx-name { align-items: flex-start; padding-left: 10px; color: var(--color-text); }
+  .fx-report {
+    margin-top: 14px;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-sunk);
+    font-size: 12px;
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+</head>
+<body>
+<div id="sh-root">
+  <h1 class="fx-title" id="fx-title"></h1>
+  <p class="fx-sub" id="fx-sub"></p>
+  <div class="fx-grid" id="fx-grid"></div>
+  <div class="fx-report" id="fx-report"></div>
+</div>
+
+<script type="module">
+  import { mountXian, XIAN_STATES, XIAN_GEOMETRY } from "../../../web/js/motion/xian.js";
+  import { xianInvariantReport } from "../../../web/js/motion/xian-invariants.js";
+
+  const qs = new URLSearchParams(location.search);
+  const theme = qs.get("theme") === "dark" ? "dark" : "light";
+  const rm = qs.get("rm") === "1";
+  const mode = qs.get("mode") === "hero" ? "hero" : "matrix";
+  const root = document.getElementById("sh-root");
+  document.documentElement.setAttribute("data-theme", theme);
+  root.setAttribute("data-v22-rm", rm ? "on" : "off");
+
+  // 宿主尺寸与生产接入点一一对应（壳 router.js / 登录 login.js / 概览 active.js / 详情 editor.js / Toast）
+  const HOSTS = [
+    { key: "brand", label: "壳品牌位 30", size: 30 },
+    { key: "badge", label: "登录徽章 40", size: 40 },
+    { key: "overview", label: "下载中概览 34", size: 34 },
+  ];
+
+  const grid = document.getElementById("fx-grid");
+  const mk = function (cls, text) {
+    const d = document.createElement("div");
+    d.className = "fx-cell " + cls;
+    if (text != null) d.textContent = text;
+    return d;
+  };
+  const put = function (cell, size, state) {
+    const host = document.createElement("div");
+    host.className = "xian-host";
+    cell.append(host);
+    mountXian(host, { size: size, state: state, reduced: rm, decorative: true });
+  };
+
+  if (mode === "hero") {
+    // 状态色取证：96px 下 9 态（前缘亮边着色逐态可辨）
+    document.getElementById("fx-title").textContent = "弦 XIAN · 九态色彩（" + theme + "）";
+    document.getElementById("fx-sub").textContent =
+      "96px 母版同源渲染；状态色只染前缘亮边，不改形体。reduced-motion = " + (rm ? "on" : "off");
+    grid.style.gridTemplateColumns = "repeat(3, minmax(0, 1fr))";
+    for (const st of XIAN_STATES) {
+      const cell = mk("fx-cell");
+      put(cell, 96, st);
+      const cap = document.createElement("span");
+      cap.className = "fx-name";
+      cap.style.background = "transparent";
+      cap.textContent = st;
+      cell.append(cap);
+      grid.append(cell);
+    }
+  } else {
+    document.getElementById("fx-title").textContent = "弦 XIAN · 九态 × 三宿主（" + theme + "）";
+    document.getElementById("fx-sub").textContent =
+      "三宿主尺寸与生产接入点一致；reduced-motion = " + (rm ? "on" : "off");
+    grid.style.gridTemplateColumns = "128px repeat(3, minmax(0, 1fr))";
+    const head = mk("fx-head", "状态");
+    grid.append(head);
+    HOSTS.forEach(function (h) { grid.append(mk("fx-head", h.label)); });
+    for (const st of XIAN_STATES) {
+      grid.append(mk("fx-name fx-rowname", st));
+      for (const h of HOSTS) {
+        const cell = mk("fx-cell");
+        grid.append(cell);
+        put(cell, h.size, st);
+      }
+    }
+  }
+
+  const rep = xianInvariantReport(XIAN_GEOMETRY.canon, XIAN_GEOMETRY.radius);
+  const m = rep.metrics;
+  document.getElementById("fx-report").textContent =
+    "不变量实测：noseAng=" + m.noseAng.toFixed(2) + "° · aspect=" + m.aspect.toFixed(3) +
+    " · cg=" + m.cg.toFixed(3) + " · radius=" + m.radius.toFixed(3) +
+    " · ok=" + rep.ok + (rep.bad.length ? "（越界：" + rep.bad.join(",") + "）" : "（四项全在带内）");
+</script>
+</body>
+</html>

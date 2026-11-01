@@ -1,0 +1,84 @@
+$ node --test "tests/js/*.test.mjs"
+TR5 结论：PASS（153 项）
+✔ TR5-A cardKeyOf / parseCardKey 往返（含含竖线的 src） (47.8898ms)
+✔ TR5-B activeBadgeClass 六状态 + 未知兜底 (1.9447ms)
+✔ TR5-C overviewAggregate 累加 / pct / eta / fetchDetails 去重 (3.4667ms)
+✔ TR5-D 文案函数逐字 (1.0426ms)
+✔ TR5-E itemButtonsFor 状态动作矩阵 (50.7346ms)
+✔ TR5-F bulkGroupKeys 按任务分组 + 坏键跳过 (1.0308ms)
+✔ TR5-G pendReleaseRule 单键释放规则（Map / plain object） (1.8979ms)
+✔ TR5-H planReconcile 四类键（abort / resumeskip / bulk / ck） (84.3465ms)
+✔ TR5-I classifyDlPhase 帧分类与骨架组 (1.5023ms)
+✔ TR5-J classifyDownloadJob 仅 download 终态触发补拉 (4.2798ms)
+✔ TR5-K normAcctHint 嵌套 / 扁平 / 缺 account_id (1.5681ms)
+✔ TR5-L 模块形状与零副作用 (0.9598ms)
+TR1 结论：PASS（62 项；另含 1 项缺陷用例 V2-D1 见 TODO）
+✔ TR1-A RPC 代理：方法名/头/体/返回值 (137.3203ms)
+✔ TR1-B RPC 错误语义：error 字段 / 不可解析体 / 网络异常 / 401 (61.7465ms)
+✔ TR1-C 事件白名单：五个放行名 + 未列入只 debug (6.3053ms)
+✔ TR1-D [缺陷 V2-D1] 未列入事件一律只 debug（含原型链键名） (4.1859ms) # V2-D1: EVENT_WHITELIST 用对象字面量，msg.event=constructor/toString/valueOf 命中 Object.prototype 上的函数，绕过白名单且不打印 debug
+✔ TR1-E WS 鉴权首帧语义 (47.5354ms)
+✔ TR1-F WS 断线指数退避 500..10000 封顶 + 鉴权复位 + pagehide 停机 (4.7745ms)
+✔ TR1-G startBridge 会话分流（无 token） (88.6987ms)
+✔ every css file has balanced /* */ comments (1213.9914ms)
+✔ every css file has balanced braces outside comments (265.8781ms)
+✔ wallpaper theme rules are actually parsed (not inside a comment) (56.9669ms)
+✔ task editor uses one scroll chain on desktop and mobile (47.2975ms)
+TR6 结论：FAIL（缺陷：4 项原型链命中红灯，详见各用例；断言计数 29 项）
+✔ [DEFECT V2-D1] bridge：白名单外事件名不得命中 Object.prototype (11.4997ms)
+✔ [DEFECT V2-D2] active：bulkGroupKeys 遇到 Object.prototype 键名不得抛错 (1.3935ms)
+✔ [DEFECT V2-D3] active：activeBadgeClass 未知态恒返回 wait (0.4665ms)
+✔ [DEFECT V2-D4] active：pendReleaseRule 的 plain object 路径不得读原型链 (49.6072ms)
+✔ TR2-A parseHash 与 buildUrl（token 参数不丢） (32.6089ms)
+✔ TR2-B resolveMode 产品恒 hash，history 仅注入面 (5.8824ms)
+✔ TR2-C matchRoute 精确段匹配 (6.7344ms)
+✔ TR2-D createRouter.start 落默认路由并归一 hash (3.642ms)
+✔ TR2-E 同路径幂等 / force 重开 /login (34.28ms)
+✔ TR2-F 兜底重定向 replace 语义 + history 模式导航 (7.8623ms)
+✔ TR2-G 视图生命周期序 + 参数透传 + onNav 回调 (47.4962ms)
+TR2 结论：PASS（98 项）
+✔ TR2-H 异步 mount 竞态：过期结果不写缓存 (90.02ms)
+✔ settings view mounts without throwing (226.3584ms)
+✔ appearanceSegs hides liquid on headless hosts (1.3772ms)
+✔ settings module has no reference to removed IS_WINDOWS_HOST (270.7162ms)
+✔ task export panel wires .tp-items into .tp-list (213.4091ms)
+✔ task export actions wait for the bridge instead of racing it (336.0309ms)
+✔ wallpaper panel wires .wp-hist-list into .wp-hist (53.0682ms)
+✔ settings no longer renders an in-app NAS deploy card (1.2253ms)
+TR3 结论：PASS（52 项；静态源码/CSS 契约，非运行时 DOM）
+✔ TR3-A 六个外壳锚点存在 (112.0877ms)
+✔ TR3-B data-nav 集合与 NAV_ITEMS 一致（底栏不引入第五页签） (15.1417ms)
+✔ TR3-C 窄栏与底栏互斥（CSS 断点） (1.7028ms)
+✔ TR3-D 引导顺序与页面契约 (52.2283ms)
+TR4 结论：PASS（86 项）
+✔ TR4-A 桶导出键集合 = 子模块命名导出并集（不增不减） (54.312ms)
+✔ TR4-B 形状：唯一常量 + 其余全为函数，无 default (1.6677ms)
+✔ TR4-C 消费方导入名 100% 命中桶（防桶被改坏） (51.0769ms)
+✔ TR4-D 桶无顶层 DOM 副作用（Node 直接 import 即证） (2.2027ms)
+✔ wallpaper scrim stays light instead of dimming the photo (272.9785ms)
+✔ wallpaper panels keep a frosted-glass backdrop (6.1305ms)
+✔ wallpaper switches ink tokens on data-lum like liquid does (5.8135ms)
+✔ router samples wallpaper brightness through _setBackdrop (3.6713ms)
+✔ settings assignments go through the brightness hook (70.3549ms)
+✔ settings cards are separated, not fused edge to edge (16.4264ms)
+✔ glass cards carry a specular highlight layer (122.0772ms)
+✔ the sidebar footer does not paint a dark band over the glass (22.6879ms)
+✔ the login card is opaque enough to be readable over any backdrop (59.233ms)
+✔ login ink stays light even when the liquid theme flips to dark ink (56.1225ms)
+✔ editor primary actions stay readable on a bright wallpaper (17.3441ms)
+✔ bright wallpaper gives editor badges and destructive actions dark ink (38.1627ms)
+✔ switching from Bing to liquid clears the stale photo and luminance (9.3308ms)
+✔ re-entering the same material preserves the live/static backdrop (85.0879ms)
+✔ stale liquid capture events cannot overwrite the daily wallpaper (37.3798ms)
+✔ standalone editor consumes the shared backdrop hook and syncs tabs (53.788ms)
+✔ browser task editing uses same-tab navigation, never a popup (27.9173ms)
+ℹ tests 67
+ℹ suites 0
+ℹ pass 66
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 1
+ℹ duration_ms 2695.9151
+
+T63 结论：PASS（35 项）

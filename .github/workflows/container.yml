@@ -1,0 +1,129 @@
+name: container
+
+on:
+  push:
+    tags:
+      - "v2.*"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - "compose.yaml"
+      - "docker-entrypoint.py"
+      - "requirements-server.txt"
+      - "server_*.py"
+      - "gui.py"
+      - "tg_video_dl.py"
+      - "web/**"
+      - ".github/workflows/container.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build linux/amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: tg-video-downloader:test
+          cache-from: type=gha,scope=tgvd-amd64
+
+      - name: Container smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A host directory bind-mounted into /data is created root:root 0755
+          # by the runner, and this container runs as uid 10001 with
+          # cap-drop ALL - it cannot create /data/downloads there and exits
+          # with "Permission denied: '/data/downloads'". A named volume is
+          # created from the image's /data (already owned by 10001:10001),
+          # which is what compose.yaml now uses by default. Exercise that.
+          docker volume rm tgvd-smoke-data >/dev/null 2>&1 || true
+          # --user is what keeps this hardened: cap-drop ALL removes
+          # CAP_SETUID/CAP_SETGID, so the entrypoint cannot drop privileges
+          # itself and would previously exit rc 1 here (the workflow never
+          # actually ran before, because requirements-server.txt was missing).
+          cid=$(docker run -d --name tgvd-test \
+            --user 10001:10001 \
+            --read-only --tmpfs /tmp:rw,size=64m \
+            --cap-drop ALL --security-opt no-new-privileges \
+            -e PUID=10001 -e PGID=10001 \
+            -v tgvd-smoke-data:/data -p 18787:8787 \
+            tg-video-downloader:test)
+          trap 'docker rm -f tgvd-test >/dev/null 2>&1 || true; docker volume rm tgvd-smoke-data >/dev/null 2>&1 || true' EXIT
+          # Boot took 23s on an ARM NAS; leave headroom on a loaded runner.
+          ready=0
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:18787/healthz >/dev/null; then break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' tgvd-test)" != "true" ]; then
+              echo "container exited before becoming ready; logs:" >&2
+              docker logs tgvd-test >&2 || true
+              exit 1
+            fi
+            sleep 1
+          done
+          if ! curl -fsS http://127.0.0.1:18787/healthz >/dev/null; then
+            echo "container did not become healthy in 60s; logs:" >&2
+            docker logs tgvd-test >&2 || true
+            exit 1
+          fi
+          curl -fsS http://127.0.0.1:18787/healthz
+          test "$(curl -sS -o /tmp/rpc.json -w '%{http_code}' \
+            -H 'content-type: application/json' \
+            -d '{"method":"login_state","params":[]}' \
+            http://127.0.0.1:18787/rpc)" = "401"
+          pid_uid=$(docker exec tgvd-test awk '/^Uid:/{print $2}' /proc/1/status)
+          test "${pid_uid}" = "10001"
+          docker exec --user 10001 tgvd-test python -c \
+            "from pathlib import Path; Path('/data/write-probe').write_text('ok')"
+          docker exec tgvd-test test -f /data/.setup-token
+
+  publish:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/tg-video-downloader
+          tags: |
+            type=ref,event=tag
+            type=sha,prefix=dev-
+            type=raw,value=dev,enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            TGDL_VERSION=${{ github.ref_name }}
+            TGDL_BUILD=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true

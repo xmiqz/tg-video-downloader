@@ -1,0 +1,23 @@
+=== T62：群晖本机构建 v2.4.1 测试镜像（无 registry push） ===
+
+源码来源：git archive 453c135 --prefix=tgvd-src/ → tgvd-v2.4.1-src.tar（3,092,480 字节）
+上传方式：SSH cat 直写 /tmp/tgvd-v2.4.1-src.tar（DSM 未启用 SFTP 子系统，sftp 通道不可用）
+构建位置：群晖 192.168.2.111 本机（aarch64 / RTD1296 / 4 核）
+构建命令：/usr/local/bin/docker build --network host -t tgvd-v2.4.1-local:arm64 .
+日志：/tmp/tgvd-build.log（构建完成后保留在设备上，含 pip 下载明细）
+
+--- 构建日志要点 ---
+Step 1/17 : FROM python:3.12-slim AS builder
+Status: Downloaded newer image for python:3.12-slim
+Successfully installed Pillow-13.0.0 ... fastapi-0.143.5 ... telethon-1.45.0 uvicorn-0.54.0 websockets-16.1.1
+Step 6/17 : FROM python:3.12-slim AS runtime
+Step 9/17 : COPY --from=builder /opt/venv /opt/venv
+Step 16/17 : ENTRYPOINT ["python", "/app/docker-entrypoint.py"]
+Successfully built 0ad46a27bc73
+Successfully tagged tgvd-v2.4.1-local:arm64
+BUILD_DONE
+
+说明：镜像名刻意使用 tgvd-v2.4.1-local:arm64，与 GHCR 发布产物
+ghcr.io/xmiqz/tg-video-downloader:v2.4.1 区分；本次**未**执行 docker push、
+未创建 git tag、未触碰 GitHub Release。该镜像仅用于 v2.4.1 代码在 ARM64
+真机上的运行时验收。

@@ -1,0 +1,34 @@
+T64b 探针记录（命令 + 关键输出，无正文/频道名/文件名/token）
+================================================================
+
+1) 命名块位置（工具条之后、列表之前）
+   rg -n "nw-toolbar|namingBar.el|\n    list," web/js/views/new.js
+   566:    el("div", { class: "nw-toolbar" }, [
+   573:    namingBar.el,
+   574:    list,
+
+2) 条件区不再有「更宽上下文命名」开关
+   rg -n "namewide|refs.nameWide" web/js/views/new.js
+   (无命中)
+
+3) 档位 → name_wide（RPC 参数名不变）
+   rg -n "name_wide" web/js/views/new.js
+   683:  r0.params.name_wide = nameWideParam(nameMode);
+   1276: ... String((previewData.params && previewData.params.name_wide) || "")
+
+4) 两页同源文案（编辑页）
+   rg -n "ed2-rn-tier|改名|更宽上下文命名|已登记（未下载）" web/taskedit.html web/js/taskedit.js
+   92/94: radio name="ed2-rn-tier" value="rename|wide" → 改名 / 更宽上下文命名
+   taskedit.js: 依任务 name_wide 回填档位；行内两态标签
+
+5) RPC 计数
+   python -c "import server_app; print(len(server_app.RPC_METHODS))"
+   56
+
+6) 隐私扫描（改动面 + 证据）
+   git diff | Select-String -Pattern "Bearer|api_hash|api_id|session|password|token="
+   (零命中)
+
+7) 测试
+   python -m pytest tests -q                → 334 passed
+   node --test "tests/js/*.test.mjs"        → tests 112 / pass 111 / todo 1 / fail 0

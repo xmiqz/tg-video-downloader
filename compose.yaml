@@ -1,0 +1,55 @@
+services:
+  tg-video-downloader:
+    image: ${TGVD_IMAGE:-ghcr.io/xmiqz/tg-video-downloader:v2.5.0}
+    container_name: tg-video-downloader
+    restart: unless-stopped
+    # Run as the unprivileged uid directly: no CAP_SETUID/CAP_SETGID is needed,
+    # so the container stays fully cap-drop'ed (verified on arm64 fnOS).
+    user: "${PUID:-10001}:${PGID:-10001}"
+    ports:
+      - "${TGDL_PORT:-8787}:8787"
+    # 构建元信息：镜像内已含默认值，这里允许手工覆盖（留空回落 dev）。
+    environment:
+      TGDL_HOST: 0.0.0.0
+      TGDL_PORT: "8787"
+      TGDL_DATA_DIR: /data
+      TGDL_ALLOWED_ROOTS: /data
+      TGDL_COOKIE_SECURE: "${TGDL_COOKIE_SECURE:-0}"
+      TGDL_TRUST_PROXY: "${TGDL_TRUST_PROXY:-0}"
+      TGDL_VERSION: "${TGDL_VERSION:-}"
+      TGDL_BUILD: "${TGDL_BUILD:-}"
+      PUID: "${PUID:-10001}"
+      PGID: "${PGID:-10001}"
+    volumes:
+      # A bind mount (./data:/data) is created by the host as root:root 0755,
+      # and this container runs as uid 10001 with cap_drop ALL, so it cannot
+      # create /data/downloads and dies at boot with
+      # "Permission denied: '/data/downloads'". A named volume is created from
+      # the image's /data (already owned by 10001:10001), so the default path
+      # needs no manual chown.
+      # To keep data on a specific host path instead, use:
+      #   - /vol1/1000/docker/tg-video-downloader:/data
+      # and chown it to 10001:10001 first.
+      - tgvd-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=3).read()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+
+volumes:
+  tgvd-data:
+    name: tg-video-downloader-data

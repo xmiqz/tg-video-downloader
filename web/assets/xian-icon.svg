@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-60 -60 120 120" width="256" height="256" role="img" aria-labelledby="xian-icon-title">
+  <title id="xian-icon-title">弦 XIAN</title>
+  <defs>
+    <linearGradient id="xian-icon-tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4F7CFF"/>
+      <stop offset="1" stop-color="#8B5BFF"/>
+    </linearGradient>
+    <linearGradient id="xian-icon-paper" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset=".42" stop-color="#F5FAFC"/>
+      <stop offset="1" stop-color="#C3D9E8"/>
+    </linearGradient>
+    <linearGradient id="xian-icon-glass" x1=".15" y1="0" x2=".85" y2="1">
+      <stop offset="0" stop-color="#8ADCF5"/>
+      <stop offset=".55" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#1B4FC4"/>
+    </linearGradient>
+  </defs>
+  <rect x="-52" y="-52" width="104" height="104" rx="26" fill="url(#xian-icon-tile)"/>
+  <g class="x-chord" transform="scale(.82)" fill="none" stroke="#8ADCF5" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+    <path class="x-chord-main" d="M-54 26 C -28 12 -8 32 26 14"/>
+    <path class="x-chord-branch" d="M-48 32 C -24 22 -4 40 24 26" stroke-width="1.4" opacity=".7"/>
+    <path class="x-chord-branch" d="M-42 38 C -18 30 0 46 22 36" stroke-width="1" opacity=".45"/>
+  </g>
+  <g class="x-body" data-geometry="nose:56,-18 wing:-44,-20 crown:-10,-48 keel:-24,44" data-radius="15.7" transform="scale(.82)">
+    <path class="x-w2" d="M43.59 -8.38Q56 -18 40.3 -18.31L-28.3 -19.69Q-44 -20 -39.32 -5.01L-28.68 29.01Q-24 44 -11.59 34.38Z" fill="url(#xian-icon-glass)"/>
+    <path class="x-w1" d="M41.71 -24.5Q56 -18 40.3 -18.31L-28.3 -19.69Q-44 -20 -31.88 -29.98L-22.12 -38.02Q-10 -48 4.29 -41.5Z" fill="url(#xian-icon-paper)"/>
+    <path class="x-edge" d="M56 -18L-44 -20" fill="none" stroke="rgba(255,255,255,.72)" stroke-width=".7" stroke-linecap="round"/>
+  </g>
+  <g class="x-node" transform="scale(.82)" fill="#8ADCF5" aria-hidden="true">
+    <circle cx="26" cy="14" r="3.6"/>
+    <circle cx="24" cy="26" r="2.8" opacity=".75"/>
+    <circle cx="22" cy="36" r="2.2" opacity=".5"/>
+  </g>
+</svg>
