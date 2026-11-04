@@ -404,7 +404,10 @@ html.liquid .ev-move-mask {
 
 /* ---------- 3. 平板窄栏（640–1023.98）：icon rail ---------- */
 @media (min-width: 640px) and (max-width: 1023.98px) {
-  #sh-root { grid-template-columns: 72px 1fr; --sh-side-w: 72px; }
+  /* QA 修复：72px 槽宽容不下「新建下载」等 4 字标签（11px 字宽 ≈44px，减去
+     侧栏/项内边距后可用 ≈40px），标签两端被视图边缘裁切并压到内容区。
+     扩到 88px 后标签完整可读，命中区与 icon rail 形态不变。 */
+  #sh-root { grid-template-columns: 88px 1fr; --sh-side-w: 88px; }
   .sh-side { padding: var(--space-3) var(--space-1); align-items: stretch; }
   .sh-brand { justify-content: center; padding: var(--space-1) 0 var(--space-3); gap: 0; }
   .sh-brand-name { display: none; }

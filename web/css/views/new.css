@@ -132,6 +132,11 @@
 .nw-dual > span[aria-hidden] { color: var(--color-text-faint); flex: none; }
 /* 基础设置二列网格（2.1 .form-grid/.top-gap 逐值 style.css:525-526：
    1fr 1fr / 行距 0 列距 16px / 上距 4px）——limit | parallel 同排 */
+/* QA 修复：<480 的 1fr 1fr 两列会把「同时下载几路（1-8）」挤成两行（"8）" 落单）。
+   小屏改为单列堆叠，标签与控件各占整行。 */
+@media (max-width: 479.98px) {
+  .nw-grid2 { grid-template-columns: 1fr; }
+}
 .nw-grid2 {
   display: grid;
   grid-template-columns: 1fr 1fr;

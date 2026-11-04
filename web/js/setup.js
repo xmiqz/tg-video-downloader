@@ -129,6 +129,13 @@ async function init() {
     return;
   }
   setupMode = false;
+  // QA 修复：已初始化实例走登录态时，页面仍复用「首次设置 / 准备你的下载服务」
+  // 与六步设置进度条，语义与当前动作不符。登录态改为常规登录文案并收起进度条。
+  document.title = "TG 视频下载器 · 登录";
+  const titleEl = $("setup-title");
+  if (titleEl) titleEl.textContent = "欢迎回来";
+  const progressEl = $("progress");
+  if (progressEl) progressEl.style.display = "none";
   setPhase("login");
 }
 

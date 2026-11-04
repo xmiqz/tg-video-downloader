@@ -51,6 +51,24 @@ html.liquid .lg-login-card {
   gap: 0;
   animation: lg-pop .5s var(--ease-spring);
 }
+/* QA 修复：卡面在深/浅两套主题下都必须是实底深色。
+   原实现只有壁纸/液态档给了深底，浅色主题下卡面沿用 .u-card 的浅玻璃底，
+   而 Ink 令牌被钉死为白色（见下条），出现「白字 + 半透明白底 + 下层正文透出」
+   的不可读状态（浅色 1440/390 登录截图实测）。这里补基础深底，保持设计语言。
+   注意：登录视图 CSS 的注入顺序晚于 .u-card 的基线样式，仅用单类选择器会被
+   .u-card 的 background 简写覆盖（实测计算值仍为透明白+噪点）。这里提权到
+   .u-card.lg-login-card，确保深浅主题下都稳定落在深底上。 */
+.u-card.lg-login-card {
+  background: linear-gradient(155deg,
+    rgba(24, 27, 40, .96) 0%,
+    rgba(18, 21, 33, .975) 60%,
+    rgba(14, 17, 27, .99) 100%);
+  border: var(--line-1) solid rgba(255, 255, 255, .14);
+  box-shadow: 0 24px 70px rgba(4, 6, 18, .55),
+              inset 0 1px 0 rgba(255, 255, 255, .20);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(20px) saturate(150%);
+}
 /* The login card is deliberately dark in every theme so the form reads the
    same way everywhere. That means its ink must also be pinned to the light
    set: on a bright captured backdrop the liquid theme swaps --raw-ink to dark,
@@ -250,6 +268,12 @@ html[data-theme="wallpaper"] .lg-view .lg-card {
 }
 html[data-lum="bright"] .lg-build {
   text-shadow: 0 1px 3px rgba(255, 255, 255, .8), 0 0 10px rgba(255, 255, 255, .55);
+}
+/* QA 修复：<640 悬浮底栏占据底部 10–70px，固定的构建号正好压在中央「＋」上
+   （390/320 实测重叠）。移动端不常驻构建号，避免与主操作相撞；版本信息仍可在
+   桌面端页脚与设置页查看。 */
+@media (max-width: 639.98px) {
+  .lg-build { display: none; }
 }
 
 /* ---------- 7. 减弱动效双路归零 ----------
