@@ -47,6 +47,9 @@ jobs:
 
       - name: Build
         shell: bash
+        env:
+          TGDL_VERSION: ${{ github.ref_name }}
+          TGDL_BUILD: ${{ github.sha }}
         run: python build.py dist
 
       - name: Rename to ASCII release names
