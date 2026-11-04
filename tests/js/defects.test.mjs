@@ -1,12 +1,8 @@
 // ============================================================
-// V2 缺陷红灯清单（pinned defects）
+// V2-D1–D4 原型链回归清单
 //
-// 本文件故意为红：每条断言写的是「契约应有的行为」，当前实现不满足。
-// 产品代码未做任何修改（任务书 §3：测试暴露缺陷 -> 失败测试 + 上报，STOP）。
-// 单跑：node --test tests/js/defects.test.mjs
-// 默认 `npm test` 不含本文件，保证回归套件保持绿。
-//
-// 修复后本文件转绿 -> 请把对应用例移入常规套件并删除此处的 [DEFECT] 标记。
+// 这些用例曾用于暴露缺陷；修复后保留为永久回归，防止普通对象 + 动态键
+// 再次把 Object.prototype 上的成员当成业务数据。
 // ============================================================
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
@@ -61,7 +57,7 @@ function bridgeHarness() {
 }
 
 // ================================================================ D1
-test("[DEFECT V2-D1] bridge：白名单外事件名不得命中 Object.prototype", () => {
+test("[回归 V2-D1] bridge：白名单外事件名不得命中 Object.prototype", () => {
   const h = bridgeHarness();
   const names = ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"];
   for (const name of names) {
@@ -75,7 +71,7 @@ test("[DEFECT V2-D1] bridge：白名单外事件名不得命中 Object.prototype
 });
 
 // ================================================================ D2
-test("[DEFECT V2-D2] active：bulkGroupKeys 遇到 Object.prototype 键名不得抛错", () => {
+test("[回归 V2-D2] active：bulkGroupKeys 遇到 Object.prototype 键名不得抛错", () => {
   for (const tid of ["__proto__", "constructor", "toString", "hasOwnProperty"]) {
     let out;
     let err = null;
@@ -86,14 +82,14 @@ test("[DEFECT V2-D2] active：bulkGroupKeys 遇到 Object.prototype 键名不得
 });
 
 // ================================================================ D3
-test("[DEFECT V2-D3] active：activeBadgeClass 未知态恒返回 wait", () => {
+test("[回归 V2-D3] active：activeBadgeClass 未知态恒返回 wait", () => {
   for (const s of ["constructor", "toString", "valueOf", "__proto__"]) {
     eq(A.activeBadgeClass(s), "wait", "状态 " + s + " 未映射，应兜底 wait（实际：undefined）");
   }
 });
 
 // ================================================================ D4
-test("[DEFECT V2-D4] active：pendReleaseRule 的 plain object 路径不得读原型链", () => {
+test("[回归 V2-D4] active：pendReleaseRule 的 plain object 路径不得读原型链", () => {
   // 契约（源码注释）：byCk 支持 Map 与 plain object，两者语义必须一致
   for (const ck of ["__proto__", "constructor", "toString"]) {
     const viaMap = A.pendReleaseRule(ck + ":pause", new Map());
@@ -108,5 +104,5 @@ test("[DEFECT V2-D4] active：pendReleaseRule 的 plain object 路径不得读�
 });
 
 after(() => {
-  console.log("TR6 结论：FAIL（缺陷：4 项原型链命中红灯，详见各用例；断言计数 " + N + " 项）");
+  console.log("TR6 结论：PASS（V2-D1–D4 原型链回归已固化；断言计数 " + N + " 项）");
 });

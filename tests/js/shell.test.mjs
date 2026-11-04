@@ -66,6 +66,7 @@ test("TR3-A 六个外壳锚点存在", () => {
   ok(SHELL.indexOf('id="sh-drawer"') >= 0, "抽屉 id 为 sh-drawer");
   ok(SHELL.indexOf('class="sh-side"') >= 0, "侧栏 class 为 sh-side");
   ok(SHELL.indexOf('class="sh-bottombar"') >= 0, "底栏 class 为 sh-bottombar");
+  ok(SHELL.indexOf('class="sh-bar-thumb"') >= 0, "底栏含独立滑动指示器");
   // 滚动容器与提示条（boot 内 getElementById 依赖）
   ok(SHELL.indexOf('id="sh-scroll"') >= 0, "滚动容器 id 为 sh-scroll");
   ok(SHELL.indexOf('id="sh-guestbar"') >= 0, "游客提示条 id 为 sh-guestbar");
@@ -156,6 +157,17 @@ test("TR3-D 引导顺序与页面契约", () => {
   ok(/e\.target\.closest\("\[data-nav\]"\)/.test(ROUTER), "委托选择器为 [data-nav]");
   ok(/router\.navigate\(nm === "editor" \? "\/task\/-\/edit" : "\/" \+ nm\);/.test(ROUTER),
     "委托统一转 router.navigate");
+
+  // Bottom-bar selected capsule: route-driven transform, no scroll listener.
+  ok(/function syncBarThumb\(name\)/.test(ROUTER), "底栏 thumb 同步函数存在");
+  ok(/thumb\.style\.transform[\s\S]{0,120}translateX/.test(ROUTER),
+    "底栏 thumb 使用 transform 位移");
+  ok(/if \(!targetRect\.width\)[\s\S]{0,140}scheduleBarThumbSync\(\)/.test(ROUTER),
+    "底栏 thumb 没有布局尺寸时不得显示");
+  ok(!/\.sh-bar-thumb\s*\{[\s\S]*?width var\(--dur-md\)/.test(SHELL_CSS),
+    "底栏 thumb 只滑 transform，不插值 width");
+  ok(/name === "new" \|\| name === "login"[\s\S]{0,100}thumb\.classList\.remove\("is-on"\)/.test(ROUTER),
+    "FAB/登录不参与页签 thumb");
 });
 
 after(() => {

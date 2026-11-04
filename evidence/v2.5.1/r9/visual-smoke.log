@@ -1,0 +1,68 @@
+{
+  "stage": {
+    "theme": "wallpaper",
+    "lum": "dark",
+    "stageSelectorMatches": true,
+    "parent": null,
+    "bay": true,
+    "bayRect": {
+      "x": 585.125,
+      "y": 129.21875,
+      "width": 355.734375,
+      "height": 258.703125,
+      "top": 129.21875,
+      "right": 940.859375,
+      "bottom": 387.921875,
+      "left": 585.125
+    },
+    "background": "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.04'/%3E%3C/svg%3E\"), linear-gradient(rgba(8, 10, 18, 0.42), rgba(8, 10, 18, 0.26)), linear-gradient(160deg, rgba(255, 255, 255, 0.17) 0%, rgba(255, 255, 255, 0.106) 48%, rgba(255, 255, 255, 0.07) 100%)",
+    "border": "rgba(255, 255, 255, 0.14)",
+    "filter": "saturate(1.65) contrast(1.06)",
+    "text": "TG\nTelegram\n来源 · 读取清单\nAC\n主号（未获取资料）\n账号池 · 共 1 个\nDS\n本地磁盘\n保存位置\n正在下载 2 条 · 等待 10 条\n【二次元】白丝萝莉社\n3\n786_白丝萝莉社_01.mp4\n下载中\n15% · 300.8 KB/s\n786_白丝萝莉社_02.mp4\n下载中\n9% · 356.4 KB/s\n786_白丝萝莉社_03.mp4\n等待中\n0%\n待处理 12 · 完成 0/12 · 并发 2/2\n总体进度\n49%\n完成 0 · 跳过 0 · "
+  },
+  "login": {
+    "card": {
+      "x": 429,
+      "y": 213.15625,
+      "width": 422,
+      "height": 473.671875,
+      "top": 213.15625,
+      "right": 851,
+      "bottom": 686.828125,
+      "left": 429
+    },
+    "foot": {
+      "x": 450,
+      "y": 635.15625,
+      "width": 380,
+      "height": 30.671875,
+      "top": 635.15625,
+      "right": 830,
+      "bottom": 665.828125,
+      "left": 450
+    },
+    "footText": "v2.5.1 · build r9",
+    "inside": true,
+    "badgeSvg": true,
+    "badgeSize": {
+      "x": 620,
+      "y": 245.15625,
+      "width": 40,
+      "height": 40,
+      "top": 245.15625,
+      "right": 660,
+      "bottom": 285.15625,
+      "left": 620
+    }
+  },
+  "setup": {
+    "tag": "IMG",
+    "src": "/assets/xian-icon.svg",
+    "naturalWidth": 256,
+    "build": "v2.5.1 · build r9",
+    "visible": true
+  },
+  "errors": [],
+  "consoleErrors": [],
+  "failed": []
+}

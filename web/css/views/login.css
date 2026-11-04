@@ -235,21 +235,19 @@ html[data-theme="wallpaper"] .lg-view .lg-card {
   background-color: color-mix(in srgb, var(--color-surface) 88%, transparent);
 }
 
-/* 页脚构建信息（版本号）：登录视图唯一的常驻文字位，卡片下方居中。 */
+/* 页脚构建信息（版本号 + 构建号）：跟随弹层卡底部，不脱离弹层。 */
 .lg-build {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 14px;
+  position: static;
+  margin-top: 22px;
+  padding-top: 13px;
+  border-top: 1px solid rgba(255, 255, 255, .12);
   text-align: center;
-  color: var(--color-text-faint);
+  color: rgba(231, 236, 249, .58);
   font-size: 11.5px;
+  line-height: 1.45;
   letter-spacing: .2px;
   pointer-events: none;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, .45);
-}
-html[data-lum="bright"] .lg-build {
-  text-shadow: 0 1px 3px rgba(255, 255, 255, .8), 0 0 10px rgba(255, 255, 255, .55);
+  text-shadow: none;
 }
 
 /* ---------- 7. 减弱动效双路归零 ----------

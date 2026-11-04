@@ -12,7 +12,9 @@
     - js/taskedit.js = 2.1 web/editor.js 原样（+外观跟随适配，见其尾部）
     文件名避开 WC-4d 旧壳四资源断言（app.js/style.css/editor.html/editor.js 零残留口径）。
   -->
+  <link rel="stylesheet" href="css/tokens.css">
   <link rel="stylesheet" href="css/taskedit.css">
+  <link rel="stylesheet" href="css/glass-system.css">
 </head>
 <body>
 
@@ -66,6 +68,7 @@
                oninput="edRender()">
       </div>
       <div class="segmented" id="ed2-filter">
+        <div class="seg-thumb" aria-hidden="true"></div>
         <button class="seg active" data-f="all" onclick="edSetFilter('all')">全部</button>
         <button class="seg" data-f="done" onclick="edSetFilter('done')">已完成</button>
         <button class="seg" data-f="pending" onclick="edSetFilter('pending')">未下载</button>
