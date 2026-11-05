@@ -1,0 +1,734 @@
+/* TVG Glass System 1.0
+
+   Four semantic material tiers:
+   - nav:    persistent chrome (sidebar/drawer/bottom bar)
+   - panel:  content surfaces (cards, task groups, stage shell)
+   - overlay: dialogs, login, action bars, toasts
+   - inset:  nested rows/blocks inside a panel (never blurred)
+
+   All glass consumers use the same recipe. Views must not invent a second
+   background, border, highlight, or shadow recipe.
+
+   This layer is loaded after view CSS. It intentionally owns material
+   overrides so the geometry can stay untouched while the material system is
+   rolled out. */
+
+:root,
+:root[data-theme="light"] {
+  --font-ui: "SF Pro Text", "Segoe UI Variable Display", "Segoe UI",
+    "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-display: var(--font-ui);
+
+  --tvg-glass-sat: 145%;
+  --tvg-glass-nav-blur: 12px;
+  --tvg-glass-panel-blur: 18px;
+  --tvg-glass-overlay-blur: 24px;
+  --tvg-glass-panel-filter:
+    blur(var(--tvg-glass-panel-blur)) saturate(var(--tvg-glass-sat));
+  --tvg-glass-control-bg: var(--tvg-glass-nav-bg);
+  --tvg-glass-control-filter:
+    saturate(160%) contrast(1.03);
+  --tvg-control-h-xs: 28px;
+  --tvg-control-h-sm: 32px;
+  --tvg-control-h-md: 40px;
+  --tvg-control-h-lg: 48px;
+  --tvg-control-h-touch: 44px;
+  --tvg-thumb-frame: linear-gradient(135deg,
+    rgba(255, 255, 255, .78) 0%,
+    rgba(255, 255, 255, .30) 22%,
+    rgba(20, 30, 60, .06) 56%,
+    rgba(255, 255, 255, .46) 100%);
+  --tvg-thumb-bg: linear-gradient(155deg,
+    rgba(255, 255, 255, .14) 0%,
+    rgba(20, 30, 60, .055) 100%);
+  --tvg-control-rim-shadow:
+    0 2px 8px rgba(30, 42, 80, .10),
+    inset 0 1px 0 rgba(255, 255, 255, .22);
+
+  --tvg-glass-nav-bg: linear-gradient(160deg,
+    rgba(255, 255, 255, .82) 0%,
+    rgba(255, 255, 255, .66) 42%,
+    rgba(255, 255, 255, .54) 100%);
+  --tvg-glass-panel-bg: linear-gradient(160deg,
+    rgba(255, 255, 255, .70) 0%,
+    rgba(255, 255, 255, .54) 48%,
+    rgba(255, 255, 255, .42) 100%);
+  --tvg-glass-overlay-bg: linear-gradient(160deg,
+    rgba(248, 250, 255, .95) 0%,
+    rgba(242, 246, 253, .91) 54%,
+    rgba(235, 241, 251, .88) 100%);
+  --tvg-glass-inset-bg: rgba(20, 30, 60, .045);
+  --tvg-glass-nav-solid: #f6f8fc;
+  --tvg-glass-panel-solid: #eef2f8;
+  --tvg-glass-overlay-solid: #f2f5fb;
+
+  --tvg-glass-nav-border: rgba(20, 30, 60, .14);
+  --tvg-glass-panel-border: rgba(20, 30, 60, .10);
+  --tvg-glass-overlay-border: rgba(20, 30, 60, .14);
+  --tvg-glass-inset-border: rgba(20, 30, 60, .08);
+
+  --tvg-glass-nav-shadow: 0 12px 30px rgba(30, 42, 80, .14);
+  --tvg-glass-panel-shadow: 0 8px 24px rgba(30, 42, 80, .12);
+  --tvg-glass-overlay-shadow: 0 28px 80px rgba(0, 0, 0, .32);
+  --tvg-glass-top-hi: inset 0 1px 0 rgba(255, 255, 255, .72);
+  --tvg-glass-nav-top-hi: inset 0 1px 0 rgba(255, 255, 255, .82);
+  --tvg-glass-overlay-top-hi: inset 0 1px 0 rgba(255, 255, 255, .86);
+  --tvg-glass-overlay-text: #1b2233;
+  --tvg-glass-overlay-muted: rgba(27, 34, 51, .68);
+  --tvg-glass-overlay-faint: rgba(27, 34, 51, .45);
+}
+
+:root[data-theme="dark"],
+:root[data-theme="wallpaper"][data-lum="dark"],
+:root[data-theme="wallpaper"]:not([data-lum="bright"]) {
+  --tvg-glass-sat: 145%;
+  --tvg-glass-nav-bg: linear-gradient(160deg,
+    rgba(255, 255, 255, .17) 0%,
+    rgba(255, 255, 255, .09) 44%,
+    rgba(255, 255, 255, .055) 100%);
+  --tvg-glass-panel-bg: linear-gradient(160deg,
+    rgba(255, 255, 255, .17) 0%,
+    rgba(255, 255, 255, .105) 48%,
+    rgba(255, 255, 255, .07) 100%);
+  --tvg-glass-overlay-bg: linear-gradient(160deg,
+    rgba(20, 24, 38, .94) 0%,
+    rgba(12, 16, 27, .96) 56%,
+    rgba(7, 10, 18, .98) 100%);
+  --tvg-glass-inset-bg: rgba(255, 255, 255, .045);
+  --tvg-glass-nav-solid: #111522;
+  --tvg-glass-panel-solid: #121624;
+  --tvg-glass-overlay-solid: #0d111c;
+
+  --tvg-glass-nav-border: rgba(255, 255, 255, .20);
+  --tvg-glass-panel-border: rgba(255, 255, 255, .14);
+  --tvg-glass-overlay-border: rgba(255, 255, 255, .22);
+  --tvg-glass-inset-border: rgba(255, 255, 255, .09);
+
+  --tvg-glass-nav-shadow: 0 14px 36px rgba(0, 0, 0, .42);
+  --tvg-glass-panel-shadow: 0 12px 30px rgba(0, 0, 0, .32);
+  --tvg-glass-overlay-shadow: 0 28px 80px rgba(0, 0, 0, .62);
+  --tvg-glass-top-hi: inset 0 1px 0 rgba(255, 255, 255, .24);
+  --tvg-glass-nav-top-hi: inset 0 1px 0 rgba(255, 255, 255, .30);
+  --tvg-glass-overlay-top-hi: inset 0 1px 0 rgba(255, 255, 255, .28);
+  --tvg-glass-overlay-text: #f2f5ff;
+  --tvg-glass-overlay-muted: rgba(238, 242, 252, .80);
+  --tvg-glass-overlay-faint: rgba(231, 236, 249, .62);
+  --tvg-thumb-frame: linear-gradient(135deg,
+    rgba(255, 255, 255, .58) 0%,
+    rgba(255, 255, 255, .20) 24%,
+    rgba(255, 255, 255, .035) 58%,
+    rgba(255, 255, 255, .34) 100%);
+  --tvg-thumb-bg: linear-gradient(155deg,
+    rgba(255, 255, 255, .10) 0%,
+    rgba(255, 255, 255, .035) 100%);
+  --tvg-control-rim-shadow:
+    0 3px 10px rgba(0, 0, 0, .20),
+    inset 0 1px 0 rgba(255, 255, 255, .14);
+}
+
+:root[data-theme="wallpaper"][data-lum="bright"] {
+  --tvg-glass-nav-bg: linear-gradient(160deg,
+    rgba(255, 255, 255, .88) 0%,
+    rgba(255, 255, 255, .73) 42%,
+    rgba(255, 255, 255, .62) 100%);
+  --tvg-glass-panel-bg: linear-gradient(160deg,
+    rgba(255, 255, 255, .72) 0%,
+    rgba(255, 255, 255, .57) 48%,
+    rgba(255, 255, 255, .46) 100%);
+  --tvg-glass-overlay-bg: linear-gradient(160deg,
+    rgba(255, 255, 255, .97) 0%,
+    rgba(250, 252, 255, .95) 54%,
+    rgba(245, 248, 253, .93) 100%);
+  --tvg-glass-inset-bg: rgba(20, 30, 60, .055);
+  --tvg-glass-inset-border: rgba(20, 30, 60, .10);
+  --tvg-glass-overlay-text: #1b2233;
+  --tvg-glass-overlay-muted: rgba(27, 34, 51, .68);
+  --tvg-glass-overlay-faint: rgba(27, 34, 51, .45);
+}
+
+/* Liquid is a captured image too: its material must follow the sampled
+   background luminance rather than staying dark over a bright capture. */
+:root.liquid[data-lum="bright"] {
+  --tvg-glass-nav-bg: linear-gradient(160deg,
+    rgba(255, 255, 255, .86) 0%,
+    rgba(255, 255, 255, .70) 44%,
+    rgba(255, 255, 255, .58) 100%);
+  --tvg-glass-panel-bg: linear-gradient(160deg,
+    rgba(255, 255, 255, .70) 0%,
+    rgba(255, 255, 255, .54) 48%,
+    rgba(255, 255, 255, .43) 100%);
+  --tvg-glass-nav-solid: #f6f8fc;
+  --tvg-glass-panel-solid: #eef2f8;
+  --tvg-glass-nav-border: rgba(20, 30, 60, .14);
+  --tvg-glass-panel-border: rgba(20, 30, 60, .10);
+  --tvg-glass-nav-shadow: 0 12px 30px rgba(30, 42, 80, .14);
+  --tvg-glass-panel-shadow: 0 8px 24px rgba(30, 42, 80, .12);
+  --tvg-glass-nav-top-hi: inset 0 1px 0 rgba(255, 255, 255, .82);
+  --tvg-glass-top-hi: inset 0 1px 0 rgba(255, 255, 255, .72);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --tvg-glass-nav-bg: linear-gradient(160deg,
+      rgba(255, 255, 255, .17) 0%,
+      rgba(255, 255, 255, .09) 44%,
+      rgba(255, 255, 255, .055) 100%);
+    --tvg-glass-panel-bg: linear-gradient(160deg,
+      rgba(255, 255, 255, .20) 0%,
+      rgba(255, 255, 255, .14) 48%,
+      rgba(255, 255, 255, .09) 100%);
+    --tvg-glass-overlay-bg: linear-gradient(160deg,
+      rgba(20, 24, 38, .94) 0%,
+      rgba(12, 16, 27, .96) 56%,
+      rgba(7, 10, 18, .98) 100%);
+    --tvg-glass-inset-bg: rgba(255, 255, 255, .045);
+    --tvg-glass-nav-solid: #111522;
+    --tvg-glass-panel-solid: #121624;
+    --tvg-glass-overlay-solid: #0d111c;
+    --tvg-glass-nav-border: rgba(255, 255, 255, .20);
+    --tvg-glass-panel-border: rgba(255, 255, 255, .14);
+    --tvg-glass-overlay-border: rgba(255, 255, 255, .22);
+    --tvg-glass-inset-border: rgba(255, 255, 255, .09);
+    --tvg-glass-nav-shadow: 0 14px 36px rgba(0, 0, 0, .42);
+    --tvg-glass-panel-shadow: 0 12px 30px rgba(0, 0, 0, .32);
+    --tvg-glass-overlay-shadow: 0 28px 80px rgba(0, 0, 0, .62);
+    --tvg-glass-top-hi: inset 0 1px 0 rgba(255, 255, 255, .24);
+    --tvg-glass-nav-top-hi: inset 0 1px 0 rgba(255, 255, 255, .30);
+    --tvg-glass-overlay-top-hi: inset 0 1px 0 rgba(255, 255, 255, .28);
+    --tvg-glass-overlay-text: #f2f5ff;
+    --tvg-glass-overlay-muted: rgba(238, 242, 252, .80);
+    --tvg-glass-overlay-faint: rgba(231, 236, 249, .62);
+  }
+}
+
+html body,
+html body button,
+html body input,
+html body select,
+html body textarea {
+  font-family: var(--font-ui) !important;
+}
+
+/* nav: persistent chrome */
+html body :is(.sh-side, .sh-drawer, .sh-bar-mat) {
+  background: var(--tvg-glass-nav-bg) !important;
+  -webkit-backdrop-filter: blur(var(--tvg-glass-nav-blur)) saturate(var(--tvg-glass-sat)) !important;
+  backdrop-filter: blur(var(--tvg-glass-nav-blur)) saturate(var(--tvg-glass-sat)) !important;
+  border-color: var(--tvg-glass-nav-border) !important;
+  box-shadow: var(--tvg-glass-nav-shadow), var(--tvg-glass-nav-top-hi) !important;
+}
+
+/* The account footer belongs to nav, but it is content inside the nav surface.
+   A second glass sheet here reads as a white blurred block layered over the
+   sidebar, so only the hover/focus affordance gets a matte fill. */
+html body .sh-me {
+  background: transparent !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  border-radius: var(--radius-md);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  html body .sh-me:hover,
+  html body .sh-me:focus-visible {
+    background: var(--tvg-glass-inset-bg) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06) !important;
+  }
+}
+
+/* controls: neutral buttons and fields inherit the mobile-nav glass recipe.
+   Brand/danger actions keep their semantic fills. Sizes are shared tokens so
+   compact row actions and full-width dialog actions feel like one system. */
+html body .u-btn:not(.u-btn--primary):not(.u-btn--danger),
+html body .btn:not(.primary):not(.danger),
+html body :is(.icon-btn, .mini-action, .u-seg) {
+  background: var(--tvg-glass-control-bg);
+  -webkit-backdrop-filter: var(--tvg-glass-control-filter);
+  backdrop-filter: var(--tvg-glass-control-filter);
+  border-color: var(--tvg-glass-nav-border);
+  box-shadow: var(--tvg-glass-nav-top-hi);
+}
+
+html body .u-seg {
+  background: var(--tvg-glass-control-bg);
+  border: var(--line-1) solid var(--tvg-glass-nav-border);
+  box-shadow: var(--tvg-glass-nav-top-hi);
+}
+
+html body .u-seg-thumb {
+  box-sizing: border-box;
+  border: var(--line-1) solid transparent;
+  background:
+    var(--tvg-thumb-bg) padding-box,
+    var(--tvg-thumb-frame) border-box;
+  -webkit-backdrop-filter: blur(3px) saturate(140%);
+  backdrop-filter: blur(3px) saturate(140%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .42),
+    inset 0 0 0 1px rgba(255, 255, 255, .12),
+    0 3px 10px rgba(0, 0, 0, .16);
+}
+
+/* Standalone task editor uses the older .segmented/.seg markup. Bridge it to
+   the same control material and lens thumb without changing its DOM contract. */
+html body .segmented {
+  position: relative;
+  isolation: isolate;
+  background: var(--tvg-glass-control-bg);
+  border: var(--line-1) solid var(--tvg-glass-nav-border);
+  box-shadow: var(--tvg-glass-nav-top-hi);
+}
+
+html body .segmented .seg {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+html body .segmented .seg.active {
+  background: transparent !important;
+  color: var(--color-text-strong) !important;
+  box-shadow: none !important;
+}
+
+html body .seg-thumb {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 0;
+  width: 0;
+  height: 0;
+  box-sizing: border-box;
+  border: var(--line-1) solid transparent;
+  border-radius: var(--radius-pill);
+  background:
+    var(--tvg-thumb-bg) padding-box,
+    var(--tvg-thumb-frame) border-box;
+  -webkit-backdrop-filter: blur(3px) saturate(140%);
+  backdrop-filter: blur(3px) saturate(140%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .42),
+    inset 0 0 0 1px rgba(255, 255, 255, .12),
+    0 3px 10px rgba(0, 0, 0, .16);
+  pointer-events: none;
+  opacity: 0;
+  transition:
+    transform var(--dur-md) var(--ease-spring-li),
+    width var(--dur-md) var(--ease-spring-li),
+    height var(--dur-md) var(--ease-spring-li),
+    opacity var(--dur-sm) var(--ease-standard);
+}
+
+html body .seg-thumb.is-on { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  html body .seg-thumb { transition: none; }
+}
+
+html body :is(
+  input[type="text"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="password"],
+  input[type="number"],
+  input[type="date"],
+  input[type="datetime-local"],
+  input[type="email"],
+  input[type="url"],
+  select,
+  textarea,
+  .nw-input,
+  .st-input,
+  .lg-input,
+  .tk-input,
+  .ev-title-input,
+  .ev-folder-input,
+  .ev-parallel-input,
+  .ev-q-input,
+  .rn-input,
+  .nw-rn-input
+) {
+  background: var(--tvg-glass-control-bg);
+  -webkit-backdrop-filter: var(--tvg-glass-control-filter);
+  backdrop-filter: var(--tvg-glass-control-filter);
+  border-color: var(--tvg-glass-nav-border);
+  box-shadow: var(--tvg-glass-nav-top-hi);
+}
+
+html body :is(.u-btn, .btn) {
+  min-height: var(--tvg-control-h-md);
+}
+html body :is(.u-btn--sm, .btn.sm, .ev-sm, .st-sm) {
+  min-height: var(--tvg-control-h-sm);
+}
+html body :is(.u-btn--lg, .btn.lg) {
+  min-height: var(--tvg-control-h-lg);
+}
+html body :is(.icon-btn, .mini-action) {
+  min-height: var(--tvg-control-h-xs);
+}
+html body :is(
+  input[type="text"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="password"],
+  input[type="number"],
+  input[type="date"],
+  input[type="datetime-local"],
+  input[type="email"],
+  input[type="url"],
+  select,
+  textarea,
+  .nw-input,
+  .st-input,
+  .lg-input,
+  .tk-input,
+  .ev-title-input,
+  .ev-folder-input,
+  .ev-parallel-input,
+  .ev-q-input,
+  .rn-input,
+  .nw-rn-input
+) {
+  min-height: var(--tvg-control-h-md);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  html body .u-btn:not(.u-btn--primary):not(.u-btn--danger):hover,
+  html body .btn:not(.primary):not(.danger):hover,
+  html body :is(.icon-btn, .mini-action):hover {
+    border-color: var(--tvg-glass-nav-border);
+  }
+}
+
+/* Form fields use the liquid-glass outer lens rim: a cool upper-left caustic
+   fading into the glass edge, with a quieter lower-right reflection. The
+   border-box gradient supplies the rim; the padding-box layer keeps the
+   control fill independent from it. */
+html body :is(
+  input[type="text"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="password"],
+  input[type="number"],
+  input[type="date"],
+  input[type="datetime-local"],
+  input[type="email"],
+  input[type="url"],
+  select,
+  textarea,
+  .nw-input,
+  .st-input,
+  .lg-input,
+  .tk-input,
+  .ev-title-input,
+  .ev-folder-input,
+  .ev-parallel-input,
+  .ev-q-input,
+  .rn-input,
+  .nw-rn-input
+) {
+  background: var(--tvg-glass-control-bg);
+  border: var(--line-1) solid var(--tvg-glass-nav-border);
+  box-shadow: var(--tvg-glass-nav-top-hi);
+}
+
+html body :is(
+  input[type="text"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="password"],
+  input[type="number"],
+  input[type="date"],
+  input[type="datetime-local"],
+  input[type="email"],
+  input[type="url"],
+  select,
+  textarea,
+  .nw-input,
+  .st-input,
+  .lg-input,
+  .tk-input,
+  .ev-title-input,
+  .ev-folder-input,
+  .ev-parallel-input,
+  .ev-q-input,
+  .rn-input,
+  .nw-rn-input
+):focus,
+html body :is(
+  input[type="text"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="password"],
+  input[type="number"],
+  input[type="date"],
+  input[type="datetime-local"],
+  input[type="email"],
+  input[type="url"],
+  select,
+  textarea,
+  .nw-input,
+  .st-input,
+  .lg-input,
+  .tk-input,
+  .ev-title-input,
+  .ev-folder-input,
+  .ev-parallel-input,
+  .ev-q-input,
+  .rn-input,
+  .nw-rn-input
+):focus-visible {
+  border-color: transparent;
+  background: var(--tvg-glass-control-bg);
+  box-shadow:
+    var(--tvg-control-rim-shadow),
+    0 0 0 3px var(--color-primary-soft);
+}
+
+@media (max-width: 767.98px) {
+  html body :is(.u-btn, .btn, .icon-btn, .mini-action),
+  html body :is(
+    input[type="text"],
+    input[type="search"],
+    input[type="tel"],
+    input[type="password"],
+    input[type="number"],
+    input[type="date"],
+    input[type="datetime-local"],
+    input[type="email"],
+    input[type="url"],
+    select,
+    textarea
+  ) {
+    min-height: var(--tvg-control-h-touch);
+  }
+}
+
+/* panel: content surfaces */
+html body :is(
+  .u-card,
+  .st-card,
+  .ac-group,
+  .ac-ov-card,
+  .ac-bulk,
+  .tk-card,
+  .job-card,
+  .job-dock-mini,
+  .dl-card,
+  .task-card,
+  .setup-card,
+  .editor-head,
+  .editor-toolbar,
+  .xian-stage-bay,
+  .glass
+) {
+  background: var(--tvg-glass-panel-bg) !important;
+  -webkit-backdrop-filter: var(--tvg-glass-panel-filter) !important;
+  backdrop-filter: var(--tvg-glass-panel-filter) !important;
+  border: var(--line-1) solid var(--tvg-glass-panel-border) !important;
+  box-shadow: var(--tvg-glass-panel-shadow), var(--tvg-glass-top-hi) !important;
+  isolation: isolate;
+}
+
+html body :is(.lg-login-card, .lg-card) {
+  color: var(--tvg-glass-overlay-text) !important;
+  --color-text: var(--tvg-glass-overlay-text);
+  --color-text-strong: var(--tvg-glass-overlay-text);
+  --color-text-muted: var(--tvg-glass-overlay-muted);
+  --color-text-faint: var(--tvg-glass-overlay-faint);
+}
+
+/* overlay: must be visibly above the rest of the stack */
+html body :is(
+  .u-overlay-panel,
+  .u-toast,
+  .u-actionbar,
+  .lg-login-card,
+  .lg-card,
+  .modal.glass,
+  .ed-folder-modal,
+  .bulk-bar
+) {
+  background: var(--tvg-glass-overlay-bg) !important;
+  -webkit-backdrop-filter: blur(var(--tvg-glass-overlay-blur)) saturate(var(--tvg-glass-sat)) !important;
+  backdrop-filter: blur(var(--tvg-glass-overlay-blur)) saturate(var(--tvg-glass-sat)) !important;
+  border-color: var(--tvg-glass-overlay-border) !important;
+  box-shadow: var(--tvg-glass-overlay-shadow), var(--tvg-glass-overlay-top-hi) !important;
+  isolation: isolate;
+}
+
+/* inset: nested blocks are intentionally matte, not another glass sheet */
+html body :is(
+  .ac-card,
+  .xian-stage-node-chip,
+  .xian-stage-card,
+  .xian-stage-queue-more,
+  .xian-stage-task-item
+) {
+  background: var(--tvg-glass-inset-bg) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  border-color: var(--tvg-glass-inset-border) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06) !important;
+}
+
+/* liquid is a performance fallback, not a different visual language. */
+html.liquid body :is(.sh-side, .sh-drawer, .sh-bar-mat) {
+  background: var(--tvg-glass-nav-bg) !important;
+  -webkit-backdrop-filter: blur(var(--tvg-glass-nav-blur)) saturate(var(--tvg-glass-sat)) !important;
+  backdrop-filter: blur(var(--tvg-glass-nav-blur)) saturate(var(--tvg-glass-sat)) !important;
+}
+
+html.liquid body :is(
+  .u-card,
+  .st-card,
+  .ac-group,
+  .ac-ov-card,
+  .ac-bulk,
+  .tk-card,
+  .job-card,
+  .job-dock-mini,
+  .dl-card,
+  .task-card,
+  .setup-card,
+  .editor-head,
+  .editor-toolbar,
+  .xian-stage-bay,
+  .glass
+) {
+  background: var(--tvg-glass-panel-bg) !important;
+  -webkit-backdrop-filter: var(--tvg-glass-panel-filter) !important;
+  backdrop-filter: var(--tvg-glass-panel-filter) !important;
+}
+
+html.liquid body :is(
+  .u-overlay-panel,
+  .u-toast,
+  .u-actionbar,
+  .lg-login-card,
+  .lg-card,
+  .modal.glass,
+  .ed-folder-modal,
+  .bulk-bar
+) {
+  background: var(--tvg-glass-overlay-bg) !important;
+  -webkit-backdrop-filter: blur(var(--tvg-glass-overlay-blur)) saturate(var(--tvg-glass-sat)) !important;
+  backdrop-filter: blur(var(--tvg-glass-overlay-blur)) saturate(var(--tvg-glass-sat)) !important;
+}
+
+/* Wallpaper text must sit on a reading surface, not on a halo. */
+html[data-theme="wallpaper"] body :is(
+  .sh-side,
+  .sh-drawer,
+  .sh-bar-mat,
+  .u-card,
+  .st-card,
+  .ac-group,
+  .ac-ov-card,
+  .ac-bulk,
+  .tk-card,
+  .job-card,
+  .job-dock-mini,
+  .dl-card,
+  .task-card,
+  .setup-card,
+  .editor-head,
+  .editor-toolbar,
+  .xian-stage-bay,
+  .glass,
+  .lg-login-card,
+  .lg-card
+) {
+  text-shadow: none !important;
+}
+
+html[data-theme="wallpaper"] body :is(
+  .u-card,
+  .st-card,
+  .ac-group,
+  .ac-ov-card,
+  .ac-bulk,
+  .tk-card,
+  .job-card,
+  .job-dock-mini,
+  .dl-card,
+  .task-card,
+  .setup-card,
+  .editor-head,
+  .editor-toolbar,
+  .xian-stage-bay,
+  .glass
+) {
+  background: var(--tvg-glass-panel-bg) !important;
+  -webkit-backdrop-filter: var(--tvg-glass-panel-filter) !important;
+  backdrop-filter: var(--tvg-glass-panel-filter) !important;
+}
+
+/* The stage is the focal work surface, not passive content. On dark photo
+   wallpapers the panel layer needs a restrained reading scrim underneath so
+   task names, percentages and status chips remain legible without turning
+   the shell into an opaque card. */
+html[data-theme="wallpaper"][data-lum="dark"] body .xian-stage-bay {
+  background:
+    var(--lg-noise),
+    linear-gradient(180deg, rgba(8, 10, 18, .42), rgba(8, 10, 18, .26)),
+    var(--tvg-glass-panel-bg) !important;
+}
+
+/* v2.5.0 regression guard: a live spatial blur on a large desktop panel
+   samples the adjacent sidebar and pulls its hover highlight into the panel's
+   left edge. Desktop panels keep the translucent glass fill and colour boost,
+   but do not perform spatial sampling; nav and overlays keep their blur. */
+@media (min-width: 1024px) {
+  :root[data-theme],
+  :root:not([data-theme]) {
+    --tvg-glass-panel-filter: saturate(165%) contrast(1.06);
+  }
+}
+
+html[data-theme="wallpaper"] body :is(.lg-login-card, .lg-card) {
+  color: var(--tvg-glass-overlay-text) !important;
+  --color-text: var(--tvg-glass-overlay-text);
+  --color-text-strong: var(--tvg-glass-overlay-text);
+  --color-text-muted: var(--tvg-glass-overlay-muted);
+  --color-text-faint: var(--tvg-glass-overlay-faint);
+}
+
+html[data-theme="wallpaper"] body :is(.lg-login-card, .lg-card) .lg-title,
+html[data-theme="wallpaper"] body :is(.lg-login-card, .lg-card) .lg-sub,
+html[data-theme="wallpaper"] body :is(.lg-login-card, .lg-card) label,
+html[data-theme="wallpaper"] body :is(.lg-login-card, .lg-card) .lg-hint {
+  text-shadow: none !important;
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  html body :is(.sh-side, .sh-drawer, .sh-bar-mat) {
+    background: var(--tvg-glass-nav-solid) !important;
+  }
+  html body :is(
+    .u-card,
+    .st-card,
+    .ac-group,
+    .ac-ov-card,
+    .ac-bulk,
+    .tk-card,
+    .job-card,
+    .job-dock-mini,
+    .dl-card,
+    .task-card,
+    .setup-card,
+    .editor-head,
+    .editor-toolbar,
+    .xian-stage-bay,
+    .glass
+  ) {
+    background: var(--tvg-glass-panel-solid) !important;
+    border-color: var(--tvg-glass-panel-border) !important;
+  }
+  html body :is(.u-overlay-panel, .u-toast, .u-actionbar, .lg-login-card, .lg-card) {
+    background: var(--tvg-glass-overlay-solid) !important;
+  }
+}

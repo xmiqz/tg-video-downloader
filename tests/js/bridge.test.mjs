@@ -264,10 +264,8 @@ test("TR1-C 事件白名单：五个放行名 + 未列入只 debug", async () =>
   eq(h.tg("job_update").length, 2, "params 缺失按 [] 处理仍转发（detail undefined）");
 });
 
-// V2-D1 缺陷：EVENT_WHITELIST 是普通对象字面量，原型链上的键会被当成 handler。
-test("TR1-D [缺陷 V2-D1] 未列入事件一律只 debug（含原型链键名）", {
-  todo: "V2-D1: EVENT_WHITELIST 用对象字面量，msg.event=constructor/toString/valueOf 命中 Object.prototype 上的函数，绕过白名单且不打印 debug",
-}, async () => {
+// V2-D1 回归：原型链键名也必须按白名单外事件处理。
+test("TR1-D [回归 V2-D1] 未列入事件一律只 debug（含原型链键名）", async () => {
   const h = makeHarness({ hash: "#/tasks&t=t1" });
   await h.settle();
   h.auth();
@@ -375,5 +373,5 @@ test("TR1-G startBridge 会话分流（无 token）", async () => {
 });
 
 after(() => {
-  console.log("TR1 结论：PASS（" + N + " 项；另含 1 项缺陷用例 V2-D1 见 TODO）");
+  console.log("TR1 结论：PASS（" + N + " 项；V2-D1 原型链回归已转绿并永久保留）");
 });

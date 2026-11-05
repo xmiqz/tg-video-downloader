@@ -76,7 +76,6 @@ body {
   margin-bottom: 24px;
 }
 
-.setup-logo,
 .setup-check {
   display: grid;
   place-items: center;
@@ -89,6 +88,16 @@ body {
   box-shadow: var(--badge-glow);
   font-weight: 800;
   letter-spacing: -.04em;
+}
+
+.setup-logo {
+  display: block;
+  flex: none;
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  object-fit: contain;
+  filter: drop-shadow(0 8px 18px rgba(79, 70, 229, .32));
 }
 
 .setup-check {

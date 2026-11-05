@@ -529,6 +529,7 @@ function buildShellDom() {
     '<nav class="sh-bottombar" aria-label="底部导航">' +
     '<div class="sh-lens" aria-hidden="true"><div class="sh-lens-content" id="sh-lens-content"></div></div>' +
     '<div class="sh-bar-mat" aria-hidden="true"></div>' +
+    '<div class="sh-bar-thumb" aria-hidden="true"></div>' +
     barItems +
     "</nav>" +
     // T19f-B 全局下载悬浮卡宿主（2.1 #job-progress-host 新壳等价物；逻辑在
@@ -560,6 +561,12 @@ export async function boot() {
   uiCss.rel = "stylesheet";
   uiCss.href = "css/ui.css";
   doc.head.appendChild(uiCss);
+  // TVG Glass System: unified nav/panel/overlay/inset material. Loaded after
+  // the dynamic view styles so component geometry remains unchanged.
+  const glassSystem = doc.createElement("link");
+  glassSystem.rel = "stylesheet";
+  glassSystem.href = "css/glass-system.css" + cssv;
+  doc.head.appendChild(glassSystem);
 
   // —— 视觉底层三件套（对齐 2.1 旧壳 style.css:49-126）——
   // #sh-backdrop（液态玻璃背景图层）/ .sh-ambient（静态暗亮光斑）/
@@ -762,15 +769,27 @@ export async function boot() {
   // —— 断点形态：matchMedia 订阅，旋转/拖窗实时切换（不刷新页面）——
   const mqBar = win.matchMedia("(max-width: 639.98px)");
   const mqRail = win.matchMedia("(min-width: 640px) and (max-width: 1023.98px)");
+  let barThumbRaf = 0;
+  let barThumbTries = 0;
   function syncForm() {
     const f = mqBar.matches ? "bar" : (mqRail.matches ? "rail" : "side");
     root.setAttribute("data-shell-form", f);
     if (f !== "bar") closeDrawer();
     refreshLens();
+    const activeBarTab = root.querySelector(".sh-bottombar .is-active[data-nav]");
+    if (activeBarTab) syncBarThumb(activeBarTab.getAttribute("data-nav"));
   }
   if (mqBar.addEventListener) mqBar.addEventListener("change", syncForm);
   if (mqRail.addEventListener) mqRail.addEventListener("change", syncForm);
   else { mqBar.addListener(syncForm); mqRail.addListener(syncForm); } // 老 webview 兼容
+  // Route changes can happen before/after a breakpoint change; recomputing the
+  // thumb after layout settles keeps it aligned without a permanent observer.
+  if (typeof win.requestAnimationFrame === "function") {
+    win.requestAnimationFrame(function () {
+      const active = root.querySelector(".sh-bottombar .is-active[data-nav]");
+      if (active) syncBarThumb(active.getAttribute("data-nav"));
+    });
+  }
   // （首次 syncForm 调用延后到装配完成，见「—— 折射层 ——」块之后）
 
   // 键盘防遮挡（FR-23 布局级保证，注释即证据）：
@@ -876,6 +895,57 @@ export async function boot() {
       el.classList.toggle("is-active", nm === name);
       el.setAttribute("href", String(navHref(nm)));
     });
+    syncBarThumb(name);
+  }
+
+  // The mobile bottom bar keeps its existing click-driven IA, but the
+  // selected capsule moves as one continuous object instead of jumping.
+  // Width/position are read once per route change; no scroll or pointer
+  // listener is attached, so content interaction cannot compete for frames.
+  function syncBarThumb(name) {
+    const bar = doc.querySelector(".sh-bottombar");
+    const thumb = bar && bar.querySelector(".sh-bar-thumb");
+    if (!bar || !thumb) return;
+    // The center FAB is a primary action, not a page tab; it already has its
+    // own active ring. Login is a modal route outside the four bar tabs.
+    if (name === "new" || name === "login") {
+      thumb.classList.remove("is-on");
+      return;
+    }
+    let target = null;
+    bar.querySelectorAll(".sh-nav-item[data-nav]").forEach(function (el) {
+      if (el.getAttribute("data-nav") === name) target = el;
+    });
+    if (!target) { thumb.classList.remove("is-on"); return; }
+    const barRect = bar.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    // The shell can mount before WebView2 has laid out the flex row. Do not
+    // flash a zero-width/left-edge capsule; retry on the next layout frame.
+    if (!targetRect.width) {
+      thumb.classList.remove("is-on");
+      scheduleBarThumbSync();
+      return;
+    }
+    barThumbTries = 0;
+    thumb.style.width = targetRect.width + "px";
+    thumb.style.transform =
+      "translateX(" + (targetRect.left - barRect.left) + "px)";
+    thumb.classList.add("is-on");
+  }
+
+  function scheduleBarThumbSync() {
+    if (barThumbRaf || barThumbTries >= 4) return;
+    barThumbTries++;
+    const run = function () {
+      barThumbRaf = 0;
+      const active = root.querySelector(".sh-bottombar .is-active[data-nav]");
+      if (active) syncBarThumb(active.getAttribute("data-nav"));
+    };
+    if (typeof win.requestAnimationFrame === "function") {
+      barThumbRaf = win.requestAnimationFrame(run);
+    } else {
+      setTimeout(run, 16);
+    }
   }
 
   const router = createRouter({

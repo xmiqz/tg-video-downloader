@@ -746,10 +746,15 @@ function buildDom() {
   submitLabels.set($.btnRetryMe, "重试获取资料");
   submitLabels.set($.btnGuestEnter, "暂不登录（游客模式）");
 
-  // 弹层根（2.1 .login-mask：fixed 遮罩盖在当前版面上，只含卡）
+  // 构建信息随弹层卡底部走，不再固定在视口底部。
   $.buildFoot = el("div", { class: "lg-build", "aria-label": "构建版本", text: "" });
+  $.buildFootAcct = el("div", { class: "lg-build", "aria-label": "构建版本", text: "" });
+  $.loginCard.append($.buildFoot);
+  $.acctCard.body.append($.buildFootAcct);
+
+  // 弹层根（2.1 .login-mask：fixed 遮罩盖在当前版面上，只含卡）
   const view = el("div", { class: "lg-view", "data-view-name": "login" },
-    [$.loginCard, $.acctCard.el, $.buildFoot]);
+    [$.loginCard, $.acctCard.el]);
   return view;
 }
 
@@ -787,13 +792,15 @@ function resetTransient() {
 // 页脚构建信息：/auth/status 与首跑页同源（version/build），缺值为开发态。
 // 只在首次进入拉一次；失败保持空白，不影响登录流程。
 async function loadBuildFoot() {
-  if (buildFootLoaded || !$.buildFoot) return;
+  if (buildFootLoaded || (!$.buildFoot && !$.buildFootAcct)) return;
   buildFootLoaded = true;
   try {
     const resp = await fetch("/auth/status", { cache: "no-store" });
     if (!resp.ok) return;
     const st = await resp.json();
-    $.buildFoot.textContent = buildLabel(st);
+    const label = buildLabel(st);
+    if ($.buildFoot) $.buildFoot.textContent = label;
+    if ($.buildFootAcct) $.buildFootAcct.textContent = label;
   } catch (e) { /* 页脚只是附加信息 */ }
 }
 

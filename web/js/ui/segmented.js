@@ -60,6 +60,9 @@ export function createSegmented(items, opts) {
   });
   let current = null;
   let disposed = false;
+  let pendingSync = 0;
+  let syncTries = 0;
+  let resizeObserver = null;
 
   const root = doc.createElement("div");
   root.className = "u-seg";
@@ -104,12 +107,62 @@ export function createSegmented(items, opts) {
       if (active !== null && btns[i].dataset.value === active) { target = btns[i]; break; }
     }
     if (!target) { thumb.classList.remove("is-on"); return; }
-    // 先读后写（不读回自身样式，避免布局抖动）
+    // A segmented control is usually constructed before it is appended to
+    // the view. offsetWidth/offsetLeft are then 0/0, so painting the thumb
+    // immediately leaves a collapsed sliver at the left edge until a later
+    // interaction forces layout. Only reveal it after a real measurement.
     const w = target.offsetWidth || 0;
     const x = target.offsetLeft || 0;
+    if (!w) {
+      thumb.classList.remove("is-on");
+      if (syncTries < 4) scheduleSync();
+      return;
+    }
+    syncTries = 0;
     thumb.style.width = w + "px";
     thumb.style.transform = "translateX(" + x + "px)";
     thumb.classList.add("is-on");
+  }
+
+  function scheduleSync() {
+    if (disposed || pendingSync) return;
+    syncTries++;
+    const win = typeof window !== "undefined" ? window : null;
+    if (win && typeof win.requestAnimationFrame === "function") {
+      pendingSync = win.requestAnimationFrame(function () {
+        pendingSync = 0;
+        syncThumb();
+      });
+      return;
+    }
+    pendingSync = setTimeout(function () {
+      pendingSync = 0;
+      syncThumb();
+    }, 16);
+  }
+
+  // The view can append the segmented control one or more frames after
+  // construction (cards, overlays, editor panels). Observe the actual scroll
+  // box so the thumb appears on the first frame where it has real geometry,
+  // then disconnect: this is not a permanent animation loop.
+  function watchLayout() {
+    const win = typeof window !== "undefined" ? window : null;
+    const RO = win && win.ResizeObserver;
+    if (typeof RO === "function") {
+      const ro = new RO(function () {
+        if (disposed) return;
+        if (btns.some(function (b) { return (b.offsetWidth || 0) > 0; })) {
+          syncThumb();
+          if (thumb.classList.contains("is-on")) ro.disconnect();
+        }
+      });
+      resizeObserver = ro;
+      ro.observe(root);
+    } else {
+      // Older WebViews: a bounded retry after mount is enough. Never keep a
+      // polling timer alive when the host has no layout engine at all.
+      scheduleSync();
+    }
   }
 
   function render() {
@@ -165,11 +218,26 @@ export function createSegmented(items, opts) {
     destroy: function () {
       if (disposed) return; // 幂等
       disposed = true;
+      if (pendingSync) {
+        const win = typeof window !== "undefined" ? window : null;
+        if (win && typeof win.cancelAnimationFrame === "function") {
+          win.cancelAnimationFrame(pendingSync);
+        } else {
+          clearTimeout(pendingSync);
+        }
+        pendingSync = 0;
+      }
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+        resizeObserver = null;
+      }
       if (root.isConnected) root.remove();
     },
   };
 
   if (o.value !== undefined) api.set(o.value, {});
   else render();
+  scheduleSync();
+  watchLayout();
   return api;
 }

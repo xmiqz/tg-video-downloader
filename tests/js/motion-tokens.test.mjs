@@ -95,6 +95,19 @@ test("segmented thumb rides the spring token and stops under .still", async () =
     ".still（reduced-motion）下滑行必须停用");
 });
 
+test("segmented thumb waits for a real layout measurement", async () => {
+  const src = await readFile(
+    path.join(ROOT, "web", "js", "ui", "segmented.js"), "utf8");
+  assert.match(src, /if \(!w\)\s*\{[\s\S]{0,160}thumb\.classList\.remove\("is-on"\)/,
+    "零宽时不得显示 thumb");
+  assert.match(src, /scheduleSync\(\);/, "首次挂载后应重新测量");
+  assert.match(src, /syncTries < 4/, "无尺寸环境的重测必须有上限");
+  assert.match(src, /ResizeObserver/, "首次挂载应使用布局观察器");
+  assert.match(src, /resizeObserver\.disconnect\(\)/, "测量完成后必须断开观察器");
+  assert.match(src, /requestAnimationFrame/, "有 rAF 时延后到布局帧");
+  assert.match(src, /setTimeout\([\s\S]{0,100}16\)/, "无 rAF 时保留异步兜底");
+});
+
 test("shell slots carry view-transition-name (views morph instead of pop)", async () => {
   const css = await ownedRules(path.join(CSS, "ui.css"));
   for (const name of ["sh-side", "sh-bottombar", "sh-viewhost"]) {

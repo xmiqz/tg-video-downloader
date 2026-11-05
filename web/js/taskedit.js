@@ -857,10 +857,48 @@ function edSave() {
 }
 
 // ---------- 过滤 ----------
+let _edFilterThumbRaf = 0;
+let _edFilterThumbTries = 0;
+
+// The standalone editor keeps its legacy .seg buttons, but the active state
+// must use the same measured glass lens as .u-seg-thumb. Wait for real layout
+// before revealing it so first paint cannot leave a zero-width sliver.
+function edSyncFilterThumb() {
+  const seg = document.getElementById("ed2-filter");
+  const thumb = seg && seg.querySelector(".seg-thumb");
+  const active = seg && seg.querySelector(".seg.active");
+  if (!seg || !thumb) return;
+  if (!active) {
+    thumb.classList.remove("is-on");
+    return;
+  }
+  const w = active.offsetWidth || 0;
+  const h = active.offsetHeight || 0;
+  if (!w || !h) {
+    thumb.classList.remove("is-on");
+    if (_edFilterThumbTries < 4) {
+      _edFilterThumbTries++;
+      if (typeof window.requestAnimationFrame === "function") {
+        _edFilterThumbRaf = window.requestAnimationFrame(edSyncFilterThumb);
+      } else {
+        setTimeout(edSyncFilterThumb, 16);
+      }
+    }
+    return;
+  }
+  _edFilterThumbTries = 0;
+  thumb.style.width = w + "px";
+  thumb.style.height = h + "px";
+  thumb.style.transform =
+    "translate(" + active.offsetLeft + "px," + active.offsetTop + "px)";
+  thumb.classList.add("is-on");
+}
+
 function edSetFilter(f) {
   state.filter = f;
   document.querySelectorAll("#ed2-filter .seg")
     .forEach((b) => b.classList.toggle("active", b.dataset.f === f));
+  edSyncFilterThumb();
   edRender();
 }
 
@@ -997,4 +1035,9 @@ window.addEventListener("storage", function (ev) {
 window.addEventListener("pywebviewready", function () {
   edApplyAppearance();
   edLoad();
+  requestAnimationFrame(edSyncFilterThumb);
+});
+window.addEventListener("resize", edSyncFilterThumb);
+window.addEventListener("load", function () {
+  requestAnimationFrame(edSyncFilterThumb);
 });
