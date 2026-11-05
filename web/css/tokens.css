@@ -410,6 +410,17 @@
    采样，挂 html[data-lum="bright"|"dark"]，本块按结果整组换原料表，
    与 §7 液态玻璃同值同口径，只是选择器挂在壁纸主题上。
    无 data-lum（采样前/失败）时保持深色表，避免首帧闪白。 */
+/* 壁纸主题的墨色：wallpaper 不像 dark 那样显式声明 data-theme="dark"，
+   --raw-ink* 会回落到浅色档（#1b2233），叠在深色玻璃与照片上几乎不可读
+   （真机 NAS 设置页实测：卡片底 17%→7% 白，正文 #1b2233）。
+   默认档（采样前/失败/暗壁纸）按深色表补浅墨；bright 档在下一块覆盖回深墨。 */
+:root[data-theme="wallpaper"] {
+  --raw-ink: #f5f7fe;
+  --raw-ink-dim: rgba(238,242,252,.78);
+  --raw-ink-mute: rgba(231,236,249,.54);
+  --raw-bg-sunk: rgba(7,9,20,.55);
+}
+
 :root[data-theme="wallpaper"][data-lum="bright"] {
   --raw-bg: #f2f5fc;          --raw-bg-2: #ffffff;
   --raw-bg-sunk: #e8edf7;    --raw-ink: #1b2233;

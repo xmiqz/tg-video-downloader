@@ -195,8 +195,10 @@
     background var(--dur-sm) var(--ease-standard);
 }
 /* QA 修复：--color-warning(#d98f1f) 在浅色 warning-soft 底上实测对比度约 2.4:1，
-   低于 WCAG AA 4.5:1；沿用 .sh-guestbar 已有的浅色警示墨色 #8a5a12（≈5.2:1）。 */
-:root[data-theme="light"] .st-guest-row {
+   低于 WCAG AA 4.5:1；沿用 .sh-guestbar 已有的浅色警示墨色 #8a5a12（≈5.2:1）。
+   亮壁纸档同一套浅底 + 深墨原料表，故一并覆盖。 */
+:root[data-theme="light"] .st-guest-row,
+:root[data-theme="wallpaper"][data-lum="bright"] .st-guest-row {
   color: #8a5a12;
 }
 @media (hover: hover) and (pointer: fine) {   /* T17 去 hover 依赖 */
