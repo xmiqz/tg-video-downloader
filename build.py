@@ -138,6 +138,26 @@ def _project_version():
     return "dev"
 
 
+def _git_short_sha():
+    """Best-effort source identity for local builds; CI injects TGDL_BUILD."""
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "--short=7", "HEAD"],
+            cwd=HERE, text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        return out if re.fullmatch(r"[0-9a-fA-F]{7,40}", out) else ""
+    except Exception:
+        return ""
+
+
+def _project_build():
+    """Build identity is always a commit short SHA, never a manual round label."""
+    for candidate in (os.environ.get("TGDL_BUILD", "").strip(), _git_short_sha()):
+        if re.fullmatch(r"[0-9a-fA-F]{7,40}", candidate):
+            return candidate[:7].lower()
+    return ""
+
+
 def _write_version_stamp():
     """桌面包没有 Docker 的 TGDL_VERSION 注入，把版本写进 assets/version.json
     随包带走；server_config.build_info() 在冻结态读它，登录页页脚才有版本号。"""
@@ -145,7 +165,7 @@ def _write_version_stamp():
     os.makedirs(os.path.dirname(path), exist_ok=True)
     data = {
         "version": _project_version(),
-        "build": os.environ.get("TGDL_BUILD", "").strip()[:7],
+        "build": _project_build(),
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)

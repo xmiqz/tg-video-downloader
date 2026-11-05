@@ -32,3 +32,15 @@ def test_blank_env_falls_back_to_dev(monkeypatch):
     info = server_config.build_info()
     assert info["version"] == "dev"
     assert info["build"] == ""
+
+
+def test_manual_round_label_is_ignored(monkeypatch):
+    monkeypatch.setenv("TGDL_VERSION", "v2.5.1")
+    monkeypatch.setenv("TGDL_BUILD", "r9")
+    assert server_config.build_info()["build"] == ""
+
+
+def test_uppercase_sha_is_normalized(monkeypatch):
+    monkeypatch.setenv("TGDL_VERSION", "v2.5.1")
+    monkeypatch.setenv("TGDL_BUILD", "F7036F921CB653D37F28D50141C88BA2ADB78082")
+    assert server_config.build_info()["build"] == "f7036f9"

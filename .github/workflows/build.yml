@@ -6,6 +6,20 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release tag to rebuild (e.g. v2.5.1)"
+        required: false
+        type: string
+      source_ref:
+        description: "Commit/tag used as source (defaults to the selected ref)"
+        required: false
+        type: string
+      rebuild_existing:
+        description: "Replace assets on the existing release_tag"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -31,6 +45,13 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.source_ref || github.ref }}
+
+      - name: Resolve source commit
+        id: source
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -48,8 +69,8 @@ jobs:
       - name: Build
         shell: bash
         env:
-          TGDL_VERSION: ${{ github.ref_name }}
-          TGDL_BUILD: ${{ github.sha }}
+          TGDL_VERSION: ${{ github.event.inputs.release_tag || github.ref_name }}
+          TGDL_BUILD: ${{ steps.source.outputs.sha }}
         run: python build.py dist
 
       - name: Rename to ASCII release names
@@ -115,11 +136,11 @@ jobs:
         run: find artifacts -type f -print
 
       - name: Create release (tag)
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.rebuild_existing == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${{ github.event.inputs.release_tag || github.ref_name }}"
           # Release Notes 单一信源：仓库 release-notes/<tag>.md；
           # 缺失时回落到内置通用说明
           if [ -f "release-notes/${TAG}.md" ]; then
@@ -159,11 +180,11 @@ jobs:
             || gh release upload "$TAG" "${FILES[@]}" --clobber
 
       - name: Set Chinese asset labels
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.rebuild_existing == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${{ github.event.inputs.release_tag || github.ref_name }}"
           set_label() {  # $1=ASCII 资产名，$2=中文说明
             local id
             id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
@@ -183,7 +204,7 @@ jobs:
           set_label "TGVideoDownloader_mac_arm64" "macOS Apple Silicon · 命令行版（附 .command 双击启动）"
 
       - name: Create pre-release (manual dispatch)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && github.event.inputs.rebuild_existing != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

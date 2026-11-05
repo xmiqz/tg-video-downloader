@@ -12,6 +12,7 @@ import ipaddress
 import json
 import os
 import pathlib
+import re
 import sys
 from dataclasses import dataclass, field
 
@@ -28,6 +29,7 @@ DEFAULT_PORT = 8787
 # assets/version.json 随包带走，冻结态由 _stamp_build_info() 读回。
 PROJECT_URL = "https://github.com/xmiqz/tg-video-downloader"
 BUILD_SHA_LENGTH = 7
+BUILD_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 _STAMP_CACHE = None
 _STAMP_READ = False
@@ -65,11 +67,14 @@ def app_version():
 
 def app_build():
     """构建号 = 提交短 SHA；未注入时返回空串，由前端回退显示。"""
-    raw = os.environ.get("TGDL_BUILD", "").strip()
-    if raw:
-        return raw[:BUILD_SHA_LENGTH]
-    stamped = _stamp_build_info().get("build", "")
-    return stamped[:BUILD_SHA_LENGTH]
+    candidates = (
+        os.environ.get("TGDL_BUILD", "").strip(),
+        _stamp_build_info().get("build", "").strip(),
+    )
+    for raw in candidates:
+        if BUILD_SHA_RE.fullmatch(raw):
+            return raw[:BUILD_SHA_LENGTH].lower()
+    return ""
 
 
 def build_info():
