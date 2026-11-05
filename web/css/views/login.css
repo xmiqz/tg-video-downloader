@@ -256,8 +256,10 @@ html[data-theme="wallpaper"] .lg-view .lg-card {
 /* 页脚构建信息（版本号 + 构建号）：跟随弹层卡底部，不脱离弹层。 */
 .lg-build {
   position: static;
-  margin-top: 22px;
-  padding-top: 13px;
+  /* QA P2：原 22px + 13px 让「暂不登录」到版本号实测 47px，卡底显得空。
+     收到 4px 栅格（12 + 8），分隔线上 12px、下 8px，实测降到 32px。 */
+  margin-top: var(--space-3);
+  padding-top: var(--space-2);
   border-top: 1px solid rgba(255, 255, 255, .12);
   text-align: center;
   color: rgba(231, 236, 249, .58);

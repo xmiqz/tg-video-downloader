@@ -62,6 +62,12 @@
   pointer-events: none;       /* 旧壳 opacity .55（style.css:478）语义由 --text-faint 承载 */
 }
 .tk-toolbar .tk-search .tk-input { padding-left: 36px; }  /* 2.1 style.css:479 */
+/* QA P2：工具条里搜索框与右侧 .u-seg 同排居中，但输入框 40px、分段外高 54px，
+   顶边实测差 7px（用户读作「低约 10px」）。≥768 才并排，这里把搜索框补到
+   54px（= 44 命中区 + 4×2 内衬 + 1×2 描边，与 .u-seg 外高一致），顶边对齐。 */
+@media (min-width: 768px) {
+  .tk-toolbar .tk-search .tk-input { min-height: 54px; }
+}
 .tk-input {
   width: 100%;
   min-height: 44px;           /* FR-24 命中区（表单输入同款） */
