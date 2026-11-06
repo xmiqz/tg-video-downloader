@@ -6,8 +6,8 @@
 - 容器名：`tvg-v2-5-2-test`
 - 默认端口：`18787`（可设 `TGDL_TEST_PORT`）
 - 数据卷：`tvg-v2-5-2-test-data`
-- 镜像：`tvg-v252-test:7a6c530`
-- 构建号：`7a6c530`
+- 镜像：`tvg-v252-test:bf6e067`
+- 构建号：`bf6e067`
 
 ## 启动
 
