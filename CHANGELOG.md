@@ -30,7 +30,7 @@
 
 ### ✅ 验证
 
-- 前端：`node --test "tests/js/*.test.mjs"`，`178 passed / 0 failed / 0 todo`。
+- 前端：`node --test "tests/js/*.test.mjs"`，`179 passed / 0 failed / 0 todo`。
 - 后端：`python -m pytest -q`，`359 passed`。
 - 浏览器 smoke 覆盖登录、设置、四主题、新建下载两态、任务库、任务编辑、导入导出与 Bing 壁纸。
 - 截图矩阵覆盖 1920、1280、834、390，并包含每日壁纸明暗两档。
