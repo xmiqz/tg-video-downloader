@@ -193,18 +193,30 @@ async function captureCore(prefix, width, height) {
     const seg = document.querySelector(".st-appearance");
     const items = Array.from(document.querySelectorAll(".st-appearance .u-seg-item"));
     const box = seg?.getBoundingClientRect();
+    const importBtn = Array.from(document.querySelectorAll(".tp-actions .u-btn"))
+      .find((x) => x.textContent.trim() === "导入任务包");
+    const heights = items.map((x) => Math.round(x.getBoundingClientRect().height * 10) / 10);
+    const importHeight = importBtn
+      ? Math.round(importBtn.getBoundingClientRect().height * 10) / 10
+      : null;
     return {
       count: items.length,
       labels: items.map((x) => x.textContent.trim()),
       visible: items.every((x) => {
         const r = x.getBoundingClientRect();
-        return r.width > 0 && r.height >= 44 && r.left >= box.left - 1 &&
+        return r.width > 0 && r.height >= 32 && r.left >= box.left - 1 &&
           r.right <= box.right + 1;
       }),
       overflow: seg ? seg.scrollWidth > seg.clientWidth + 1 : false,
+      heights,
+      importHeight,
+      sameHeight: importHeight !== null &&
+        heights.every((h) => Math.abs(h - importHeight) <= 2),
     };
   });
-  record(`appearance-visible-${width}`, appearance.count === 4 && appearance.visible && !appearance.overflow,
+  record(`appearance-visible-${width}`,
+    appearance.count === 4 && appearance.visible && !appearance.overflow &&
+    (width > 767 || appearance.sameHeight),
     JSON.stringify(appearance));
 
   await gotoMain("/tasks", width, height);
@@ -225,7 +237,7 @@ async function captureCore(prefix, width, height) {
   });
   record(`login-layer-${width}`,
     login.cardOpacity === "1" && login.scrim !== "rgba(0, 0, 0, 0)" &&
-    login.scrimPe === "none" && /rgba?\(24, 28, 43|rgba?\(14, 18, 30/.test(login.cardBackground),
+    login.scrimPe === "none" && /rgba?\(24, 27, 40|rgba?\(18, 21, 33/.test(login.cardBackground),
     JSON.stringify(login));
   await shot(`${prefix}login.png`);
 
@@ -361,7 +373,7 @@ try {
         });
         record("login-light-1920",
           lightInk.titleLum > 190 && lightInk.subLum > 170 &&
-          /rgba?\(24, 28, 43/.test(lightInk.cardBg),
+          /rgba?\(24, 27, 40/.test(lightInk.cardBg),
           JSON.stringify(lightInk));
         await shot("login-light.png");
       }
@@ -415,7 +427,7 @@ try {
         labels: items.map((x) => x.textContent.trim()),
         inBounds: items.every((x) => {
           const r = x.getBoundingClientRect();
-          return r.right <= box.right + 1 && r.left >= box.left - 1 && r.height >= 44;
+          return r.right <= box.right + 1 && r.left >= box.left - 1 && r.height >= 32;
         }),
       };
     });

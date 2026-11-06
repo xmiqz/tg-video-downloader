@@ -255,9 +255,10 @@ html[data-theme="wallpaper"] .lg-view .lg-card {
 }
 
 /* v2.5.2: one stable three-layer login stack in every material. The scrim
-   stops the task text/progress/buttons from reading through, while the card
-   itself stays a dense dark overlay so its own ink is independent of whether
-   the page behind uses dark, light, wallpaper or liquid tokens. */
+   stops the task text/progress/buttons from reading through. The card reuses
+   the v2.5.1 mobile frosted recipe (34px blur + dark .82-.92 fill) instead of
+   an opaque slab, so the glass edge stays visible without sacrificing ink
+   contrast or exposing the page underneath. */
 html body .lg-view .u-card.lg-login-card,
 html body .lg-view .u-card.lg-card {
   /* The card is intentionally dark in every theme, so its ink must be pinned
@@ -270,16 +271,16 @@ html body .lg-view .u-card.lg-card {
   --color-text-faint: rgba(231, 236, 249, .64) !important;
   color: #f2f5ff !important;
   background:
-    linear-gradient(158deg,
-      rgba(24, 28, 43, .985) 0%,
-      rgba(14, 18, 30, .99) 58%,
-      rgba(8, 11, 19, .995) 100%) !important;
-  -webkit-backdrop-filter: blur(24px) saturate(128%) !important;
-  backdrop-filter: blur(24px) saturate(128%) !important;
-  border-color: rgba(255, 255, 255, .24) !important;
+    linear-gradient(155deg,
+      rgba(24, 27, 40, .82) 0%,
+      rgba(18, 21, 33, .88) 60%,
+      rgba(14, 17, 27, .92) 100%) !important;
+  -webkit-backdrop-filter: blur(34px) saturate(150%) !important;
+  backdrop-filter: blur(34px) saturate(150%) !important;
+  border-color: rgba(255, 255, 255, .26) !important;
   box-shadow:
-    0 30px 90px rgba(2, 4, 12, .68),
-    inset 0 1px 0 rgba(255, 255, 255, .24) !important;
+    0 30px 90px rgba(2, 4, 12, .62),
+    inset 0 1px 0 rgba(255, 255, 255, .34) !important;
 }
 
 /* 页脚构建信息（版本号 + 构建号）：跟随弹层卡底部，不脱离弹层。 */

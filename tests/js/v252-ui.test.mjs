@@ -15,8 +15,8 @@ test("v2.5.2 login has an independent scrim and a dense reading card", async () 
   assert.match(css, /\.lg-view::before\s*\{[\s\S]*pointer-events:\s*none/,
     "scrim 不得接收业务点击");
   assert.match(css,
-    /html body \.lg-view \.u-card\.lg-login-card[\s\S]*rgba\(24, 28, 43, \.985\)[\s\S]*blur\(24px\)/,
-    "登录卡需要跨主题的高密度暗色卡面");
+    /html body \.lg-view \.u-card\.lg-login-card[\s\S]*rgba\(24, 27, 40, \.82\)[\s\S]*blur\(34px\)/,
+    "登录卡需要跨主题的 v2.5.1 移动端毛玻璃卡面");
   assert.match(css,
     /html body \.lg-view \.u-card\.lg-login-card[\s\S]*--color-text:\s*#f2f5ff\s*!important[\s\S]*--color-text-strong:\s*#ffffff\s*!important/,
     "静态亮下登录卡正文必须固定浅墨，不能继承亮主题深墨");
@@ -47,8 +47,8 @@ test("v2.5.2 mobile appearance is a fixed 2x2 grid", async () => {
     /html body \.st-appearance\.u-seg[\s\S]*background:\s*transparent\s*!important/,
     "移动外观外层不再是一整块胶囊");
   assert.match(css,
-    /\.st-appearance \.u-seg-item\s*\{[\s\S]*border:\s*1px solid[\s\S]*border-radius:\s*16px/,
-    "移动外观四项应各自成为独立玻璃块");
+    /\.st-appearance \.u-seg-item\s*\{[\s\S]*min-height:\s*39px[\s\S]*border-radius:\s*var\(--radius-pill\)/,
+    "移动外观四项应与任务导入按钮同级的紧凑胶囊");
   assert.match(css, /\.st-appearance \.u-seg-item\s*\{[\s\S]*white-space:\s*normal/);
 });
 

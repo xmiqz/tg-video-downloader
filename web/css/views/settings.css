@@ -284,13 +284,15 @@
   .st-appearance .u-seg-item {
     width: 100%;
     min-width: 0;
-    min-height: 58px;
-    padding: 10px 12px;
+    box-sizing: border-box;
+    min-height: 39px;
+    padding: 10px 18px;
     border: 1px solid var(--tvg-glass-nav-border);
-    border-radius: 16px;
+    border-radius: var(--radius-pill);
     background: var(--tvg-glass-control-bg);
     box-shadow: var(--tvg-glass-nav-top-hi);
     color: var(--color-text-muted);
+    font-size: 13px;
     white-space: normal;
   }
   .st-appearance .u-seg-item.is-active {
@@ -299,7 +301,7 @@
     box-shadow: none;
     color: var(--color-text-strong);
   }
-  .st-appearance .u-seg-thumb { border-radius: 16px; }
+  .st-appearance .u-seg-thumb { border-radius: var(--radius-pill); }
 }
 
 /* ---------- 7. 确认弹层多行文案（app.js:650 两行逐字承载） ---------- */
