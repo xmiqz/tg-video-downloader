@@ -10,6 +10,7 @@
 Windows 原生桌面、浏览器 / NAS 与命令行，使用同一套任务数据。
 
 [![Release](https://img.shields.io/github/v/release/xmiqz/tg-video-downloader?label=release&color=111111)](https://github.com/xmiqz/tg-video-downloader/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/xmiqz/tg-video-downloader/total?label=downloads&color=111111)](https://github.com/xmiqz/tg-video-downloader/releases)
 [![Stars](https://img.shields.io/github/stars/xmiqz/tg-video-downloader?style=flat&color=111111)](https://github.com/xmiqz/tg-video-downloader/stargazers)
 [![License](https://img.shields.io/badge/license-MIT-111111)](LICENSE)<br>
 ![Windows](https://img.shields.io/badge/Windows-0078D4?logo=windows&logoColor=white)
