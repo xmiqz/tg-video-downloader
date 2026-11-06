@@ -382,6 +382,7 @@ try {
           /rgba?\(24, 27, 40/.test(lightInk.cardBg),
           JSON.stringify(lightInk));
         await shot("login-light.png");
+        await navigateMain("/settings");
       }
     }
 
