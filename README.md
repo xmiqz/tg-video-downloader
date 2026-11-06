@@ -67,6 +67,10 @@ TG 视频下载器把这些步骤放进同一个任务：
 <td width="50%"><img src="docs/images/new-download.png" alt="新建下载"></td>
 <td width="50%"><img src="docs/images/new-download-results.png" alt="筛选并选择视频"></td>
 </tr>
+<tr>
+<td width="50%"><img src="docs/images/task-edit.png" alt="任务编辑"></td>
+<td width="50%"></td>
+</tr>
 </table>
 
 <p align="center">
@@ -87,7 +91,7 @@ TG 视频下载器把这些步骤放进同一个任务：
 <tr>
 <td width="25%"><img src="docs/images/mobile/hero-dashboard.png" alt="移动端下载中"></td>
 <td width="25%"><img src="docs/images/mobile/login.png" alt="移动端登录"></td>
-<td width="25%"></td>
+<td width="25%"><img src="docs/images/mobile/task-edit.png" alt="移动端任务编辑"></td>
 </tr>
 </table>
 
