@@ -1,0 +1,49 @@
+name: tvg-v252-test
+
+services:
+  tvg-v2-5-2-test:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        TGDL_VERSION: v2.5.2
+        TGDL_BUILD: 1d1b9f4
+    image: tvg-v252-test:1d1b9f4
+    container_name: tvg-v2-5-2-test
+    restart: unless-stopped
+    user: "10001:10001"
+    ports:
+      - "${TGDL_TEST_PORT:-18787}:8787"
+    environment:
+      TGDL_HOST: 0.0.0.0
+      TGDL_PORT: "8787"
+      TGDL_DATA_DIR: /data
+      TGDL_ALLOWED_ROOTS: /data
+      TGDL_COOKIE_SECURE: "0"
+      TGDL_TRUST_PROXY: "0"
+      PUID: "10001"
+      PGID: "10001"
+    volumes:
+      - tvg-v2-5-2-test-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=3).read()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+
+volumes:
+  tvg-v2-5-2-test-data:
+    name: tvg-v2-5-2-test-data

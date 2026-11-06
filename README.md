@@ -8,10 +8,56 @@
 
 Telegram 频道视频批量下载工具。纯 Python 实现，基于 [Telethon](https://github.com/LonamiWebs/Telethon)，无需任何外部下载器或 ffmpeg。Windows 提供原生 WebView2 图形界面与控制台 TUI；Linux 可从源码或 Docker 运行浏览器版；macOS 提供命令行版本。
 
-> v2.4 Beta 源码线为 `v2.4-dev`，发布从对应 tag 构建；`main` 不作为最新 Beta 的源码入口。
+> v2.5.2 基于已发布的 v2.5.1 构建，RPC 方法集、任务 JSON、数据目录与 NAS 部署路径保持兼容。
 
-<!-- 截图占位：Windows GUI 主界面 / 深色液态玻璃 -->
-<!-- 截图占位：TUI 控制台下载面板（简洁 / 详细模式） -->
+## 界面与截图
+
+以下截图来自 v2.5.2 Windows x64 打包 EXE 的隔离示例数据。目录均为中性示例
+`T:\TVD\...`，不包含个人目录、真实下载路径或测试服务信息。
+
+### 桌面核心流程
+
+| 登录 | 任务库 | 新建下载 · 搜索设置 | 新建下载 · 结果选择 |
+| --- | --- | --- | --- |
+| <img src="docs/images/login.png" width="420" alt="登录弹层"> | <img src="docs/images/task-library.png" width="420" alt="任务库"> | <img src="docs/images/new-download.png" width="420" alt="新建下载搜索设置"> | <img src="docs/images/new-download-results.png" width="420" alt="新建下载结果选择"> |
+
+### 四种外观
+
+同一页面、同一任务状态、同一尺寸分别截图；暗壁纸与亮壁纸各保留一张。
+
+| 静态暗 | 静态亮 | 每日壁纸（亮） | 液态玻璃 |
+| --- | --- | --- | --- |
+| <img src="docs/images/theme-dark.png" width="420" alt="静态暗"> | <img src="docs/images/theme-light.png" width="420" alt="静态亮"> | <img src="docs/images/theme-bing.png" width="420" alt="每日壁纸亮色"> | <img src="docs/images/theme-liquid.png" width="420" alt="液态玻璃"> |
+
+每日壁纸暗色：<img src="docs/images/theme-bing-dark.png" width="640" alt="每日壁纸暗色">
+
+### 下载中、设置与任务编辑
+
+| 下载中 | 设置 | 任务编辑 |
+| --- | --- | --- |
+| <img src="docs/images/hero-dashboard.png" width="560" alt="下载中舞台"> | <img src="docs/images/settings.png" width="380" alt="设置"> | <img src="docs/images/task-edit.png" width="560" alt="任务编辑"> |
+
+### 平板与移动
+
+| 平板设置 | 平板任务库 | 移动登录 | 移动设置 |
+| --- | --- | --- | --- |
+| <img src="docs/images/tablet/settings.png" width="360" alt="平板设置"> | <img src="docs/images/tablet/tasks.png" width="360" alt="平板任务库"> | <img src="docs/images/mobile/login.png" width="220" alt="移动登录"> | <img src="docs/images/mobile/settings.png" width="220" alt="移动设置"> |
+
+| 移动新建设置 | 移动结果选择 | 移动任务库 | 移动任务编辑 |
+| --- | --- | --- | --- |
+| <img src="docs/images/mobile/new-download.png" width="220" alt="移动新建设置"> | <img src="docs/images/mobile/new-download-results.png" width="220" alt="移动结果选择"> | <img src="docs/images/mobile/task-library.png" width="220" alt="移动任务库"> | <img src="docs/images/mobile/task-edit.png" width="220" alt="移动任务编辑"> |
+
+### 可读性修复对比
+
+| 登录遮罩 | 平板卡片左缘 |
+| --- | --- |
+| <img src="docs/images/compare/login-1920-before-after.png" width="640" alt="登录遮罩前后对比"> | <img src="docs/images/compare/tablet-settings-834-before-after.png" width="360" alt="平板卡片左缘前后对比"> |
+
+| 移动外观选择器 | 底栏选中态 |
+| --- | --- |
+| <img src="docs/images/compare/appearance-390-before-after.png" width="520" alt="移动外观选择器前后对比"> | <img src="docs/images/compare/bottom-selected-390-before-after.png" width="520" alt="底栏选中态前后对比"> |
+
+宽度矩阵另见 `docs/images/widths/`（1280、834、390）。
 
 ## 目录
 

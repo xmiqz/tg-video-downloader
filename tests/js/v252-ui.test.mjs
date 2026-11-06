@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -109,4 +110,26 @@ test("v2.5.2 long paths elide in the middle and expose copy/open", async () => {
   assert.match(js,
     /mode === "bing" \|\| mode === "wallpaper"[\s\S]*root\.setAttribute\("data-theme", "dark"\)/,
     "任务编辑页静态暗必须显式落在 dark 令牌，不能回落到浅色默认");
+});
+
+test("v2.5.2 public screenshot matrix is present and README stays neutral", async () => {
+  for (const rel of [
+    "docs/images/theme-dark.png",
+    "docs/images/theme-light.png",
+    "docs/images/theme-bing.png",
+    "docs/images/theme-liquid.png",
+    "docs/images/mobile/settings.png",
+    "docs/images/tablet/settings.png",
+    "docs/images/compare/login-1920-before-after.png",
+  ]) {
+    assert.ok(existsSync(path.join(ROOT, rel)), `缺少发布截图 ${rel}`);
+  }
+  assert.ok(!existsSync(path.join(ROOT, "docs/images/wallpaper-stage.png")),
+    "含义不明的 wallpaper-stage.png 必须删除");
+
+  const readme = await read("README.md");
+  assert.doesNotMatch(readme, /C:\\Users|xqz|worktree|evidence\/|192\.168\.|测试服务器/i,
+    "README 不得包含个人目录、worktree、evidence 路径或测试服务器信息");
+  assert.match(readme, /docs\/images\/theme-dark\.png/,
+    "README 需要引用四主题截图矩阵");
 });
