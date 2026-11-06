@@ -62,10 +62,16 @@ await context.addInitScript(() => {
   // Let the router use its direct-swap path so a long-running View Transition
   // cannot swallow a later click while a screenshot document is settling.
   try {
+    window.__nativeStartViewTransition = Document.prototype.startViewTransition;
     Object.defineProperty(Document.prototype, "startViewTransition", {
       configurable: true,
       value: undefined,
     });
+    window.__restoreViewTransition = function () {
+      if (window.__nativeStartViewTransition) {
+        Document.prototype.startViewTransition = window.__nativeStartViewTransition;
+      }
+    };
   } catch (_) {}
 });
 const page = await context.newPage();
@@ -384,12 +390,40 @@ try {
     await activeThemeScreenshot("bing", "theme-bing-dark.png", "dark");
     await gotoMain("/active", 1920, 1080);
     await settle(700);
+    const cdp = await context.newCDPSession(page);
+    const frames = [];
+    cdp.on("Page.screencastFrame", async ({ data, metadata, sessionId }) => {
+      frames.push({ ts: metadata.timestamp, data });
+      await cdp.send("Page.screencastFrameAck", { sessionId });
+    });
+    await page.evaluate(() => window.__restoreViewTransition?.());
+    await cdp.send("Page.enable");
+    await cdp.send("Page.startScreencast", {
+      format: "png", quality: 100, everyNthFrame: 1,
+    });
     await page.evaluate(() => {
       document.querySelector('.sh-side [data-nav="settings"]')?.click();
     });
     await page.screenshot({
       path: path.join(OUT, "compare", "nav-wallpaper-immediate.png"),
       animations: "allow",
+    });
+    await page.waitForTimeout(600);
+    await cdp.send("Page.stopScreencast");
+    await cdp.detach();
+    const frameDir = path.join(OUT, "compare", "nav-wallpaper-frames");
+    fs.mkdirSync(frameDir, { recursive: true });
+    frames.forEach((frame, index) => {
+      fs.writeFileSync(
+        path.join(frameDir, `frame-${String(index).padStart(3, "0")}.png`),
+        Buffer.from(frame.data, "base64"),
+      );
+    });
+    await page.evaluate(() => {
+      Object.defineProperty(Document.prototype, "startViewTransition", {
+        configurable: true,
+        value: undefined,
+      });
     });
     await settle(500);
     await page.screenshot({

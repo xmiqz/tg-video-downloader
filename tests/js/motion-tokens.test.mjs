@@ -14,7 +14,7 @@ import {
   COUNT_MS, COUNT_STEPS, easeOutQuart, rollPlan, prefersReduced, markStill,
   createRoller,
 } from "../../web/js/motion/calm.js";
-import { canViewTransition, runViewTransition } from "../../web/js/router.js";
+import { allowsViewTransition, canViewTransition, runViewTransition } from "../../web/js/router.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const CSS = path.join(ROOT, "web", "css");
@@ -241,6 +241,18 @@ test("canViewTransition detects the engine", () => {
   assert.equal(canViewTransition(null), false);
   assert.equal(canViewTransition({}), false);
   assert.equal(canViewTransition({ startViewTransition() {} }), true);
+});
+
+test("wallpaper and liquid skip view transitions so glass never snapshots transparent", () => {
+  const root = (theme, liquid = false) => ({
+    getAttribute: (name) => (name === "data-theme" ? theme : null),
+    classList: { contains: (name) => name === "liquid" && liquid },
+  });
+  assert.equal(allowsViewTransition(root("wallpaper")), false);
+  assert.equal(allowsViewTransition(root("dark", true)), false);
+  assert.equal(allowsViewTransition(root("dark")), true);
+  assert.equal(allowsViewTransition(root("light")), true);
+  assert.equal(allowsViewTransition(null), true);
 });
 
 test("runViewTransition falls back to direct swap without the engine", () => {

@@ -142,6 +142,17 @@ export function canViewTransition(doc) {
   return !!(doc && typeof doc.startViewTransition === "function");
 }
 
+// View Transition snapshots the element tree without re-compositing
+// backdrop-filter. On a photographed wallpaper/liquid surface that reads as a
+// transparent-glass flash before the live DOM repaints. Keep the direct fade
+// for those materials; static dark/light still get the layout morph.
+export function allowsViewTransition(root) {
+  if (!root || typeof root.getAttribute !== "function") return true;
+  const theme = root.getAttribute("data-theme");
+  const liquid = root.classList && root.classList.contains("liquid");
+  return theme !== "wallpaper" && !liquid;
+}
+
 // T64：在视图切换点包一层 startViewTransition。update 内只做 DOM 替换，
 // 引擎缺席/抛错时同步执行 update 再返回 null（终态一致，不白屏）。
 export function runViewTransition(doc, update) {
@@ -329,11 +340,17 @@ export function createRouter(deps) {
     }
     // T64：视图替换走 startViewTransition（壳三段已命名，不参与交叉淡出）；
     // 无引擎时 runViewTransition 同步直切，再补一次 CSS 淡入（fill:backwards）。
-    const vt = runViewTransition(doc, function () {
+    const swapView = function () {
       if (pn && pn.parentNode) pn.parentNode.removeChild(pn);
       if (host && node && node.parentNode !== host) host.appendChild(node);
-    });
-    if (!vt && node && node.classList) fadeInView(node);
+    };
+    const allowVT = allowsViewTransition(doc.documentElement);
+    const vt = allowVT
+      ? runViewTransition(doc, swapView)
+      : (swapView(), null);
+    // A wallpaper/liquid direct swap must be truly instant: a fade would start
+    // at opacity 0 and read as another blank flash before the glass appears.
+    if (!vt && allowVT && node && node.classList) fadeInView(node);
     if (typeof v.onEnter === "function") v.onEnter(params || {});
     if (typeof v.title === "string" && v.title) doc.title = v.title;
     // T64：路由复位属于读者授权的编程滚动，先给守卫开窗口，避免被当作
