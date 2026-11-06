@@ -23,6 +23,16 @@
 - 移动新建下载的命名区收紧为 32px 操作按钮与 11px 辅助说明，结果列表上方不再被大块控件挤占。
 - 舞台账号资料未回填时改用「主号 / 小号」紧凑标签；任务条目引用小号而 `account_list` 尚未到达时补出小号节点，不再只显示主号或「未获取资料」。
 
+### 🏗 工程治理
+
+- 收敛为单一正式主线 `main`：取消 `dev/*` 长期平行分支，功能与修复走短期分支 + PR。
+- CI 只监听 `main` 与目标为 `main` 的 PR，移除已废弃的 `v2.5-dev` 触发。
+- Docker 发布固定为 `validate-amd64 + validate-arm64 → publish → verify`，验证失败不再可能先推镜像。
+- 正式 Tag 构建不再额外生成 `dev-<sha>` 镜像标签；桌面端与镜像统一使用 7 位短 SHA。
+- Compose 默认镜像更新为 `v2.5.2`，移除会覆盖镜像内版本信息的空 `TGDL_VERSION` / `TGDL_BUILD`。
+- Docker 固定 `10001:10001` 运行，命名卷继承镜像 `/data` 属主；宿主机 bind mount 需显式 chown。
+- 新增 `AGENTS.md`、分支发布规范与发布治理测试；Release 已存在时显式修正 prerelease/latest 状态。
+
 ### 🔒 兼容性
 
 - RPC 方法集不变；任务 JSON、数据目录、导出包和 NAS/Docker 部署路径不变。

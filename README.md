@@ -164,6 +164,8 @@ TG视频下载器数据/
 ghcr.io/xmiqz/tg-video-downloader:v2.5.2
 ```
 
+支持 `linux/amd64` 与 `linux/arm64`。镜像内已写入版本号与 7 位构建 SHA，`/healthz` 可直接核对；Compose 不再用空环境变量覆盖它们。
+
 在 Docker 主机或 NAS 上使用仓库中的 [compose.yaml](./compose.yaml)：
 
 ```bash
@@ -180,7 +182,7 @@ docker compose exec tg-video-downloader cat /data/.setup-token
 
 浏览器打开 `http://主机地址:8787`，输入令牌并设置管理员密码。该密码只保护 Web 管理界面，不是 Telegram 两步验证密码；设置成功后令牌文件会自动删除。
 
-容器默认使用命名卷 `tg-video-downloader-data`，以 uid/gid `10001:10001` 运行，并启用只读根文件系统、`cap_drop: ALL` 与 `no-new-privileges`。如需绑定到宿主机目录，请先把目录授权给 `10001:10001`，再修改 [compose.yaml](./compose.yaml) 中的卷映射。
+容器默认使用命名卷 `tg-video-downloader-data`，固定以 `10001:10001` 运行，并启用只读根文件系统、`cap_drop: ALL` 与 `no-new-privileges`。命名卷会继承镜像 `/data` 的属主，无需手工 chown；如需绑定到宿主机目录，请先 `chown -R 10001:10001 <目录>`，再修改 [compose.yaml](./compose.yaml) 中的卷映射。
 
 > 内置 HTTP 不提供 TLS。仅在本机或可信局域网直接使用 HTTP；跨网络访问时请置于 HTTPS 反向代理之后，并设置 `TGDL_COOKIE_SECURE=1`。
 

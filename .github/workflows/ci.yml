@@ -3,12 +3,11 @@ name: ci
 on:
   push:
     branches:
-      - v2.5-dev
       - main
   pull_request:
     branches:
       - main
-      - "v2.*"
+  workflow_dispatch:
 
 permissions:
   contents: read

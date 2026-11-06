@@ -147,9 +147,11 @@ def test_no_new_privileges():
     assert _list_items("security_opt") == ["no-new-privileges:true"]
 
 
-def test_unprivileged_user_default_10001():
+def test_unprivileged_user_is_fixed_10001():
     value = _service_scalar("user").strip('"')
-    assert value == "${PUID:-10001}:${PGID:-10001}", f"user 默认必须 10001:10001，实际 {value}"
+    assert value == "10001:10001", (
+        "compose 必须固定 10001:10001：命名卷由镜像 /data 继承该属主，"
+        f"可配置 PUID/PGID 会在 cap_drop ALL 下无法 chown，实际 {value}")
 
 
 def test_image_pinned_to_versioned_tag():
@@ -178,6 +180,14 @@ def test_tgdl_env_names_match_server_config():
                 "TGDL_COOKIE_SECURE", "TGDL_TRUST_PROXY"}
     missing = sorted(required - tgdl_keys)
     assert missing == [], f"compose 缺少契约环境变量：{missing}"
+
+
+def test_compose_does_not_override_baked_build_info():
+    """镜像内已写入 TGDL_VERSION/TGDL_BUILD；compose 不得用空值覆盖。"""
+    env_block = _block(_service_lines(), "environment:", 4)
+    keys = {t.split(":", 1)[0] for _, t in env_block}
+    assert "TGDL_VERSION" not in keys, "compose 不应覆盖镜像内 TGDL_VERSION"
+    assert "TGDL_BUILD" not in keys, "compose 不应覆盖镜像内 TGDL_BUILD"
 
 
 # ---------- 契约 2：备份/升级/回滚文档 ----------

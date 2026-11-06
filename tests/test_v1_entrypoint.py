@@ -173,5 +173,8 @@ def test_tr11_dockerfile_keeps_hardening_flags():
     assert "read_only: true" in compose
     assert "no-new-privileges:true" in compose
     assert "cap_drop:" in compose
-    assert "PUID: \"${PUID:-10001}\"" in compose
-    assert "PGID: \"${PGID:-10001}\"" in compose
+    # compose 固定 10001:10001；entrypoint 的 PUID/PGID 仅用于
+    # 「以 root 启动并自行降权」的高级场景，不再由 compose 注入。
+    assert 'user: "10001:10001"' in compose
+    assert "PUID:" not in compose
+    assert "PGID:" not in compose
