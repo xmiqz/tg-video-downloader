@@ -1,130 +1,170 @@
+<div align="center">
+
+<img src="web/assets/xian-icon.svg" width="112" alt="TG 视频下载器">
+
 # TG 视频下载器
 
-[![GitHub release](https://img.shields.io/github/v/release/xmiqz/tg-video-downloader?style=flat-square)](https://github.com/xmiqz/tg-video-downloader/releases)
-[![Downloads](https://img.shields.io/github/downloads/xmiqz/tg-video-downloader/total?style=flat-square)](https://github.com/xmiqz/tg-video-downloader/releases)
-[![License: MIT](https://img.shields.io/github/license/xmiqz/tg-video-downloader?style=flat-square)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue?style=flat-square)](https://www.python.org/)
-[![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-brightgreen?style=flat-square)](#快速开始)
+### 把 Telegram 频道视频，整理成你自己的本地媒体库。
 
-Telegram 频道视频批量下载工具。纯 Python 实现，基于 [Telethon](https://github.com/LonamiWebs/Telethon)，无需任何外部下载器或 ffmpeg。Windows 提供原生 WebView2 图形界面与控制台 TUI；Linux 可从源码或 Docker 运行浏览器版；macOS 提供命令行版本。
+批量搜索、筛选、下载、续传和命名，一套界面完成。<br>
+Windows 原生桌面、浏览器 / NAS 与命令行，使用同一套任务数据。
 
-> v2.5.2 基于已发布的 v2.5.1 构建，RPC 方法集、任务 JSON、数据目录与 NAS 部署路径保持兼容。
+[![Release](https://img.shields.io/github/v/release/xmiqz/tg-video-downloader?label=release&color=111111)](https://github.com/xmiqz/tg-video-downloader/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/xmiqz/tg-video-downloader/total?label=downloads&color=111111)](https://github.com/xmiqz/tg-video-downloader/releases)
+[![Stars](https://img.shields.io/github/stars/xmiqz/tg-video-downloader?style=flat&color=111111)](https://github.com/xmiqz/tg-video-downloader/stargazers)
+[![License](https://img.shields.io/badge/license-MIT-111111)](LICENSE)<br>
+![Windows](https://img.shields.io/badge/Windows-0078D4?logo=windows&logoColor=white)
+![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)
+![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
 
-## 界面与截图
+**[下载](https://github.com/xmiqz/tg-video-downloader/releases/latest)** · **[快速开始](#快速开始)** · **[Docker 部署](#docker--nas)** · **[常见问题](#常见问题)**
 
-以下截图来自 v2.5.2 Windows x64 打包 EXE 的隔离示例数据。目录均为中性示例
-`T:\TVD\...`，不包含个人目录、真实下载路径或测试服务信息。
+<br>
 
-### 桌面核心流程
+<img src="docs/images/hero-dashboard.png" width="920" alt="TG 视频下载器：下载中的任务舱与链路舞台">
 
-| 登录 | 任务库 | 新建下载 · 搜索设置 | 新建下载 · 结果选择 |
-| --- | --- | --- | --- |
-| <img src="docs/images/login.png" width="420" alt="登录弹层"> | <img src="docs/images/task-library.png" width="420" alt="任务库"> | <img src="docs/images/new-download.png" width="420" alt="新建下载搜索设置"> | <img src="docs/images/new-download-results.png" width="420" alt="新建下载结果选择"> |
+</div>
+
+<br>
+
+## 它解决什么问题
+
+Telegram 频道的视频通常散落在消息、相册和转发内容里。临时下载一两条不难；真正麻烦的是从一个频道里找出想要的内容、排好队列、处理失败、重启后续传，并把文件按可读的名字放好。
+
+TG 视频下载器把这些步骤放进同一个任务：
+
+- **先找到再下载**：频道内搜索、关键词匹配、日期 / 体积筛选、评论区和引用文本命中。
+- **下载过程看得见**：每条视频的状态、速度、进度、并发槽位和总体剩余时间实时更新。
+- **中断不会从头再来**：任务保存到本地，重启后继续；失败条目可以单独重试。
+- **下载完成就能播放**：MP4 自动把 `moov` 移到文件开头，不必等完整文件加载。
+- **一个任务库，多个入口**：Windows 桌面、浏览器 / Docker 和命令行共享同一套数据目录。
+
+## 功能
+
+| | |
+| :-- | :-- |
+| **频道批量扫描** | 输入频道名或 `t.me` 链接，按关键词与条件筛选后勾选视频。支持超过 1 GB 的大文件。 |
+| **高级筛选** | 精确短语、全部词、任一词、模糊匹配、正则；体积上下限、日期范围、频道 / 评论区范围、排序与结果上限。 |
+| **多路并发** | 1–8 路任务并发；单视频内部按 8 MB 分片并行下载。 |
+| **断点续传** | 关机、关窗口或网络中断后继续未完成任务，已完成分片不重下。 |
+| **失败可恢复** | 按错误类型自动重试，FloodWait 倒计时，单条失败可重试或移除。 |
+| **智能重命名** | 从搜索命中句生成可读文件名，下载完成即命名；编辑页可预览、批量应用或还原原名。 |
+| **任务整理** | 暂停 / 继续、任务折叠、编辑保存目录、追加视频、导入导出任务元数据。 |
+| **每日壁纸** | Bing 每日一图缓存到本地；可保存历史、选择旧图或上传自己的背景。 |
+| **多账号** | 主号与小号统一管理，任务可选择主号、小号或自动调度。 |
+| **桌面与 Web** | Windows 原生 WebView2 界面；Linux / NAS 通过浏览器访问同一套 UI。 |
+
+## 界面
+
+### 桌面端
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/task-library.png" alt="任务库"></td>
+<td width="50%"><img src="docs/images/settings.png" alt="设置"></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/images/new-download.png" alt="新建下载"></td>
+<td width="50%"><img src="docs/images/new-download-results.png" alt="筛选并选择视频"></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/images/task-edit.png" alt="任务编辑"></td>
+<td width="50%"></td>
+</tr>
+</table>
+
+<p align="center">
+<img src="docs/images/login.png" width="920" alt="登录弹层">
+</p>
 
 ### 四种外观
 
-同一页面、同一任务状态、同一尺寸分别截图；暗壁纸与亮壁纸各保留一张。
+同一页面、同一任务状态分别截图。每日壁纸跟随 Bing 每日一图，也可保存历史壁纸或上传自己的背景。
 
-| 静态暗 | 静态亮 | 每日壁纸（亮） | 液态玻璃 |
-| --- | --- | --- | --- |
-| <img src="docs/images/theme-dark.png" width="420" alt="静态暗"> | <img src="docs/images/theme-light.png" width="420" alt="静态亮"> | <img src="docs/images/theme-bing.png" width="420" alt="每日壁纸亮色"> | <img src="docs/images/theme-liquid.png" width="420" alt="液态玻璃"> |
+<table>
+<tr>
+<td width="50%"><img src="docs/images/theme-dark.png" alt="静态暗"></td>
+<td width="50%"><img src="docs/images/theme-light.png" alt="静态亮"></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/images/theme-bing.png" alt="每日壁纸"></td>
+<td width="50%"><img src="docs/images/theme-liquid.png" alt="液态玻璃"></td>
+</tr>
+</table>
 
-每日壁纸暗色：<img src="docs/images/theme-bing-dark.png" width="640" alt="每日壁纸暗色">
+### 移动端
 
-### 下载中、设置与任务编辑
+同一套界面会在窄屏自动切换为底部导航，下载、任务库、设置和编辑功能保持一致。
 
-| 下载中 | 设置 | 任务编辑 |
-| --- | --- | --- |
-| <img src="docs/images/hero-dashboard.png" width="560" alt="下载中舞台"> | <img src="docs/images/settings.png" width="380" alt="设置"> | <img src="docs/images/task-edit.png" width="560" alt="任务编辑"> |
-
-### 平板与移动
-
-| 平板设置 | 平板任务库 | 移动登录 | 移动设置 |
-| --- | --- | --- | --- |
-| <img src="docs/images/tablet/settings.png" width="360" alt="平板设置"> | <img src="docs/images/tablet/tasks.png" width="360" alt="平板任务库"> | <img src="docs/images/mobile/login.png" width="220" alt="移动登录"> | <img src="docs/images/mobile/settings.png" width="220" alt="移动设置"> |
-
-| 移动新建设置 | 移动结果选择 | 移动任务库 | 移动任务编辑 |
-| --- | --- | --- | --- |
-| <img src="docs/images/mobile/new-download.png" width="220" alt="移动新建设置"> | <img src="docs/images/mobile/new-download-results.png" width="220" alt="移动结果选择"> | <img src="docs/images/mobile/task-library.png" width="220" alt="移动任务库"> | <img src="docs/images/mobile/task-edit.png" width="220" alt="移动任务编辑"> |
-
-### 可读性修复对比
-
-| 登录遮罩 | 平板卡片左缘 |
-| --- | --- |
-| <img src="docs/images/compare/login-1920-before-after.png" width="640" alt="登录遮罩前后对比"> | <img src="docs/images/compare/tablet-settings-834-before-after.png" width="360" alt="平板卡片左缘前后对比"> |
-
-| 移动外观选择器 | 底栏选中态 |
-| --- | --- |
-| <img src="docs/images/compare/appearance-390-before-after.png" width="520" alt="移动外观选择器前后对比"> | <img src="docs/images/compare/bottom-selected-390-before-after.png" width="520" alt="底栏选中态前后对比"> |
-
-宽度矩阵另见 `docs/images/widths/`（1280、834、390）。
-
-## 目录
-
-- [特性](#特性)
-- [快速开始](#快速开始) — Releases 产物对照表
-- [Linux / Docker Web 版](#linux--docker-web-版v24) — 首跑向导、鉴权、双架构镜像
-- [首次使用](#首次使用) — 登录步骤、数据目录
-- [GUI 基本用法](#gui-基本用法) — Windows 图形界面
-- [动效与无障碍](#动效与无障碍) — 减少动态效果、降级与舞台
-- [TUI / 命令行用法](#tui--命令行用法) — 交互模式、命令行参数、快捷键表
-- [从源码运行](#从源码运行)
-- [自行打包与 CI](#自行打包) — build.py、GitHub Actions
-- [常见问题](#常见问题) — FAQ
-- [隐私与安全](#隐私与安全)
-- [合规与免责声明](#合规与免责声明)
-- [License](#license)
-- [致谢](#致谢)
-
-## 特性
-
-- **批量扫描与下载**：按频道扫描视频，支持 1 GB 以上大文件
-- **服务端关键词搜索**：与 Telegram App 内搜索同一机制，支持包含 / 排除词，可交互勾选
-- **高级筛选**：精确短语 / 全部词 / 任一词 / 模糊匹配 / 正则表达式五种匹配模式；按体积上下限、日期范围、频道或评论区范围过滤；按日期或体积排序；条数上限可控
-- **多路并发**：可选 1–8 路同时下载，单视频内部 8 MB 分片 × 4 连接并行
-- **任务级断点续传**：关机、关窗口后重启可继续未完成任务；分片不重下，失败视频可单独重试
-- **moov 无损快启**：下载完成自动把 MP4 的 moov 移到文件开头，任何播放器即点即播，不重编码
-- **磁盘空间检查**：下载前按待下总大小粗估，空间不足时提醒
-- **大任务自动拆分**：单任务超过 999 条，或同时超过 300 条且总体积超过 300 GB 时，自动按每片 200 GB / 999 条拆分
-- **内容去重**：文件名与大小都相同的消息只保留最新
-- **内置登录凭证**：自带 Telegram 官方公开客户端 api_id / api_hash，开箱即用；也可替换为自己申请的凭证
+<table>
+<tr>
+<td width="25%"><img src="docs/images/mobile/task-library.png" alt="移动端任务库"></td>
+<td width="25%"><img src="docs/images/mobile/settings.png" alt="移动端设置"></td>
+<td width="25%"><img src="docs/images/mobile/new-download.png" alt="移动端新建下载"></td>
+<td width="25%"><img src="docs/images/mobile/new-download-results.png" alt="移动端选择视频"></td>
+</tr>
+<tr>
+<td width="25%"><img src="docs/images/mobile/hero-dashboard.png" alt="移动端下载中"></td>
+<td width="25%"><img src="docs/images/mobile/login.png" alt="移动端登录"></td>
+<td width="25%"><img src="docs/images/mobile/task-edit.png" alt="移动端任务编辑"></td>
+</tr>
+</table>
 
 ## 快速开始
 
-到 [Releases](https://github.com/xmiqz/tg-video-downloader/releases) 下载对应平台文件。Release 资产名为 ASCII（GitHub 会剥离中文名），中文说明见资产标签。
+### 1 · 下载
 
-| 平台 | Release 文件名 | 说明 |
-| --- | --- | --- |
-| Windows x64 | `TGVideoDownloader.exe` | 图形界面版（GUI） |
-| Windows x64 | `TGVideoDownloader_TUI.exe` | 控制台版（TUI） |
-| Windows ARM64 | `TGVideoDownloader_ARM64.exe` | 图形界面版（GUI） |
-| Windows ARM64 | `TGVideoDownloader_TUI_ARM64.exe` | 控制台版（TUI） |
-| Linux x64 | `TGVideoDownloader_linux_x64` | 命令行版 |
-| Linux ARM64 | `TGVideoDownloader_linux_arm64` | 命令行版 |
-| macOS Intel | `TGVideoDownloader_mac_x64` | 命令行版（另附 `.command` 双击启动） |
-| macOS Apple Silicon | `TGVideoDownloader_mac_arm64` | 命令行版（另附 `.command` 双击启动） |
-| Docker amd64 / arm64 | `ghcr.io/xmiqz/tg-video-downloader` | v2.4 浏览器版，GHCR 发布镜像 |
+到 **[Releases](https://github.com/xmiqz/tg-video-downloader/releases/latest)** 选择对应平台。GitHub 资产名使用英文，中文说明见文件标签。
 
-**GUI 与 TUI 的区别**：Windows 图形界面版提供完整可视化操作（搜索预览、任务管理、实时进度面板、三种外观主题），适合不熟悉命令行的用户。控制台 TUI 版在终端中运行，提供 ANSI 彩色进度面板与键盘快捷键，适合远程操作或偏好命令行的用户。Linux 另提供源码或 Docker 浏览器版；macOS 提供命令行版。
+| 平台 | 文件 | 形态 |
+| :-- | :-- | :-- |
+| Windows x64 | `TGVideoDownloader.exe` | 图形界面 |
+| Windows x64 | `TGVideoDownloader_TUI.exe` | 终端界面 |
+| Windows ARM64 | `TGVideoDownloader_ARM64.exe` | 图形界面 |
+| Windows ARM64 | `TGVideoDownloader_TUI_ARM64.exe` | 终端界面 |
+| Linux x64 / ARM64 | `TGVideoDownloader_linux_*` | 命令行 |
+| macOS Intel / Apple Silicon | `TGVideoDownloader_mac_*` | 命令行，附 `.command` 启动器 |
+| Docker | `ghcr.io/xmiqz/tg-video-downloader` | 浏览器界面，amd64 / arm64 |
 
-## Linux / Docker Web 版（v2.4）
+Windows 图形界面需要 WebView2 Runtime；Windows 11 已预装，Windows 10 多数设备已随更新安装。程序未做代码签名，SmartScreen 可能提示“未知发布者”。
 
-Linux 不再只能使用命令行。`server_app` 提供与 Windows 界面相同的浏览器 UI，并支持：
+### 2 · 登录 Telegram
 
-- 单用户管理员密码与会话 Cookie
-- 浏览器内完成 API 凭证、手机号、验证码与 Telegram 2FA
-- `/data` 持久卷、非 root 进程、只读根文件系统
-- `linux/amd64` 与 `linux/arm64` 多架构镜像
-- 不依赖外部 CDN、ffmpeg 或桌面显示环境
+首次启动输入包含国家区号的手机号，例如 `8613800000000`，不要带 `+`。验证码会发送到已登录的 Telegram App；如果账号启用了两步验证，再输入两步密码。
 
-### NAS / Docker 部署
+程序内置 Telegram 公开客户端凭证，通常无需自己申请。若内置凭证不可用，可按提示到 [my.telegram.org/apps](https://my.telegram.org/apps) 创建自己的 `api_id` / `api_hash`。
 
-推荐直接用仓库根目录的 [compose.yaml](./compose.yaml)。它默认使用命名卷
-`tg-video-downloader-data`，无需提前在宿主机创建 `./data` 或手动改属主；
-容器以 uid/gid `10001:10001` 运行，并启用只读根文件系统、`cap_drop: ALL`
-与 `no-new-privileges`。
+### 3 · 新建下载
 
-在 NAS 上创建部署目录，把 `compose.yaml` 保存进去，然后执行：
+进入 **新建下载**，输入频道用户名或链接，设置关键词、数量与筛选条件。预览结果后勾选需要的视频，设置保存目录与并发数，开始下载。
+
+下载中的任务会出现在 **下载中**：可以查看总体进度、每条视频速度、剩余时间、并发槽位，也可以暂停、重试、取消或打开已完成文件。
+
+### 4 · 数据保存在哪里
+
+桌面与命令行版本默认在程序同级的 `TG视频下载器数据/` 中保存：
+
+```text
+TG视频下载器数据/
+├── tg_config.json       # 下载目录、外观、账号偏好
+├── auth.json            # Web 管理员密码哈希
+├── tg_session.session   # Telegram 登录会话
+├── tasks/               # 任务清单与断点信息
+└── downloads/           # 默认下载目录
+```
+
+把整个目录随程序一起迁移，就能保留任务、设置和登录状态。`.session` 等同于登录凭证，不要分享给他人。
+
+## Docker / NAS
+
+镜像地址：
+
+```text
+ghcr.io/xmiqz/tg-video-downloader:v2.5.2
+```
+
+在 Docker 主机或 NAS 上使用仓库中的 [compose.yaml](./compose.yaml)：
 
 ```bash
 docker compose up -d
@@ -138,264 +178,138 @@ docker compose logs -f --tail=100
 docker compose exec tg-video-downloader cat /data/.setup-token
 ```
 
-浏览器打开 `http://NAS地址:8787`，输入初始化令牌并设置管理员密码。该密码
-只保护 Web 管理界面，不是 Telegram 两步验证密码；初始化成功后
-`.setup-token` 会自动删除。
+浏览器打开 `http://主机地址:8787`，输入令牌并设置管理员密码。该密码只保护 Web 管理界面，不是 Telegram 两步验证密码；设置成功后令牌文件会自动删除。
 
-如果把另一台设备上的「TG视频下载器数据」目录整体复制过来，首次启动会自动
-把任务清单里失效的绝对保存路径重定位到本机下载根目录；仍可进入任务编辑页
-手动改为实际目录，目录修改本身不要求 Telegram 登录。
+容器默认使用命名卷 `tg-video-downloader-data`，以 uid/gid `10001:10001` 运行，并启用只读根文件系统、`cap_drop: ALL` 与 `no-new-privileges`。如需绑定到宿主机目录，请先把目录授权给 `10001:10001`，再修改 [compose.yaml](./compose.yaml) 中的卷映射。
 
-如果要指定宿主机数据目录，先在 NAS 上创建目录并授权给容器用户：
+> 内置 HTTP 不提供 TLS。仅在本机或可信局域网直接使用 HTTP；跨网络访问时请置于 HTTPS 反向代理之后，并设置 `TGDL_COOKIE_SECURE=1`。
 
-```bash
-mkdir -p /vol1/1000/docker/tg-video-downloader-data
-chown -R 10001:10001 /vol1/1000/docker/tg-video-downloader-data
-```
+备份、升级与回滚：[docs/nas-backup-restore.md](./docs/nas-backup-restore.md)
+反向代理示例：[docs/nas-reverse-proxy.md](./docs/nas-reverse-proxy.md)
 
-然后把 `compose.yaml` 中的命名卷改为绑定挂载：
-
-```yaml
-    volumes:
-      - /vol1/1000/docker/tg-video-downloader-data:/data
-```
-
-备份 / 升级 / 回滚的完整操作手册（含数据兼容边界）见
-[docs/nas-backup-restore.md](./docs/nas-backup-restore.md)。
-
-要放在 HTTPS 反向代理后面（域名 / 公网访问），Caddy 与 nginx 的最小片段
-和 `TGDL_TRUSTED_PROXIES` 信任白名单说明见
-[docs/nas-reverse-proxy.md](./docs/nas-reverse-proxy.md)。
-
-升级时先备份数据卷，再拉取新镜像并重建容器：
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
-配置、Telegram session、任务清单、管理员密码哈希和下载文件都保存在
-`/data`。不要删除该卷。
-
-#### 镜像版本与更新检测
-
-GHCR 镜像地址为 `ghcr.io/xmiqz/tg-video-downloader`，支持
-`linux/amd64` 与 `linux/arm64`。发布 tag 会同时推送同名镜像 tag，例如
-`v2.5.0`；日常开发分支推送会生成 `dev-<sha>`。
-
-NAS 的 Docker 管理器能否“检查到更新”，取决于它是否支持检测 GHCR 镜像
-摘要变化：
-
-- 固定版本（例如 `:v2.5.0`）不会自动提示新版本，需手动改 tag。
-- 若管理器支持“检查镜像更新”，可先使用明确 tag 验证，再按需切换；
-  不要依赖不可变的 `:latest` 判断版本。
-- 最可靠的更新方式是本页给出的 `docker compose pull && docker compose up -d`，
-  或在管理器里执行“拉取新镜像后重建容器”。
-
-### 环境变量
+### 常用环境变量
 
 | 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `TGDL_DATA_DIR` | 程序平级数据目录 | 数据卷路径；容器固定使用 `/data` |
-| `TGDL_HOST` | `127.0.0.1` | 监听地址；远程访问需显式设为 `0.0.0.0` |
+| :-- | :-- | :-- |
+| `TGDL_DATA_DIR` | 桌面为程序同级数据目录，容器为 `/data` | 数据目录 |
+| `TGDL_HOST` | `127.0.0.1` | 监听地址；远程访问设为 `0.0.0.0` |
 | `TGDL_PORT` | `8787` | 服务端口 |
-| `TGDL_ALLOWED_ROOTS` | 数据目录 | 允许下载/移动到的路径，多个路径用系统路径分隔符连接 |
-| `TGDL_COOKIE_SECURE` | `0` | 置于 HTTPS 反向代理后时设为 `1` |
-| `TGDL_TRUST_PROXY` | `0` | 仅在可信反向代理后设 `1`，才会读取 `X-Forwarded-For` |
-| `TGDL_SESSION_HOURS` | `168` | 管理员会话有效期 |
-| `PUID` / `PGID` | `10001` | 容器服务实际运行用户 |
+| `TGDL_ALLOWED_ROOTS` | 数据目录 | 允许写入的下载根目录 |
+| `TGDL_COOKIE_SECURE` | `0` | HTTPS 反向代理后设为 `1` |
+| `TGDL_TRUST_PROXY` | `0` | 可信反向代理后设为 `1` |
+| `PUID` / `PGID` | `10001` | 容器运行用户 |
 
-配置优先级为：命令行参数 > `TGDL_*` 环境变量 > 数据目录 `server.json` > 默认值。
+配置优先级：命令行参数 > `TGDL_*` 环境变量 > `tg_config.json` / `server.json` > 默认值。
 
-### 从源码运行
+## 命令行
 
-```bash
-python -m pip install -r requirements-server.txt
-python -m server_app --host 0.0.0.0 --port 8787 --data-dir ./data
-```
-
-如果只在本机访问，省略 `--host`，服务默认只监听 `127.0.0.1`。
-
-> 普通 HTTP 只适合可信局域网。不要直接把 8787 端口暴露到公网；跨网络访问时请使用 HTTPS 反向代理，并设置 `TGDL_COOKIE_SECURE=1`。
-
-### Linux / macOS 首次运行
+不带参数运行进入交互菜单：
 
 ```bash
-chmod +x TGVideoDownloader_linux_x64
-./TGVideoDownloader_linux_x64
-```
-
-macOS 双击附带的 `.command` 文件可直接在终端启动。
-
-## 首次使用
-
-1. 启动程序后输入手机号（含国家区号，不带 `+`，例如 `8613800000000`）
-2. 在 Telegram App 中查收验证码并输入
-3. 若开启了两步验证，输入两步验证密码
-
-程序内置 Telegram 官方公开客户端凭证，无需自行申请 API。若内置凭证被临时限制，程序会引导你到 [my.telegram.org/apps](https://my.telegram.org/apps) 免费申请自己的凭证填入。登录状态保存在本地，下次启动无需重复登录。
-
-### 数据目录
-
-桌面与命令行程序启动时会在自身平级目录生成 `TG视频下载器数据/`；Web/Docker 版使用 `/data` 或 `TGDL_DATA_DIR`：
-
-```
-TG视频下载器数据/
-├── tg_config.json      # 配置（账号、凭证、下载目录、外观偏好）
-├── auth.json           # v2.4 管理员密码哈希（无明文密码）
-├── tg_session.session  # 登录会话（免重复登录）
-├── tasks/              # 任务清单（断点续传）
-└── downloads/          # 下载的视频（默认目录，可修改）
-```
-
-整个数据目录随程序一起拷贝即可换电脑使用，无需重新登录。旧版本散在程序目录的配置会自动迁入数据目录。
-
-## GUI 基本用法
-
-Windows 图形界面版提供以下功能：
-
-- **新建下载**：输入频道名或 `t.me/` 链接，设置搜索条件后预览结果，勾选要下载的视频
-- **任务库**：查看所有任务的完成进度，继续未完成任务，仅重试失败项，删除任务
-- **任务编辑**：弹出独立编辑窗口，修改任务名称、并行路数、保存目录（可选搬移已下载文件）；逐条管理条目状态（标记待下载 / 跳过 / 移除）
-- **追加视频**：对已有任务按新条件搜索并追加条目（自动去重）
-- **下载控制**：实时进度面板，支持暂停 / 恢复 / 跳过 / 移除单个或批量条目
-- **外观主题**：静态暗（默认）、静态亮、液态玻璃（实时采样窗口后方画面，磨砂成透明玻璃效果）
-- **文件夹选择**：内置文件夹选择对话框，可自定义下载目录
-
-## 动效与无障碍
-
-v2.5 的动效统一由设计令牌驱动（时长、缓动），没有散落的裸时长；变化只为真实状态发生，不做无因装饰。
-
-- **减少动态效果**：跟随系统 `prefers-reduced-motion`。开启后全部时长归零、缓动改为线性，角色「弦 XIAN」停止振翅与待机漂移，视图切换变直切；状态色、进度与文字提示全部保留，信息不丢失。
-- **三档降级**：无 `backdrop-filter` 或 SVG 滤镜能力时，导航面改为不透明实色；窗口宽度 ≤640px 时自动降低模糊强度；任何环境下都不白屏。
-- **下载链路舞台**：下载概览页的舞台与状态带只消费后端事件，不额外轮询；队列条点开就地切换主任务，不跳页、不重排。
-- **滚动守卫**：只还原非用户操作造成的程序化滚动（如焦点回填），触摸惯性与用户滑动不受影响。
-- **不阻断操作**：动效关闭或降级后，所有按钮、列表与下载控制保持可用；角色绘制失败时回退文字或 `✓`，不影响功能。
-
-## TUI / 命令行用法
-
-### 交互模式
-
-直接运行程序（不带参数）进入交互菜单：
-
-```
 python tg_video_dl.py
 ```
 
-菜单提供：新建下载任务、查看 / 继续已有任务、仅重试失败、查看视频明细、条目管理、任务设置（改名 / 并行 / 目录）、追加视频、打开下载目录、删除任务、全局设置（下载目录、API 凭证、退出登录）。
-
-新建任务时交互式收集搜索条件：关键词、匹配模式、结果上限、体积上下限、日期范围、搜索范围（频道 / 评论区 / 两者）、排序方式。
-
-### 命令行参数
+也可以直接指定频道和数量：
 
 ```bash
-python tg_video_dl.py @频道名 数量 [最小MB] [关键词] [并发数] [all]
-# 示例：
-python tg_video_dl.py @somechan 20 50 "4K,预告片" 2
+python tg_video_dl.py @频道名 20 50 "4K,预告片" 2
 ```
 
-末尾加 `all` 表示跳过交互勾选，直接下载全部搜索结果。
-
-### 下载中快捷键
+下载中常用快捷键：
 
 | 按键 | 功能 |
-| --- | --- |
-| `I` | 切换简洁 / 详细显示模式 |
-| `P` | 暂停当前视频（释放槽位，队列中下一个立即开始） |
+| :-- | :-- |
+| `I` | 简洁 / 详细视图 |
+| `P` | 暂停当前视频并释放槽位 |
 | `R` | 恢复一个暂停的视频 |
-| `S` | 跳过当前视频（清理临时文件） |
-| `X` | 从任务移除当前视频（保留已下载文件） |
-| `Q` | 中止全部下载（未完成视频可在任务中继续） |
+| `S` | 跳过当前视频 |
+| `X` | 从任务移除，保留已下载文件 |
+| `Q` | 中止全部下载，可在任务中继续 |
 
 ## 从源码运行
 
 需要 Python 3.10+。
 
-**仅命令行 / TUI**（Windows / Linux / macOS）：
+命令行：
 
 ```bash
-pip install telethon
+python -m pip install telethon
 python tg_video_dl.py
 ```
 
-**Windows 图形界面**（需额外依赖）：
+Windows 图形界面：
 
 ```bash
-pip install -r requirements-server.txt Pillow
+python -m pip install -r requirements-server.txt Pillow
 python gui.py
 ```
 
-从源码运行同样会在项目目录下生成 `TG视频下载器数据/`（已被 `.gitignore` 忽略，账号会话与下载内容不会进入版本库）。
+浏览器 / Docker 版：
+
+```bash
+python -m pip install -r requirements-server.txt
+python -m server_app --host 127.0.0.1 --port 8787 --data-dir ./data
+```
 
 ## 自行打包
 
-仓库提供 `build.py` 跨平台打包脚本（基于 PyInstaller）：
-
 ```bash
-pip install pyinstaller
+python -m pip install pyinstaller
 python build.py [输出目录]
 ```
 
-- Windows 上会同时构建 GUI 版与 TUI 版
-- Linux / macOS 上构建命令行版（macOS 额外生成可双击的 `.command` 启动器）
-- ARM64 Windows 需准备 `.NET 8` 运行时与 WebView2 程序集（`build.py` 会自动处理）
+Windows 会生成 GUI 与 TUI；Linux / macOS 生成命令行程序，macOS 另附 `.command` 启动器。PyInstaller 不支持交叉编译，每个平台需在对应系统构建。
 
-PyInstaller 不支持交叉编译，每个平台的包需在该平台构建。
-
-### CI 自动构建
-
-仓库配置了 GitHub Actions（`.github/workflows/build.yml`），覆盖 6 个平台目标：
-
-| 目标 | Runner |
-| --- | --- |
-| windows-x64 | `windows-latest` |
-| windows-arm64 | `windows-11-arm` |
-| linux-x64 | `ubuntu-latest` |
-| linux-arm64 | `ubuntu-24.04-arm` |
-| macos-x64 | `macos-15-intel` |
-| macos-arm64 | `macos-15` |
-
-- 推送 `v*` 标签 → 自动构建全部产物并发布 Release
-- 在 Actions 页面手动触发 → 生成开发预发布版
-
-`.github/workflows/container.yml` 会构建并冒烟测试 Linux amd64 镜像；推送 `v2.4*` 标签时通过 buildx 构建 linux/amd64 与 linux/arm64 并推送到 GHCR。
+GitHub Actions 会构建 Windows x64 / ARM64、Linux x64 / ARM64、macOS Intel / Apple Silicon，并推送 GHCR 多架构镜像。构建号统一使用提交短 SHA。
 
 ## 常见问题
 
-**ARM64 是什么？哪些设备用？**
-ARM64（也称 aarch64）是一种 CPU 架构。Windows on ARM 设备（如 Surface Pro X、Surface Pro 11、Copilot+ PC）使用 ARM64 芯片。普通 Intel / AMD 处理器的电脑是 x64。不确定的话下载 x64 版本。
-
-**Windows 提示“未知发布者” / SmartScreen 拦截？**
-程序未做代码签名，Windows SmartScreen 可能提示未知发布者。点击“更多信息”→“仍要运行”即可。这不影响程序安全性，仅因未购买代码签名证书。
-
-**Linux 运行提示权限不足？**
-首次运行需添加可执行权限：`chmod +x TGVideoDownloader_linux_x64`。
-
 **收不到验证码？**
-验证码通过 Telegram App 内消息发送，请确保 Telegram 已登录且能接收消息。若多次请求，使用最新收到的验证码。
+验证码由 Telegram 发送到已登录的 App，不是短信。确认 App 能接收 Telegram 服务消息，并使用最新一条验证码。
+
+**Windows 提示未知发布者？**
+程序未购买代码签名证书。点击“更多信息” → “仍要运行”。这不改变程序功能。
+
+**Linux 提示权限不足？**
+执行 `chmod +x TGVideoDownloader_linux_x64` 后再运行。
+
+**下载完成后文件在哪？**
+默认在 `TG视频下载器数据/downloads/`，按频道名建立子目录；可在设置或任务编辑页修改。
 
 **换电脑怎么迁移？**
-把 `TG视频下载器数据/` 文件夹整个随程序一起拷贝到新电脑即可，无需重新登录。
+关闭程序，把整个 `TG视频下载器数据/` 目录随程序复制到新设备。任务路径若失效，启动时会自动重定位到新的下载根目录。
 
-**下载的视频存在哪？**
-默认在 `TG视频下载器数据/downloads/` 下按频道名建子目录。可在设置中修改下载目录。
+**浏览器版能打开服务器上的文件吗？**
+浏览器不能直接打开服务器文件，已完成视频会通过同源链接在浏览器内播放或下载。桌面版可直接调用系统文件管理器。
 
 ## 隐私与安全
 
-- **数据全在本地**：登录会话、配置、任务记录和下载的视频都保存在程序平级的 `TG视频下载器数据/` 目录，不上传任何服务器。
-- **只连 Telegram**：网络通信全部经 Telethon（MTProto）与 Telegram 官方服务器交互，用于登录与下载；程序不含统计、广告或第三方数据上报代码，源码可自行审计。
-- **保管好会话文件**：数据目录里的 `.session` 文件等同于登录凭证，不要分享给他人；换电脑时整体拷贝该目录即可免登录迁移。
-- **远程访问有独立密码**：v2.4 绑定非 loopback 地址时，RPC 与 WebSocket 都必须通过管理员会话或桌面一次性 Bearer。首次密码设置需要 `/data/.setup-token`，防止局域网内其他人抢先占用实例。
-- **推荐 HTTPS**：管理员密码通过明文 HTTP 传输时可能被同网段窃听。仅在本机或完全可信局域网使用 HTTP；其他环境使用 HTTPS 反向代理。
+- 登录会话、配置、任务和下载内容都保存在本地数据目录，不上传到项目服务器。
+- 网络通信由 Telethon 直接连接 Telegram 官方服务器，用于登录和下载。
+- 程序不包含统计、广告或第三方数据上报。
+- Web / Docker 版使用管理员密码和会话 Cookie；首次设置需要 `/data/.setup-token`。
+- `.session`、`auth.json` 和 `.setup-token` 都属于敏感文件，不要提交到仓库或分享给他人。
 
-## 合规与免责声明
+## 从源码构建与回归
+
+本项目的测试分为三层：
+
+- `python -m pytest -q`：后端与桌面壳契约。
+- `node --test "tests/js/*.test.mjs"`：前端纯逻辑、结构与降级断言。
+- 真实打包程序的浏览器级 smoke：以隔离数据目录启动，验证登录、任务库、编辑、导入导出与每日壁纸。
+
+前端不依赖框架、构建链或外部 CDN；所有资源随包分发。
+
+## 合规
 
 本工具仅用于下载你有权访问的内容。请遵守当地法律法规与 [Telegram 服务条款](https://telegram.org/tos)，自行承担使用责任。
 
 ## License
 
-[MIT License](LICENSE), Copyright (c) 2026 xmiqz
+[MIT License](LICENSE)，Copyright (c) 2026 xmiqz
 
 ## 致谢
 
-- [Telethon](https://github.com/LonamiWebs/Telethon) — asyncio MTProto 库，本项目的核心依赖
+- [Telethon](https://github.com/LonamiWebs/Telethon)：asyncio MTProto 客户端
+- [FastAPI](https://fastapi.tiangolo.com/) / [Uvicorn](https://www.uvicorn.org/)：浏览器服务
+- [Microsoft Edge WebView2](https://developer.microsoft.com/microsoft-edge/webview2/)：Windows 原生界面
