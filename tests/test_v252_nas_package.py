@@ -19,5 +19,5 @@ def test_test_stack_uses_independent_names_port_and_volume():
 def test_test_image_carries_release_and_commit_short_sha():
     text = TEST_COMPOSE.read_text(encoding="utf-8")
     assert "TGDL_VERSION: v2.5.2" in text
-    assert "TGDL_BUILD: 6b6476b" in text
-    assert "image: tvg-v252-test:6b6476b" in text
+    assert "TGDL_BUILD: 7a6c530" in text
+    assert "image: tvg-v252-test:7a6c530" in text
