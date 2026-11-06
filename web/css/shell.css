@@ -657,6 +657,7 @@ html.liquid .ev-move-mask {
   bottom: 7px;
   left: 0;
   width: 0;
+  box-sizing: border-box;   /* width comes from the tab box; keep borders inside it */
   z-index: 1;
   border-radius: var(--radius-lg);
   border: var(--line-1) solid color-mix(in srgb, var(--color-primary) 52%, var(--color-border-strong));

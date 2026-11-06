@@ -58,6 +58,9 @@ test("v2.5.2 selected thumbs keep a minimum contrast ring", async () => {
   assert.match(shell,
     /\.sh-bar-thumb[\s\S]*color-mix\(in srgb, var\(--color-primary\) 52%/,
     "底栏选中 thumb 需要主色对比环");
+  assert.match(shell,
+    /\.sh-bar-thumb[\s\S]*box-sizing:\s*border-box/,
+    "底栏选中 thumb 的边框不得叠加在测量宽高之外");
   assert.match(glass,
     /html body \.u-seg-thumb[\s\S]*color-mix\(in srgb, var\(--color-primary\) 58%/,
     "分段/外观 thumb 需要同源对比环");
