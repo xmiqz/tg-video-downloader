@@ -1,12 +1,23 @@
 name: container
 
 # 职责：验证 Docker 镜像（amd64 + arm64），验证通过后才允许发布 GHCR。
-# 顺序固定为 validate -> publish -> verify；publish 不得在 validate 失败时执行。
+# 顺序固定为 preflight -> validate -> publish -> verify。
+# 手动触发默认只验证、不推送；要发布必须显式 publish=true 并指定已存在的 Tag。
 on:
   push:
     tags:
-      - "v2.*"
+      - "v*"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "推送到 GHCR（默认 false，只验证不推送）"
+        required: false
+        type: boolean
+        default: false
+      tag:
+        description: "要发布的已存在 Tag（publish=true 时必填，例如 v2.5.2）"
+        required: false
+        type: string
   pull_request:
     paths:
       - "Dockerfile"
@@ -17,6 +28,7 @@ on:
       - "gui.py"
       - "tg_video_dl.py"
       - "web/**"
+      - "tools/release_preflight.py"
       - ".github/workflows/container.yml"
 
 permissions:
@@ -26,10 +38,44 @@ env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/tg-video-downloader
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.resolve.outputs.publish }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      sha: ${{ steps.resolve.outputs.source_sha }}
+      short_sha: ${{ steps.resolve.outputs.short_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve publish target
+        id: resolve
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 tools/release_preflight.py \
+            --workflow container \
+            --event "$EVENT" \
+            --publish "$INPUT_PUBLISH" \
+            --release-tag "$INPUT_TAG" \
+            --ref-name "$GITHUB_REF_NAME" \
+            --ref "$GITHUB_REF" \
+            --sha "$GITHUB_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
   validate-amd64:
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
 
       - uses: docker/setup-buildx-action@v3
 
@@ -75,9 +121,12 @@ jobs:
           docker exec tgvd-test-amd64 test -f /data/.setup-token
 
   validate-arm64:
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -123,30 +172,29 @@ jobs:
             "from pathlib import Path; Path('/data/write-probe').write_text('ok')"
 
   publish:
-    needs: [validate-amd64, validate-arm64]
-    if: github.event_name != 'pull_request'
+    needs: [preflight, validate-amd64, validate-arm64]
+    if: needs.preflight.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     outputs:
-      version: ${{ steps.buildmeta.outputs.version }}
-      short_sha: ${{ steps.buildmeta.outputs.short_sha }}
+      tag: ${{ steps.target.outputs.tag }}
+      short_sha: ${{ steps.target.outputs.short_sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
 
-      - name: Resolve version and short SHA
-        id: buildmeta
+      - name: Record publish target
+        id: target
         shell: bash
         run: |
-          short="${GITHUB_SHA::7}"
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            version="${GITHUB_REF_NAME}"
-          else
-            version="dev"
-          fi
-          echo "short_sha=${short}" >> "$GITHUB_OUTPUT"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          tag="${{ needs.preflight.outputs.tag }}"
+          test -n "$tag" || { echo "::error::preflight 未解析出 tag，拒绝发布"; exit 1; }
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${{ needs.preflight.outputs.short_sha }}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -157,14 +205,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 只打 Tag 本身，不再生成 dev / dev-<sha> 标签；正式版本不会附带开发标签。
       - id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE }}
           tags: |
-            type=ref,event=tag
-            type=sha,prefix=dev-,enable=${{ github.ref_type != 'tag' }}
-            type=raw,value=dev,enable=${{ github.event_name == 'workflow_dispatch' && github.ref_type != 'tag' }}
+            type=raw,value=${{ needs.preflight.outputs.tag }}
 
       - uses: docker/build-push-action@v6
         with:
@@ -174,8 +221,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            TGDL_VERSION=${{ steps.buildmeta.outputs.version }}
-            TGDL_BUILD=${{ steps.buildmeta.outputs.short_sha }}
+            TGDL_VERSION=${{ needs.preflight.outputs.tag }}
+            TGDL_BUILD=${{ needs.preflight.outputs.short_sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: true
@@ -183,7 +230,7 @@ jobs:
 
   verify:
     needs: publish
-    if: github.event_name != 'pull_request'
+    if: needs.publish.outputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -195,11 +242,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 校验对象来自 publish 的真实输出，而不是 github.ref_name：
+      # 手动触发时 ref_name 是分支名，直接拼镜像标签会校验一个不存在的镜像。
       - name: Verify manifest has amd64 and arm64
         shell: bash
+        env:
+          TAG: ${{ needs.publish.outputs.tag }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          tag="${TAG:?publish 未输出 tag，拒绝校验不存在的镜像}"
           docker manifest inspect "${IMAGE}:${tag}" > /tmp/manifest.json
           archs=$(jq -r '.manifests[].platform.architecture' /tmp/manifest.json | sort -u | tr '\n' ' ')
           echo "architectures: ${archs}"
@@ -208,10 +259,13 @@ jobs:
 
       - name: Verify published image reports the tag version and short SHA
         shell: bash
+        env:
+          TAG: ${{ needs.publish.outputs.tag }}
+          SHORT_SHA: ${{ needs.publish.outputs.short_sha }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          short="${GITHUB_SHA::7}"
+          tag="${TAG:?publish 未输出 tag}"
+          short="${SHORT_SHA:?publish 未输出 short_sha}"
           docker volume rm tgvd-verify-data >/dev/null 2>&1 || true
           cid=$(docker run -d --name tgvd-verify \
             --user 10001:10001 --read-only --tmpfs /tmp:rw,size=64m \
