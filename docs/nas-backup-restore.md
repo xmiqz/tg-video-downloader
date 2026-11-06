@@ -1,7 +1,6 @@
 # NAS 备份 / 升级 / 回滚手册（Docker compose 部署）
 
-> 适用：v2.4 起 `compose.yaml` 部署形态（飞牛 fnOS、群晖 DSM 或任何装有
-> Docker 的 NAS）。服务名/容器名 `tg-video-downloader`，端口 `8787`，全部
+> 适用：v2.4 起 `compose.yaml` 部署形态（任何装有 Docker 的 NAS 或服务器）。服务名/容器名 `tg-video-downloader`，端口 `8787`，全部
 > 用户数据都在容器内 `/data`（默认命名卷 `tg-video-downloader-data`）。
 > 本文所有命令可直接照抄执行。
 
