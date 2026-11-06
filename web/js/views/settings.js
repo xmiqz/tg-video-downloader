@@ -1015,6 +1015,7 @@ function rebuildAppearanceSeg() {
     value: cur, ariaLabel: "界面外观",
     onChange: function (v) { onAppearanceSeg(v); },
   });
+  fresh.el.classList.add("st-appearance");
   const parent = oldEl && oldEl.parentNode;
   if (parent) {
     // Scope the cleanup to this card only. router.refreshLens() mirrors the

@@ -33,6 +33,9 @@ test("v2.5.2 mobile appearance is a fixed 2x2 grid", async () => {
   const css = await read("web/css/views/settings.css");
   const js = await read("web/js/views/settings.js");
   assert.match(js, /appearanceSeg\.el\.classList\.add\("st-appearance"\)/);
+  assert.match(js,
+    /const fresh = createSegmented\(appearanceSegs\(HOST_MODE\)[\s\S]{0,180}fresh\.el\.classList\.add\("st-appearance"\)/,
+    "宿主模式变化后重建的外观仍须保留 2×2 钩子");
   assert.match(css,
     /\.st-appearance \.u-seg-scroll\s*\{[\s\S]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/,
     "移动外观必须 2×2，不靠无提示横滑");
