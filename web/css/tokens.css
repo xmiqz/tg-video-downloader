@@ -444,6 +444,30 @@
 /* 暗壁纸：玻璃面要比静态暗更「透亮」一点，照片才透得出来而不是被
    一层灰糊住；文字保持浅墨。照片明暗不可控，故在玻璃体底部垫一层
    深色实底（.30–.42），保证浅墨文字在任何照片上都够对比。 */
+:root[data-theme="wallpaper"][data-lum="dark"],
+:root[data-theme="wallpaper"]:not([data-lum="bright"]) {
+  /* v2.5.2: switching from 静态亮 to a dark wallpaper used to keep the light
+     theme's dark raw ink. Reset the whole ink table, not only glass tokens. */
+  --raw-bg: #07080f;          --raw-bg-2: rgba(255,255,255,.05);
+  --raw-bg-sunk: rgba(7,9,20,.55); --raw-ink: #f5f7fe;
+  --raw-ink-dim: rgba(238,242,252,.80);
+  --raw-ink-mute: rgba(231,236,249,.62);
+  --raw-brand-1: #4f7cff;     --raw-brand-2: #8b5bff;
+  --raw-brand-soft: rgba(91,134,255,.18); --raw-on-brand: #ffffff;
+  --raw-danger: #ff6172;      --raw-danger-soft: rgba(255,97,114,.16);
+  --raw-danger-ink: #ff8a97;  --raw-ok: #34d9a0; --raw-warn: #ffb84d;
+  --raw-warn-soft: rgba(255,184,77,.16);
+  --raw-border: rgba(255,255,255,.14);
+  --raw-border-strong: rgba(255,255,255,.28);
+  --raw-scrim: rgba(5,7,14,.55); --raw-frost: rgba(9,11,20,.30);
+  --raw-shade: rgba(4,6,18,.34); --raw-shade-strong: rgba(4,6,18,.42);
+  --raw-shade-deep: rgba(4,6,18,.50); --raw-ring: rgba(91,134,255,.35);
+  --raw-irid-1: rgba(112,220,255,.42);
+  --raw-irid-2: rgba(120,236,190,.38);
+  --raw-irid-3: rgba(255,178,244,.42);
+  --raw-solid: #171a28;
+}
+
 :root[data-theme="wallpaper"][data-lum="dark"] {
   --gl-g-a: rgba(255,255,255,.16);  --gl-g-b: rgba(255,255,255,.10);
   --gl-g-c: rgba(255,255,255,.06);

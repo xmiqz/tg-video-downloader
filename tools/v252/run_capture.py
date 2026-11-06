@@ -34,14 +34,16 @@ def _unsubst(drive: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--exe", required=True)
+    parser.add_argument("--exe", default="")
     parser.add_argument("--out", required=True)
     parser.add_argument("--work", default=str(ROOT / "work" / "v252-capture"))
     parser.add_argument("--keep-data", action="store_true")
+    parser.add_argument("--source-server", action="store_true")
+    parser.add_argument("--quick", action="store_true")
     args = parser.parse_args()
 
-    exe = pathlib.Path(args.exe).expanduser().resolve()
-    if not exe.is_file():
+    exe = pathlib.Path(args.exe).expanduser().resolve() if args.exe else None
+    if not args.source_server and (exe is None or not exe.is_file()):
         raise SystemExit(f"EXE 不存在：{exe}")
     out = pathlib.Path(args.out).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -85,8 +87,11 @@ def main() -> int:
             "PYTHONUTF8": "1",
         }
         exe_out = exe_log.open("w", encoding="utf-8")
+        command = ([sys.executable, str(ROOT / "gui.py")] if args.source_server
+                   else [str(exe)])
+        cwd = str(ROOT) if args.source_server else str(exe.parent)
         proc = subprocess.Popen(
-            [str(exe)], cwd=str(exe.parent), env=env,
+            command, cwd=cwd, env=env,
             stdout=exe_out, stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
@@ -110,13 +115,17 @@ def main() -> int:
             r"C:\Users\xqz\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
         )
         with capture_log.open("w", encoding="utf-8") as f:
-            subprocess.run([
+            capture_cmd = [
                 str(node), str(TOOLS / "capture.mjs"),
                 f"--out={out}",
                 f"--base-url={info['base_url']}",
                 f"--token={info['token']}",
                 "--task-id=t252_active",
-            ], cwd=str(ROOT), stdout=f, stderr=subprocess.STDOUT, check=True)
+            ]
+            if args.quick:
+                capture_cmd.append("--quick")
+            subprocess.run(capture_cmd, cwd=str(ROOT), stdout=f,
+                           stderr=subprocess.STDOUT, check=True)
         print(json.dumps({
             "ok": True,
             "out": str(out),
@@ -127,9 +136,10 @@ def main() -> int:
         return 0
     finally:
         if proc is not None and proc.poll() is None:
-            proc.terminate()
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                           capture_output=True, text=True)
             try:
-                proc.wait(timeout=10)
+                proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
         _unsubst(drive)

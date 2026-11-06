@@ -14,7 +14,7 @@ test("v2.5.2 login has an independent scrim and a dense reading card", async () 
   assert.match(css, /\.lg-view::before\s*\{[\s\S]*pointer-events:\s*none/,
     "scrim 不得接收业务点击");
   assert.match(css,
-    /html body \.lg-view \.lg-login-card[\s\S]*rgba\(24, 28, 43, \.985\)[\s\S]*blur\(24px\)/,
+    /html body \.lg-view \.u-card\.lg-login-card[\s\S]*rgba\(24, 28, 43, \.985\)[\s\S]*blur\(24px\)/,
     "登录卡需要跨主题的高密度暗色卡面");
 });
 
@@ -67,7 +67,7 @@ test("v2.5.2 date range owns enough width and stacks on phones", async () => {
   const js = await read("web/js/views/new.js");
   const css = await read("web/css/views/new.css");
   assert.match(js, /class: "nw-dual nw-dual--date"/);
-  assert.match(css, /\.nw-field--date\s*\{\s*flex:\s*1 1 340px/);
+  assert.match(css, /\.nw-field\.nw-field--date\s*\{\s*flex:\s*1 1 340px/);
   assert.match(css,
     /@media \(max-width: 520px\)[\s\S]*\.nw-dual--date\s*\{\s*grid-template-columns:\s*1fr/,
     "窄屏日期字段必须纵向排列");
@@ -75,6 +75,7 @@ test("v2.5.2 date range owns enough width and stacks on phones", async () => {
 
 test("v2.5.2 wallpaper stage and content panels own a reading base", async () => {
   const css = await read("web/css/glass-system.css");
+  const tokens = await read("web/css/tokens.css");
   assert.match(css,
     /html\[data-theme="wallpaper"\] body \.xian-stage-bay[\s\S]*var\(--color-surface\) 96%/,
     "壁纸舞台需要 token 匹配阅读底");
@@ -84,6 +85,9 @@ test("v2.5.2 wallpaper stage and content panels own a reading base", async () =>
   assert.match(css,
     /html\[data-theme="wallpaper"\]\[data-lum="bright"\] body :is\([\s\S]*rgba\(255, 255, 255, \.78\)/,
     "亮壁纸内容面板需要白阅读底");
+  assert.match(tokens,
+    /:root\[data-theme="wallpaper"\]\[data-lum="dark"\],[\s\S]*--raw-ink:\s*#f5f7fe/,
+    "暗壁纸必须把整组 raw ink 切回浅墨，不能沿用静态亮的深墨");
 });
 
 test("v2.5.2 long paths elide in the middle and expose copy/open", async () => {
@@ -102,4 +106,7 @@ test("v2.5.2 long paths elide in the middle and expose copy/open", async () => {
   assert.match(html, /id="ed2-folder-copy"[\s\S]*edCopyFolder\(\)/);
   assert.match(html, /id="ed2-folder-open"[\s\S]*edOpenFolder\(\)/);
   assert.match(js, /window\.TVGPath\.fullPath\(input\)/);
+  assert.match(js,
+    /mode === "bing" \|\| mode === "wallpaper"[\s\S]*root\.setAttribute\("data-theme", "dark"\)/,
+    "任务编辑页静态暗必须显式落在 dark 令牌，不能回落到浅色默认");
 });

@@ -981,7 +981,12 @@ function edApplyAppearance() {
       if (mode === "bing" || mode === "wallpaper") {
         root.setAttribute("data-theme", "wallpaper");
         edApplyBackdrop();
+        return;
       }
+      // Static dark and liquid both use the explicit dark token table. Leaving
+      // data-theme unset fell back to the light default when the host system
+      // was in light mode, so the editor did not follow the main window.
+      root.setAttribute("data-theme", "dark");
     }).catch(function () {});
   } catch (e) {}
 }

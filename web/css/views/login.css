@@ -258,8 +258,8 @@ html[data-theme="wallpaper"] .lg-view .lg-card {
    stops the task text/progress/buttons from reading through, while the card
    itself stays a dense dark overlay so its own ink is independent of whether
    the page behind uses dark, light, wallpaper or liquid tokens. */
-html body .lg-view .lg-login-card,
-html body .lg-view .lg-card {
+html body .lg-view .u-card.lg-login-card,
+html body .lg-view .u-card.lg-card {
   background:
     linear-gradient(158deg,
       rgba(24, 28, 43, .985) 0%,

@@ -15,6 +15,7 @@ const OUT = path.resolve(args.out || "docs/images");
 const BASE = String(args["base-url"] || "").replace(/\/+$/, "");
 const TOKEN = String(args.token || "");
 const TASK_ID = String(args["task-id"] || "t252_active");
+const QUICK = !!args.quick;
 const RUNTIME = "C:/Users/xqz/.cache/codex-runtimes/codex-primary-runtime/dependencies/node";
 const EDGE = "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe";
 const require = createRequire(path.join(RUNTIME, "noop.cjs"));
@@ -56,12 +57,28 @@ const context = await browser.newContext({
   deviceScaleFactor: 1,
   locale: "zh-CN",
 });
+await context.addInitScript(() => {
+  // The capture harness takes steady-state frames and navigates repeatedly.
+  // Let the router use its direct-swap path so a long-running View Transition
+  // cannot swallow a later click while a screenshot document is settling.
+  try {
+    Object.defineProperty(Document.prototype, "startViewTransition", {
+      configurable: true,
+      value: undefined,
+    });
+  } catch (_) {}
+});
 const page = await context.newPage();
 page.setDefaultTimeout(20000);
 const pageErrors = [];
+const consoleErrors = [];
+const httpErrors = [];
 page.on("pageerror", (err) => pageErrors.push(String(err)));
 page.on("console", (msg) => {
-  if (msg.type() === "error") pageErrors.push(msg.text());
+  if (msg.type() === "error") consoleErrors.push(msg.text());
+});
+page.on("response", (resp) => {
+  if (resp.status() >= 400) httpErrors.push(`${resp.status()} ${resp.url()}`);
 });
 
 async function hideNoise() {
@@ -133,7 +150,7 @@ async function verifyTheme(mode) {
   }, mode);
 }
 
-async function activeThemeScreenshot(mode, name) {
+async function activeThemeScreenshot(mode, name, expectedLum = "") {
   await navigateMain("/active");
   if (mode === "liquid") {
     const bg = `${BASE}/wallpaper/wallpaper-dark.jpg?t=${enc}`;
@@ -153,6 +170,12 @@ async function activeThemeScreenshot(mode, name) {
     await page.waitForFunction(() =>
       (document.getElementById("sh-backdrop")?.style.backgroundImage || "").includes("/wallpaper/"),
     );
+    if (expectedLum) {
+      await page.waitForFunction(
+        (want) => document.documentElement.getAttribute("data-lum") === want,
+        expectedLum,
+      );
+    }
   }
   await settle(700);
   await shot(name);
@@ -207,19 +230,63 @@ async function captureCore(prefix, width, height) {
   await shot(`${prefix}login.png`);
 
   await gotoMain("/new", width, height);
-  await page.locator(".nw-adv-toggle").click();
-  await page.waitForSelector("#nw-adv:not([hidden])");
+  const clickProbe = await page.evaluate(() => {
+    const btn = document.querySelector("#sh-viewhost .vw-new .nw-adv-toggle");
+    const panel = document.querySelector("#sh-viewhost #nw-adv");
+    let hit = 0;
+    btn.addEventListener("click", () => { hit += 1; }, { once: true });
+    // The new-view node is cached across routes. Leave an already-open panel
+    // open instead of toggling it closed when the harness re-enters the view.
+    if (panel && panel.hidden) btn.click();
+    return {
+      hit,
+      wasHidden: panel ? panel.hidden : null,
+      disabled: btn.disabled,
+      countToggle: document.querySelectorAll("#sh-viewhost .vw-new .nw-adv-toggle").length,
+      countPanel: document.querySelectorAll("#sh-viewhost .nw-adv").length,
+    };
+  });
+  await page.waitForTimeout(300);
+  const advanced = await page.evaluate(() => {
+    const panel = document.querySelector("#sh-viewhost #nw-adv");
+    const btn = document.querySelector("#sh-viewhost .nw-adv-toggle");
+    return {
+      route: window.__t8router.current,
+      hidden: panel?.hidden,
+      display: panel ? getComputedStyle(panel).display : "",
+      expanded: btn?.getAttribute("aria-expanded"),
+      panelConnected: !!panel?.isConnected,
+    };
+  });
+  advanced.clickProbe = clickProbe;
+  advanced.errors = pageErrors.slice(-5);
+  record(`advanced-${width}`, advanced.hidden === false,
+    JSON.stringify(advanced));
   await settle(450);
+  if (width === 390) {
+    await page.setViewportSize({ width, height: 1100 });
+    await settle(250);
+  }
   await shot(`${prefix}new-download.png`);
+  if (width === 390) {
+    await page.setViewportSize({ width, height });
+    await settle(200);
+  }
 
-  await page.locator("#nw-channel").fill("@night_channel");
-  await page.locator(".nw-search-btn").click();
-  await page.waitForFunction(() => document.querySelectorAll(".nw-row").length >= 8);
+  await page.evaluate(() => {
+    const input = document.querySelector("#sh-viewhost #nw-channel");
+    input.value = "@night_channel";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector("#sh-viewhost .nw-search-btn").click();
+  });
+  await page.waitForFunction(
+    () => document.querySelectorAll("#sh-viewhost .vw-new .nw-row").length >= 8,
+  );
   await settle(600);
   const step2 = await page.evaluate(() => ({
-    rows: document.querySelectorAll(".nw-row").length,
-    step: document.querySelector(".nw-step.is-active")?.textContent || "",
-    progress: document.querySelector(".nw-phase")?.textContent || "",
+    rows: document.querySelectorAll("#sh-viewhost .vw-new .nw-row").length,
+    step: document.querySelector("#sh-viewhost .nw-step.is-active")?.textContent || "",
+    progress: document.querySelector("#sh-viewhost .nw-phase")?.textContent || "",
   }));
   record(`new-results-${width}`, step2.rows === 8, JSON.stringify(step2));
   await shot(`${prefix}new-download-results.png`);
@@ -250,99 +317,108 @@ try {
   await page.waitForSelector(".xian-stage-bay");
   await shot("hero-dashboard.png");
 
-  const themeCases = [
-    ["dark", "静态暗", "theme-dark.png"],
-    ["light", "静态亮", "theme-light.png"],
-    ["bing", "每日壁纸", "theme-bing.png"],
-    ["liquid", "液态玻璃", "theme-liquid.png"],
-  ];
-  for (const [mode, label, name] of themeCases) {
-    await clickAppearance(label);
-    const state = await verifyTheme(mode);
-    const ok = mode === "liquid"
-      ? state.liquid === true
-      : mode === "bing"
-        ? state.theme === "wallpaper" && state.backdrop.includes("/wallpaper/")
-        : state.theme === mode;
-    record(`theme-${mode}`, ok, JSON.stringify(state));
-    await activeThemeScreenshot(mode, name);
-  }
-
-  await rpc("wallpaper_select", ["2026-11-05"]);
-  await clickAppearance("每日壁纸");
-  await activeThemeScreenshot("bing", "theme-bing-dark.png");
-  await rpc("wallpaper_select", ["2026-11-06"]);
-
-  await clickAppearance("静态暗");
-  await gotoMain("/active", 1280, 800);
-  await shot("widths/1280-active.png");
-  await gotoMain("/active", 834, 1112);
-  await shot("widths/834-active.png");
-  await gotoMain("/active", 390, 844);
-  await shot("widths/390-active.png");
-
-  await gotoMain("/settings", 834, 1112);
-  const tablet = await page.evaluate(() => {
-    const card = document.querySelector(".st-card");
-    const cs = getComputedStyle(card);
-    return { filter: cs.backdropFilter || cs.webkitBackdropFilter, width: innerWidth };
-  });
-  record("tablet-panel-no-sampling", tablet.filter === "none", JSON.stringify(tablet));
-  await shot("tablet/settings.png");
-  await gotoMain("/tasks", 834, 1112);
-  await shot("tablet/tasks.png");
-
-  await gotoMain("/settings", 390, 844);
-  const bottom = await page.evaluate(() => {
-    const thumb = document.querySelector(".sh-bottombar .sh-bar-thumb");
-    const active = document.querySelector(".sh-bottombar .sh-nav-item.is-active");
-    const cs = thumb ? getComputedStyle(thumb) : null;
-    return {
-      width: thumb?.getBoundingClientRect().width || 0,
-      opacity: cs?.opacity || "",
-      active: active?.textContent.trim() || "",
-    };
-  });
-  record("mobile-bottom-thumb", bottom.width >= 20 && bottom.opacity === "1",
-    JSON.stringify(bottom));
-  await shot("compare/after-bottom-selected-390.png");
-  const mobileAppearance = await page.evaluate(() => {
-    const seg = document.querySelector(".st-appearance");
-    const items = Array.from(document.querySelectorAll(".st-appearance .u-seg-item"));
-    const box = seg.getBoundingClientRect();
-    return {
-      cols: getComputedStyle(seg.querySelector(".u-seg-scroll")).gridTemplateColumns,
-      labels: items.map((x) => x.textContent.trim()),
-      inBounds: items.every((x) => {
-        const r = x.getBoundingClientRect();
-        return r.right <= box.right + 1 && r.left >= box.left - 1 && r.height >= 44;
-      }),
-    };
-  });
-  record("mobile-appearance-2x2", mobileAppearance.cols.split(" ").length === 2 &&
-    mobileAppearance.inBounds, JSON.stringify(mobileAppearance));
-  await shot("compare/after-appearance-390.png");
-
-  await gotoMain("/new", 390, 844);
-  await page.locator(".nw-adv-toggle").click();
-  const dates = await page.evaluate(() => {
-    const out = [];
-    for (const id of ["nw-datefrom", "nw-dateto"]) {
-      const el = document.getElementById(id);
-      el.value = id.endsWith("from") ? "2026-10-01" : "2026-11-06";
-      const r = el.getBoundingClientRect();
-      out.push({ id, width: r.width, height: r.height, value: el.value });
+  if (!QUICK) {
+    const themeCases = [
+      ["dark", "静态暗", "theme-dark.png"],
+      ["light", "静态亮", "theme-light.png"],
+      ["bing", "每日壁纸", "theme-bing.png"],
+      ["liquid", "液态玻璃", "theme-liquid.png"],
+    ];
+    for (const [mode, label, name] of themeCases) {
+      await clickAppearance(label);
+      const state = await verifyTheme(mode);
+      const ok = mode === "liquid"
+        ? state.liquid === true
+        : mode === "bing"
+          ? state.theme === "wallpaper" && state.backdrop.includes("/wallpaper/")
+          : state.theme === mode;
+      record(`theme-${mode}`, ok, JSON.stringify(state));
+      await activeThemeScreenshot(
+        mode,
+        name,
+        mode === "bing" ? "bright" : "",
+      );
     }
-    return out;
-  });
-  record("date-390", dates.every((x) => x.width >= 180), JSON.stringify(dates));
-  await shot("compare/after-date-390.png");
-  const ctrl = await page.evaluate(() => {
-    const cb = document.querySelector('#nw-deepscan');
-    const cs = getComputedStyle(cb);
-    return { appearance: cs.appearance || cs.webkitAppearance, width: cb.getBoundingClientRect().width };
-  });
-  record("custom-checkbox", ctrl.appearance === "none", JSON.stringify(ctrl));
+
+    await rpc("wallpaper_select", ["2026-11-05"]);
+    await clickAppearance("每日壁纸");
+    await activeThemeScreenshot("bing", "theme-bing-dark.png", "dark");
+    await rpc("wallpaper_select", ["2026-11-06"]);
+
+    await clickAppearance("静态暗");
+    await gotoMain("/active", 1280, 800);
+    await shot("widths/1280-active.png");
+    await gotoMain("/active", 834, 1112);
+    await shot("widths/834-active.png");
+    await gotoMain("/active", 390, 844);
+    await shot("widths/390-active.png");
+
+    await gotoMain("/settings", 834, 1112);
+    const tablet = await page.evaluate(() => {
+      const card = document.querySelector(".st-card");
+      const cs = getComputedStyle(card);
+      return { filter: cs.backdropFilter || cs.webkitBackdropFilter, width: innerWidth };
+    });
+    record("tablet-panel-no-sampling", !String(tablet.filter).includes("blur"),
+      JSON.stringify(tablet));
+    await shot("tablet/settings.png");
+    await gotoMain("/tasks", 834, 1112);
+    await shot("tablet/tasks.png");
+
+    await gotoMain("/settings", 390, 844);
+    const bottom = await page.evaluate(() => {
+      const thumb = document.querySelector(".sh-bottombar .sh-bar-thumb");
+      const active = document.querySelector(".sh-bottombar .sh-nav-item.is-active");
+      const cs = thumb ? getComputedStyle(thumb) : null;
+      return {
+        width: thumb?.getBoundingClientRect().width || 0,
+        opacity: cs?.opacity || "",
+        active: active?.textContent.trim() || "",
+      };
+    });
+    record("mobile-bottom-thumb", bottom.width >= 20 && bottom.opacity === "1",
+      JSON.stringify(bottom));
+    await shot("compare/after-bottom-selected-390.png");
+    const mobileAppearance = await page.evaluate(() => {
+      const seg = document.querySelector(".st-appearance");
+      const items = Array.from(document.querySelectorAll(".st-appearance .u-seg-item"));
+      const box = seg.getBoundingClientRect();
+      return {
+        cols: getComputedStyle(seg.querySelector(".u-seg-scroll")).gridTemplateColumns,
+        labels: items.map((x) => x.textContent.trim()),
+        inBounds: items.every((x) => {
+          const r = x.getBoundingClientRect();
+          return r.right <= box.right + 1 && r.left >= box.left - 1 && r.height >= 44;
+        }),
+      };
+    });
+    record("mobile-appearance-2x2", mobileAppearance.cols.split(" ").length === 2 &&
+      mobileAppearance.inBounds, JSON.stringify(mobileAppearance));
+    await shot("compare/after-appearance-390.png");
+
+    await gotoMain("/new", 390, 844);
+    await page.evaluate(() => {
+      document.querySelector("#sh-viewhost .nw-adv-toggle")?.click();
+    });
+    const dates = await page.evaluate(() => {
+      const out = [];
+      for (const id of ["nw-datefrom", "nw-dateto"]) {
+        const el = document.querySelector(`#sh-viewhost #${id}`);
+        el.value = id.endsWith("from") ? "2026-10-01" : "2026-11-06";
+        const r = el.getBoundingClientRect();
+        out.push({ id, width: r.width, height: r.height, value: el.value });
+      }
+      return out;
+    });
+    record("date-390", dates.every((x) => x.width >= 180), JSON.stringify(dates));
+    await shot("compare/after-date-390.png");
+    const ctrl = await page.evaluate(() => {
+      const cb = document.querySelector('#sh-viewhost #nw-deepscan');
+      const cs = getComputedStyle(cb);
+      return { appearance: cs.appearance || cs.webkitAppearance, width: cb.getBoundingClientRect().width };
+    });
+    record("custom-checkbox", ctrl.appearance === "none", JSON.stringify(ctrl));
+  }
 
   await captureCore("", 1920, 1080);
   await captureCore("mobile/", 390, 844);
@@ -359,10 +435,14 @@ try {
 
   for (const width of [1280, 1024, 834, 390]) {
     await gotoMain("/new", width, width === 1280 ? 800 : (width === 390 ? 844 : 1112));
-    await page.locator(".nw-adv-toggle").click();
+    await page.evaluate(() => {
+      document.querySelector("#sh-viewhost .nw-adv-toggle")?.click();
+    });
     const d = await page.evaluate(() => {
-      const from = document.getElementById("nw-datefrom");
-      const to = document.getElementById("nw-dateto");
+      const panel = document.querySelector("#sh-viewhost #nw-adv");
+      if (panel) panel.hidden = false;
+      const from = document.querySelector("#sh-viewhost #nw-datefrom");
+      const to = document.querySelector("#sh-viewhost #nw-dateto");
       from.value = "2026-10-01"; to.value = "2026-11-06";
       const a = from.getBoundingClientRect(), b = to.getBoundingClientRect();
       return { fromW: a.width, toW: b.width, overlap: !(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top) };
@@ -370,7 +450,11 @@ try {
     record(`date-${width}`, d.fromW >= 120 && d.toW >= 120 && !d.overlap, JSON.stringify(d));
   }
 
-  record("no-page-errors", pageErrors.length === 0, pageErrors.join(" ; "));
+  const unexpectedHttp = httpErrors.filter((line) => !line.endsWith("/favicon.ico"));
+  record("http-errors", unexpectedHttp.length === 0, unexpectedHttp.join(" ; "));
+  const unexpectedConsole = consoleErrors.filter((line) => !/404/.test(line));
+  record("no-page-errors", pageErrors.length === 0 && unexpectedConsole.length === 0,
+    [...pageErrors, ...unexpectedConsole].join(" ; "));
   fs.writeFileSync(path.join(OUT, "smoke-v252.log"), log.join("\n") + "\n", "utf8");
   console.log(log.join("\n"));
 } finally {

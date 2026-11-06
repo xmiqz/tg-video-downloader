@@ -134,7 +134,7 @@
 /* v2.5.2: date range keeps the full native format at every breakpoint.
    The field gets its own meaningful width instead of sharing the 200px
    volume slot; phones stack the two dates rather than clipping the year. */
-.nw-field--date { flex: 1 1 340px; }
+.nw-advrow .nw-field.nw-field--date { flex: 1 1 340px; }
 .nw-dual--date {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
@@ -144,7 +144,7 @@
   min-width: 0;
 }
 @media (max-width: 767.98px) {
-  .nw-field--date { flex-basis: 100%; }
+  .nw-advrow .nw-field.nw-field--date { flex-basis: 100%; }
 }
 @media (max-width: 520px) {
   .nw-dual--date { grid-template-columns: 1fr; gap: 6px; }
