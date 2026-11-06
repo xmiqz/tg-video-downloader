@@ -642,7 +642,7 @@ nav { flex: 1; display: flex; flex-direction: column; gap: 5px; }
 .empty-state h3 { color: var(--ink-dim); font-size: 16px; margin-bottom: 9px; }
 .empty-state p { font-size: 13px; margin-bottom: 20px; }
 .path-row { display: flex; gap: 10px; }
-.path-row input { flex: 1; }
+.path-row input { flex: 1; min-width: 0; text-overflow: ellipsis; }
 .narrow-input { max-width: 130px; }
 .hint { font-size: 12px; color: var(--ink-mute); margin-top: 18px; line-height: 1.7; }
 .check-line { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--ink-dim); }
@@ -1739,15 +1739,15 @@ body.liquid .sheet { position: fixed; }
   .ed-field { gap: 2px; }
   .ed-field, .ed-field.narrow { width: auto; }
   .ed-field.narrow { width: 92px; }
-  .ed-settings .path-row { flex-wrap: nowrap; gap: 6px; }
+  .ed-settings .path-row { flex-wrap: wrap; gap: 6px; }
   .ed-settings .path-row input {
     min-width: 0;
-    flex: 1 1 auto;
+    flex: 1 1 100%;
     min-height: 40px;
     padding: 6px 10px;
   }
   .ed-settings .path-row .btn {
-    flex: none;
+    flex: 1 1 0;
     min-height: 40px;
     padding: 7px 12px;
   }

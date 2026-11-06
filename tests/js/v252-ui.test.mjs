@@ -1,0 +1,102 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const read = (name) => readFile(path.join(ROOT, name), "utf8");
+
+test("v2.5.2 login has an independent scrim and a dense reading card", async () => {
+  const css = await read("web/css/views/login.css");
+  assert.match(css, /\.lg-view::before\s*\{[\s\S]*rgba\(4, 7, 14, \.64\)/,
+    "登录需要独立全屏 scrim");
+  assert.match(css, /\.lg-view::before\s*\{[\s\S]*pointer-events:\s*none/,
+    "scrim 不得接收业务点击");
+  assert.match(css,
+    /html body \.lg-view \.lg-login-card[\s\S]*rgba\(24, 28, 43, \.985\)[\s\S]*blur\(24px\)/,
+    "登录卡需要跨主题的高密度暗色卡面");
+});
+
+test("v2.5.2 tablet and desktop share the no-sampling panel guard", async () => {
+  const shell = await read("web/css/shell.css");
+  const glass = await read("web/css/glass-system.css");
+  assert.match(shell,
+    /@media \(min-width: 768px\)[\s\S]{0,260}\.tk-card,[\s\S]{0,160}backdrop-filter:\s*none\s*!important/,
+    "768 起卡片不得再实时采样背景");
+  assert.match(glass,
+    /@media \(min-width: 768px\)[\s\S]*--tvg-glass-panel-filter:\s*saturate\(165%\) contrast\(1\.06\)/,
+    "玻璃系统同步覆盖平板断点");
+});
+
+test("v2.5.2 mobile appearance is a fixed 2x2 grid", async () => {
+  const css = await read("web/css/views/settings.css");
+  const js = await read("web/js/views/settings.js");
+  assert.match(js, /appearanceSeg\.el\.classList\.add\("st-appearance"\)/);
+  assert.match(css,
+    /\.st-appearance \.u-seg-scroll\s*\{[\s\S]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/,
+    "移动外观必须 2×2，不靠无提示横滑");
+  assert.match(css, /\.st-appearance \.u-seg-item\s*\{[\s\S]*white-space:\s*normal/);
+});
+
+test("v2.5.2 selected thumbs keep a minimum contrast ring", async () => {
+  const shell = await read("web/css/shell.css");
+  const glass = await read("web/css/glass-system.css");
+  assert.match(shell,
+    /\.sh-bar-thumb[\s\S]*color-mix\(in srgb, var\(--color-primary\) 52%/,
+    "底栏选中 thumb 需要主色对比环");
+  assert.match(glass,
+    /html body \.u-seg-thumb[\s\S]*color-mix\(in srgb, var\(--color-primary\) 58%/,
+    "分段/外观 thumb 需要同源对比环");
+});
+
+test("v2.5.2 checkbox and radio share all five states", async () => {
+  const css = await read("web/css/glass-system.css");
+  assert.match(css, /appearance:\s*none/);
+  assert.match(css, /input\[type="checkbox"\]:checked,/);
+  assert.match(css, /input\[type="checkbox"\]:focus-visible,/);
+  assert.match(css, /input\[type="checkbox"\]:disabled,/);
+  assert.match(css, /input\[type="checkbox"\]:not\(:disabled\):hover/);
+  assert.match(css, /input\[type="radio"\]::before/);
+});
+
+test("v2.5.2 date range owns enough width and stacks on phones", async () => {
+  const js = await read("web/js/views/new.js");
+  const css = await read("web/css/views/new.css");
+  assert.match(js, /class: "nw-dual nw-dual--date"/);
+  assert.match(css, /\.nw-field--date\s*\{\s*flex:\s*1 1 340px/);
+  assert.match(css,
+    /@media \(max-width: 520px\)[\s\S]*\.nw-dual--date\s*\{\s*grid-template-columns:\s*1fr/,
+    "窄屏日期字段必须纵向排列");
+});
+
+test("v2.5.2 wallpaper stage and content panels own a reading base", async () => {
+  const css = await read("web/css/glass-system.css");
+  assert.match(css,
+    /html\[data-theme="wallpaper"\] body \.xian-stage-bay[\s\S]*var\(--color-surface\) 96%/,
+    "壁纸舞台需要 token 匹配阅读底");
+  assert.match(css,
+    /html\[data-theme="wallpaper"\] body :is\([\s\S]*\.xian-stage-card-name/,
+    "任务名需要稳定文字层级");
+  assert.match(css,
+    /html\[data-theme="wallpaper"\]\[data-lum="bright"\] body :is\([\s\S]*rgba\(255, 255, 255, \.78\)/,
+    "亮壁纸内容面板需要白阅读底");
+});
+
+test("v2.5.2 long paths elide in the middle and expose copy/open", async () => {
+  await import(pathToFileURL(path.join(ROOT, "web/js/path-format.js")).href);
+  const api = globalThis.TVGPath;
+  assert.ok(api, "path-format.js 应暴露 TVGPath");
+  const long = "D:\\TVD\\深夜频道\\2026\\11\\06\\最终话-超长文件名.mp4";
+  const shown = api.elideMiddle(long, 24);
+  assert.ok(shown.startsWith("D:\\"));
+  assert.ok(shown.includes("…"));
+  assert.ok(shown.endsWith("文件名.mp4"));
+  assert.equal(api.elideMiddle("D:\\TVD\\深夜频道", 24), "D:\\TVD\\深夜频道");
+
+  const html = await read("web/taskedit.html");
+  const js = await read("web/js/taskedit.js");
+  assert.match(html, /id="ed2-folder-copy"[\s\S]*edCopyFolder\(\)/);
+  assert.match(html, /id="ed2-folder-open"[\s\S]*edOpenFolder\(\)/);
+  assert.match(js, /window\.TVGPath\.fullPath\(input\)/);
+});

@@ -3182,10 +3182,103 @@ class _BackdropDriver:
                 time.sleep(0.5)
 
 
+class _ScreenshotSession:
+    """Read-only active-state snapshot used only by the isolated UI harness."""
+
+    def __init__(self, snapshot):
+        self._snapshot = snapshot
+
+    def state(self):
+        return self._snapshot
+
+
+def _run_screenshot_server():
+    """Serve the packaged web UI/backend without creating a visible window.
+
+    This mode exists solely for release screenshot verification. It is gated by
+    TGDL_SCREENSHOT_MODE=1, uses an isolated TGDL_DATA_DIR, and writes the
+    per-process loopback URL/token into that directory for the capture script.
+    The normal desktop launch path never enters this branch.
+    """
+    import json
+    import pathlib
+    import server_app
+
+    data_dir = pathlib.Path(
+        os.environ.get("TGDL_DATA_DIR") or (core.APP_DIR / core.DATA_DIR_NAME)
+    )
+    handle = server_app.start(data_dir)
+    fixture_path = os.environ.get("TGDL_UI_FIXTURE", "").strip()
+    try:
+        if fixture_path:
+            payload = json.loads(
+                pathlib.Path(fixture_path).read_text(encoding="utf-8")
+            )
+            for snapshot in payload.get("active_states", []):
+                task_id = str(snapshot.get("task_id") or "")
+                if task_id:
+                    core.ACTIVE_SESSIONS[task_id] = _ScreenshotSession(snapshot)
+            preview_items = payload.get("preview_items") or []
+
+            def _screenshot_preview(_params, _items=preview_items):
+                job_id, _event = handle.api.jobs.create("search")
+
+                def _finish():
+                    try:
+                        time.sleep(0.25)
+                        handle.api.jobs.update(
+                            job_id, state="running", phase="filter",
+                            phase_detail="已扫描频道消息",
+                            done=0, total=len(_items),
+                        )
+                        handle.api._search_push(job_id, {
+                            "items": _items,
+                            "meta": {
+                                "candidates": 120,
+                                "n_video": len(_items),
+                                "matched": len(_items),
+                                "scanned": 120,
+                                "n_small": 0,
+                                "n_large": 0,
+                                "title": "深夜频道",
+                            },
+                            "final": True,
+                        })
+                        handle.api.jobs.update(
+                            job_id, state="done", phase="filter",
+                            phase_detail=f"已找到 {len(_items)} 条",
+                            done=len(_items), total=len(_items),
+                        )
+                    except Exception:
+                        pass
+
+                threading.Thread(target=_finish, daemon=True).start()
+                return {"ok": True, "job_id": job_id}
+
+            handle.api.preview = _screenshot_preview
+        info = {
+            "base_url": handle.base_url,
+            "token": handle.token,
+            "data_dir": str(data_dir),
+        }
+        (data_dir / ".screenshot-server.json").write_text(
+            json.dumps(info, ensure_ascii=False), encoding="utf-8"
+        )
+        print("[screenshot-mode] ready", flush=True)
+        while True:
+            time.sleep(1)
+    finally:
+        core.ACTIVE_SESSIONS.clear()
+        handle.shutdown()
+
+
 def main():
     if sys.platform != "win32":
         sys.stderr.write("v2.0 原生壳仅支持 Windows 桌面系统。\n")
         return 2
+
+    if os.environ.get("TGDL_SCREENSHOT_MODE") == "1":
+        return _run_screenshot_server()
 
     # 1) PerMonitorV2 DPI 感知，保证物理坐标与放大镜裁剪准确
     try:

@@ -591,6 +591,7 @@ function buildDom() {
     value: "dark", ariaLabel: "界面外观",
     onChange: function (v) { onAppearanceSeg(v); },
   });
+  appearanceSeg.el.classList.add("st-appearance");
   segSilent = false;
   // 壁纸面板：仅在选中「每日壁纸」时展开
   const wpPanel = buildWallpaperPanel();
@@ -621,6 +622,7 @@ function buildDom() {
     id: "st-root", type: "text", class: "st-input", readonly: true,
     autocomplete: "off",
   });
+  if (window.TVGPath) window.TVGPath.bind(rootInput);
   const btnChoose = el("button", {
     class: "u-btn u-btn--ghost", type: "button", text: "浏览",
     onclick: function () { chooseFolder(rootInput, btnChoose); },
@@ -628,6 +630,10 @@ function buildDom() {
   const btnOpen = el("button", {
     class: "u-btn u-btn--ghost", type: "button", text: "打开",
     onclick: function () { openRoot(rootInput, btnOpen); },
+  });
+  const btnCopy = el("button", {
+    class: "u-btn u-btn--ghost", type: "button", text: "复制",
+    onclick: function () { copyRoot(rootInput); },
   });
   const btnSave = el("button", {
     class: "u-btn u-btn--primary", type: "button", text: "保存",
@@ -643,6 +649,7 @@ function buildDom() {
       el("label", { class: "st-sr-only", for: "st-root", text: "下载根目录" }),
       rootInput,
       btnChoose,
+      btnCopy,
       btnOpen,
     ]),
     btnSave,
@@ -735,7 +742,7 @@ async function loadAll() {
   try {
     const r = await window.pywebview.api.get_settings();
     if (r && r.download_root != null && refs.rootInput) {
-      refs.rootInput.value = String(r.download_root);
+      setDownloadPath(refs.rootInput, r.download_root);
     }
     if (r && typeof r.mode === "string" && r.mode !== HOST_MODE) {
       HOST_MODE = r.mode;
@@ -1268,6 +1275,39 @@ async function setAppearance(mode) {
 // ============================================================
 // 下载目录（app.js:2486-2542；锁/失败可见/成功才提示）
 // ============================================================
+function setDownloadPath(input, value) {
+  if (!input) return;
+  if (window.TVGPath) window.TVGPath.setPath(input, value);
+  else input.value = String(value == null ? "" : value);
+}
+
+function pathValue(input) {
+  if (!input) return "";
+  return window.TVGPath ? window.TVGPath.fullPath(input) : input.value;
+}
+
+async function copyRoot(input) {
+  const text = pathValue(input);
+  if (!text) return;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    toast("ok", "路径已复制", text);
+  } catch (e) {
+    toast("error", "复制路径失败", (e && e.message) || String(e));
+  }
+}
+
 async function chooseFolder(input, btn) {
   if (folderPickBusy) return;                       // app.js:2487 互斥锁
   folderPickBusy = true;
@@ -1290,7 +1330,7 @@ async function chooseFolder(input, btn) {
     if (r && r.error) toast("error", "选择目录失败", r.error);
     return;
   }
-  if (r.path) input.value = String(r.path);
+  if (r.path) setDownloadPath(input, r.path);
 }
 
 async function openRoot(input, btn) {
@@ -1301,7 +1341,7 @@ async function openRoot(input, btn) {
   try {
     const ready = await ensureApi();
     if (!ready) throw new Error("bridge not ready");
-    r = await window.pywebview.api.open_folder(input.value);  // 同步直调
+    r = await window.pywebview.api.open_folder(pathValue(input));  // 同步直调
   } catch (e) {
     restore();
     openRootBusy = false;
@@ -1324,7 +1364,7 @@ async function saveRoot(input, btn) {
   try {
     const ready = await ensureApi();
     if (!ready) throw new Error("bridge not ready");
-    r = await window.pywebview.api.set_download_root(input.value);  // 同步直调
+    r = await window.pywebview.api.set_download_root(pathValue(input));  // 同步直调
   } catch (e) {
     restore();
     saveRootBusy = false;

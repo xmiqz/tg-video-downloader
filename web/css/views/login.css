@@ -20,6 +20,25 @@
   padding: 24px;
   overflow-x: hidden;
   overflow-y: auto;
+  isolation: isolate;
+}
+
+/* Independent reading scrim: the layer below the card, above the page.
+   It is intentionally pointer-transparent so the card owns every interaction,
+   and it disappears with the view (no stale click surface after close). */
+.lg-view::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: rgba(4, 7, 14, .64);
+  -webkit-backdrop-filter: blur(10px) saturate(118%);
+  backdrop-filter: blur(10px) saturate(118%);
+  pointer-events: none;
+}
+.lg-view > * {
+  position: relative;
+  z-index: 1;
 }
 
 /* ---------- 2. 登录卡（2.1 .login-card：style.css:241-246） ----------
@@ -233,6 +252,25 @@ html.liquid .lg-login-card {
    只把透光率压到看不穿下层文案的程度。深/亮壁纸各自取 --color-surface。 */
 html[data-theme="wallpaper"] .lg-view .lg-card {
   background-color: color-mix(in srgb, var(--color-surface) 88%, transparent);
+}
+
+/* v2.5.2: one stable three-layer login stack in every material. The scrim
+   stops the task text/progress/buttons from reading through, while the card
+   itself stays a dense dark overlay so its own ink is independent of whether
+   the page behind uses dark, light, wallpaper or liquid tokens. */
+html body .lg-view .lg-login-card,
+html body .lg-view .lg-card {
+  background:
+    linear-gradient(158deg,
+      rgba(24, 28, 43, .985) 0%,
+      rgba(14, 18, 30, .99) 58%,
+      rgba(8, 11, 19, .995) 100%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(128%) !important;
+  backdrop-filter: blur(24px) saturate(128%) !important;
+  border-color: rgba(255, 255, 255, .24) !important;
+  box-shadow:
+    0 30px 90px rgba(2, 4, 12, .68),
+    inset 0 1px 0 rgba(255, 255, 255, .24) !important;
 }
 
 /* 页脚构建信息（版本号 + 构建号）：跟随弹层卡底部，不脱离弹层。 */

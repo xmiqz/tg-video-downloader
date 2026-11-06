@@ -44,6 +44,10 @@
             <input id="ed2-folder" type="text" readonly>
             <button id="ed2-folder-browse" class="btn glass-btn sm"
               onclick="edChooseFolder()">浏览</button>
+            <button id="ed2-folder-copy" class="btn glass-btn sm"
+              onclick="edCopyFolder()">复制</button>
+            <button id="ed2-folder-open" class="btn glass-btn sm"
+              onclick="edOpenFolder()">打开</button>
           </div>
         </div>
         <div class="ed-field narrow">
@@ -157,6 +161,7 @@
     </div>
   </div>
 
+  <script src="js/path-format.js"></script>
   <script type="module" src="js/bridge.js"></script>
   <script src="js/taskedit.js"></script>
 </body>

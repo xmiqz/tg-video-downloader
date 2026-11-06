@@ -62,10 +62,10 @@ test("glass system: account footer does not add a second nav glass sheet", () =>
   assert.match(CSS, /html body \.sh-me[\s\S]{0,260}backdrop-filter:\s*none\s*!important/);
 });
 
-test("glass system: desktop panels do not sample the sidebar hover highlight", () => {
+test("glass system: tablet and desktop panels do not sample the sidebar hover highlight", () => {
   assert.match(CSS,
-    /@media \(min-width: 1024px\)[\s\S]*--tvg-glass-panel-filter:\s*saturate\(165%\) contrast\(1\.06\)/,
-    "桌面 panel 必须保留 v2.5.0 的无空间采样护栏");
+    /@media \(min-width: 768px\)[\s\S]*--tvg-glass-panel-filter:\s*saturate\(165%\) contrast\(1\.06\)/,
+    "768 起平板与桌面 panel 都必须关闭空间采样");
 });
 
 test("glass system: controls reuse nav glass and expose shared sizes", () => {
@@ -106,6 +106,6 @@ test("glass system: standalone task editor uses the shared control language", ()
     "任务编辑批量条未进入 overlay");
 });
 
-test("glass system: release version is 2.5.1", () => {
-  assert.equal(PACKAGE.version, "2.5.1");
+test("glass system: release version is 2.5.2", () => {
+  assert.equal(PACKAGE.version, "2.5.2");
 });

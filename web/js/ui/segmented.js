@@ -113,13 +113,17 @@ export function createSegmented(items, opts) {
     // interaction forces layout. Only reveal it after a real measurement.
     const w = target.offsetWidth || 0;
     const x = target.offsetLeft || 0;
-    if (!w) {
+    const h = target.offsetHeight || 0;
+    const y = target.offsetTop || 0;
+    if (!w || !h) {
       thumb.classList.remove("is-on");
       if (syncTries < 4) scheduleSync();
       return;
     }
     syncTries = 0;
     thumb.style.width = w + "px";
+    thumb.style.height = h + "px";
+    thumb.style.top = y + "px";
     thumb.style.transform = "translateX(" + x + "px)";
     thumb.classList.add("is-on");
   }

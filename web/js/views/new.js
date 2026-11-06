@@ -389,8 +389,14 @@ function buildDom() {
   });
   const minMb = el("input", { id: "nw-minmb", type: "number", min: "0", placeholder: "最小", class: "nw-input" });
   const maxMb = el("input", { id: "nw-maxmb", type: "number", min: "0", placeholder: "最大", class: "nw-input" });
-  const dateFrom = el("input", { id: "nw-datefrom", type: "date", class: "nw-input" });
-  const dateTo = el("input", { id: "nw-dateto", type: "date", class: "nw-input" });
+  const dateFrom = el("input", {
+    id: "nw-datefrom", type: "date", class: "nw-input",
+    "aria-label": "发布日期起点",
+  });
+  const dateTo = el("input", {
+    id: "nw-dateto", type: "date", class: "nw-input",
+    "aria-label": "发布日期终点",
+  });
   const limit = el("input", { id: "nw-limit", type: "number", value: "30", min: "1", class: "nw-input" });
   const parallel = el("input", { id: "nw-parallel", type: "number", value: "2", min: "1", max: "8", class: "nw-input" });
   // 2.3 FIX5K P1：深度扫描开关（突破 5000 条本地扫描上限；旧壳 w-deepscan 同义）
@@ -452,9 +458,11 @@ function buildDom() {
         el("span", { class: "nw-label", text: "体积区间 (MB，可只填一个)" }),
         el("div", { class: "nw-dual" }, [minMb, el("span", { "aria-hidden": "true", text: "—" }), maxMb]),
       ]),
-      el("div", { class: "nw-field" }, [
+      el("div", { class: "nw-field nw-field--date" }, [
         el("span", { class: "nw-label", text: "发布日期区间" }),
-        el("div", { class: "nw-dual" }, [dateFrom, el("span", { "aria-hidden": "true", text: "—" }), dateTo]),
+        el("div", { class: "nw-dual nw-dual--date" }, [
+          dateFrom, el("span", { "aria-hidden": "true", text: "—" }), dateTo,
+        ]),
       ]),
       el("div", { class: "nw-field nw-field--small" }, [
         el("span", { class: "nw-label", text: "排序方式" }),
@@ -462,7 +470,7 @@ function buildDom() {
       ]),
       el("div", { class: "nw-field nw-field--small" }, [
         el("span", { class: "nw-label", text: "深度扫描（可突破 5000 条）" }),
-        deepScan,
+        el("label", { class: "nw-check-hit" }, [deepScan]),
       ]),
     ]),
   ]);

@@ -98,8 +98,10 @@ test("segmented thumb rides the spring token and stops under .still", async () =
 test("segmented thumb waits for a real layout measurement", async () => {
   const src = await readFile(
     path.join(ROOT, "web", "js", "ui", "segmented.js"), "utf8");
-  assert.match(src, /if \(!w\)\s*\{[\s\S]{0,160}thumb\.classList\.remove\("is-on"\)/,
-    "零宽时不得显示 thumb");
+  assert.match(src, /if \(!w \|\| !h\)\s*\{[\s\S]{0,160}thumb\.classList\.remove\("is-on"\)/,
+    "零宽或零高时不得显示 thumb");
+  assert.match(src, /style\.height = h \+ "px"[\s\S]{0,120}style\.top = y \+ "px"/,
+    "2×2 外观网格必须同步 thumb 的行偏移与高度");
   assert.match(src, /scheduleSync\(\);/, "首次挂载后应重新测量");
   assert.match(src, /syncTries < 4/, "无尺寸环境的重测必须有上限");
   assert.match(src, /ResizeObserver/, "首次挂载应使用布局观察器");

@@ -1,0 +1,378 @@
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import fs from "node:fs";
+import path from "node:path";
+
+const args = Object.fromEntries(
+  process.argv.slice(2).map((item) => {
+    const i = item.indexOf("=");
+    return i < 0 ? [item.replace(/^--/, ""), true]
+      : [item.slice(2, i), item.slice(i + 1)];
+  }),
+);
+
+const OUT = path.resolve(args.out || "docs/images");
+const BASE = String(args["base-url"] || "").replace(/\/+$/, "");
+const TOKEN = String(args.token || "");
+const TASK_ID = String(args["task-id"] || "t252_active");
+const RUNTIME = "C:/Users/xqz/.cache/codex-runtimes/codex-primary-runtime/dependencies/node";
+const EDGE = "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe";
+const require = createRequire(path.join(RUNTIME, "noop.cjs"));
+const { chromium } = require("playwright");
+
+if (!BASE || !TOKEN) throw new Error("需要 --base-url 与 --token");
+fs.mkdirSync(OUT, { recursive: true });
+
+const log = [];
+const record = (name, ok, detail = "") => {
+  log.push(`${ok ? "PASS" : "FAIL"} | ${name} | ${detail}`);
+  if (!ok) throw new Error(`${name}: ${detail}`);
+};
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const enc = encodeURIComponent(TOKEN);
+const urlFor = (route) => `${BASE}/#${route}&t=${enc}`;
+
+async function rpc(method, params = []) {
+  const resp = await fetch(`${BASE}/rpc`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${TOKEN}`,
+    },
+    body: JSON.stringify({ method, params }),
+  });
+  const data = await resp.json().catch(() => null);
+  if (!resp.ok) throw new Error(`${method}: HTTP ${resp.status} ${data && data.error || ""}`);
+  return data;
+}
+
+const browser = await chromium.launch({
+  executablePath: EDGE,
+  headless: true,
+  args: ["--disable-gpu", "--force-device-scale-factor=1"],
+});
+const context = await browser.newContext({
+  viewport: { width: 1920, height: 1080 },
+  deviceScaleFactor: 1,
+  locale: "zh-CN",
+});
+const page = await context.newPage();
+page.setDefaultTimeout(20000);
+const pageErrors = [];
+page.on("pageerror", (err) => pageErrors.push(String(err)));
+page.on("console", (msg) => {
+  if (msg.type() === "error") pageErrors.push(msg.text());
+});
+
+async function hideNoise() {
+  await page.evaluate(() => {
+    for (const n of document.querySelectorAll(
+      ".sh-booterr, .sh-guestbar, .u-toaster, .u-toast, .sh-jobdock, #sh-jobdock",
+    )) n.remove();
+    const root = document.getElementById("sh-root");
+    if (root) root.classList.add("still");
+  });
+}
+
+async function settle(extra = 650) {
+  await page.waitForTimeout(extra);
+  await page.evaluate(async () => {
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+  });
+  await hideNoise();
+  await page.waitForTimeout(80);
+}
+
+async function gotoMain(route, width, height) {
+  await page.setViewportSize({ width, height });
+  await page.goto(urlFor(route), { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(
+    (want) => !!window.__t8router && window.__t8router.current === want,
+    route,
+  );
+  await settle();
+}
+
+async function navigateMain(route) {
+  await page.evaluate(async (want) => {
+    await window.__t8router.navigate(want, { force: true });
+  }, route);
+  await page.waitForFunction(
+    (want) => window.__t8router && window.__t8router.current === want,
+    route,
+  );
+  await settle();
+}
+
+async function shot(name, opts = {}) {
+  const file = path.join(OUT, name);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  await hideNoise();
+  await page.screenshot({ path: file, fullPage: !!opts.fullPage });
+  return file;
+}
+
+async function clickAppearance(label) {
+  await gotoMain("/settings", 1920, 1080);
+  await page.waitForFunction(
+    () => document.querySelectorAll(".st-appearance .u-seg-item").length === 4,
+  );
+  const tab = page.locator(".st-appearance .u-seg-item", { hasText: label }).first();
+  await tab.click();
+  await page.waitForTimeout(450);
+}
+
+async function verifyTheme(mode) {
+  return page.evaluate((want) => {
+    const de = document.documentElement;
+    return {
+      theme: de.getAttribute("data-theme"),
+      liquid: de.classList.contains("liquid"),
+      backdrop: (document.getElementById("sh-backdrop")?.style.backgroundImage || ""),
+    };
+  }, mode);
+}
+
+async function activeThemeScreenshot(mode, name) {
+  await navigateMain("/active");
+  if (mode === "liquid") {
+    const bg = `${BASE}/wallpaper/wallpaper-dark.jpg?t=${enc}`;
+    await page.evaluate((url) => {
+      document.documentElement.classList.add("liquid");
+      document.documentElement.setAttribute("data-lum", "dark");
+      const back = document.getElementById("sh-backdrop");
+      if (back) {
+        back.style.backgroundImage = `url("${url}")`;
+        back.style.backgroundSize = "cover";
+        back.style.backgroundPosition = "center";
+      }
+    }, bg);
+    await page.waitForTimeout(350);
+  }
+  if (mode === "bing") {
+    await page.waitForFunction(() =>
+      (document.getElementById("sh-backdrop")?.style.backgroundImage || "").includes("/wallpaper/"),
+    );
+  }
+  await settle(700);
+  await shot(name);
+}
+
+async function captureCore(prefix, width, height) {
+  await gotoMain("/tasks", width, height);
+  await page.waitForSelector(".tk-card, .task-card, .u-empty");
+  await shot(`${prefix}task-library.png`);
+
+  await gotoMain("/settings", width, height);
+  await page.waitForSelector(".st-card");
+  await shot(`${prefix}settings.png`);
+  const appearance = await page.evaluate(() => {
+    const seg = document.querySelector(".st-appearance");
+    const items = Array.from(document.querySelectorAll(".st-appearance .u-seg-item"));
+    const box = seg?.getBoundingClientRect();
+    return {
+      count: items.length,
+      labels: items.map((x) => x.textContent.trim()),
+      visible: items.every((x) => {
+        const r = x.getBoundingClientRect();
+        return r.width > 0 && r.height >= 44 && r.left >= box.left - 1 &&
+          r.right <= box.right + 1;
+      }),
+      overflow: seg ? seg.scrollWidth > seg.clientWidth + 1 : false,
+    };
+  });
+  record(`appearance-visible-${width}`, appearance.count === 4 && appearance.visible && !appearance.overflow,
+    JSON.stringify(appearance));
+
+  await gotoMain("/tasks", width, height);
+  await navigateMain("/login");
+  await page.waitForSelector(".lg-login-card");
+  await settle(1000);
+  const login = await page.evaluate(() => {
+    const card = document.querySelector(".lg-login-card");
+    const scrim = getComputedStyle(document.querySelector(".lg-view"), "::before");
+    const cs = getComputedStyle(card);
+    return {
+      url: location.href,
+      cardOpacity: cs.opacity,
+      cardBackground: cs.backgroundImage,
+      scrim: scrim.backgroundColor,
+      scrimPe: scrim.pointerEvents,
+    };
+  });
+  record(`login-layer-${width}`,
+    login.cardOpacity === "1" && login.scrim !== "rgba(0, 0, 0, 0)" &&
+    login.scrimPe === "none" && /rgba?\(24, 28, 43|rgba?\(14, 18, 30/.test(login.cardBackground),
+    JSON.stringify(login));
+  await shot(`${prefix}login.png`);
+
+  await gotoMain("/new", width, height);
+  await page.locator(".nw-adv-toggle").click();
+  await page.waitForSelector("#nw-adv:not([hidden])");
+  await settle(450);
+  await shot(`${prefix}new-download.png`);
+
+  await page.locator("#nw-channel").fill("@night_channel");
+  await page.locator(".nw-search-btn").click();
+  await page.waitForFunction(() => document.querySelectorAll(".nw-row").length >= 8);
+  await settle(600);
+  const step2 = await page.evaluate(() => ({
+    rows: document.querySelectorAll(".nw-row").length,
+    step: document.querySelector(".nw-step.is-active")?.textContent || "",
+    progress: document.querySelector(".nw-phase")?.textContent || "",
+  }));
+  record(`new-results-${width}`, step2.rows === 8, JSON.stringify(step2));
+  await shot(`${prefix}new-download-results.png`);
+
+  await page.goto(`${BASE}/taskedit.html?id=${encodeURIComponent(TASK_ID)}#t=${enc}`,
+    { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("#ed2-rows .ed-row");
+  await settle(800);
+  const pathState = await page.evaluate(() => {
+    const input = document.getElementById("ed2-folder");
+    return {
+      shown: input.value,
+      full: input.dataset.fullPath || "",
+      title: input.title,
+      copy: !!document.getElementById("ed2-folder-copy"),
+      open: !!document.getElementById("ed2-folder-open"),
+    };
+  });
+  record(`taskedit-path-${width}`,
+    pathState.copy && pathState.open && pathState.full.startsWith("T:\\TVD\\") &&
+    pathState.full === pathState.title,
+    JSON.stringify(pathState));
+  await shot(`${prefix}task-edit.png`);
+}
+
+try {
+  await gotoMain("/active", 1920, 1080);
+  await page.waitForSelector(".xian-stage-bay");
+  await shot("hero-dashboard.png");
+
+  const themeCases = [
+    ["dark", "静态暗", "theme-dark.png"],
+    ["light", "静态亮", "theme-light.png"],
+    ["bing", "每日壁纸", "theme-bing.png"],
+    ["liquid", "液态玻璃", "theme-liquid.png"],
+  ];
+  for (const [mode, label, name] of themeCases) {
+    await clickAppearance(label);
+    const state = await verifyTheme(mode);
+    const ok = mode === "liquid"
+      ? state.liquid === true
+      : mode === "bing"
+        ? state.theme === "wallpaper" && state.backdrop.includes("/wallpaper/")
+        : state.theme === mode;
+    record(`theme-${mode}`, ok, JSON.stringify(state));
+    await activeThemeScreenshot(mode, name);
+  }
+
+  await rpc("wallpaper_select", ["2026-11-05"]);
+  await clickAppearance("每日壁纸");
+  await activeThemeScreenshot("bing", "theme-bing-dark.png");
+  await rpc("wallpaper_select", ["2026-11-06"]);
+
+  await clickAppearance("静态暗");
+  await gotoMain("/active", 1280, 800);
+  await shot("widths/1280-active.png");
+  await gotoMain("/active", 834, 1112);
+  await shot("widths/834-active.png");
+  await gotoMain("/active", 390, 844);
+  await shot("widths/390-active.png");
+
+  await gotoMain("/settings", 834, 1112);
+  const tablet = await page.evaluate(() => {
+    const card = document.querySelector(".st-card");
+    const cs = getComputedStyle(card);
+    return { filter: cs.backdropFilter || cs.webkitBackdropFilter, width: innerWidth };
+  });
+  record("tablet-panel-no-sampling", tablet.filter === "none", JSON.stringify(tablet));
+  await shot("tablet/settings.png");
+  await gotoMain("/tasks", 834, 1112);
+  await shot("tablet/tasks.png");
+
+  await gotoMain("/settings", 390, 844);
+  const bottom = await page.evaluate(() => {
+    const thumb = document.querySelector(".sh-bottombar .sh-bar-thumb");
+    const active = document.querySelector(".sh-bottombar .sh-nav-item.is-active");
+    const cs = thumb ? getComputedStyle(thumb) : null;
+    return {
+      width: thumb?.getBoundingClientRect().width || 0,
+      opacity: cs?.opacity || "",
+      active: active?.textContent.trim() || "",
+    };
+  });
+  record("mobile-bottom-thumb", bottom.width >= 20 && bottom.opacity === "1",
+    JSON.stringify(bottom));
+  await shot("compare/after-bottom-selected-390.png");
+  const mobileAppearance = await page.evaluate(() => {
+    const seg = document.querySelector(".st-appearance");
+    const items = Array.from(document.querySelectorAll(".st-appearance .u-seg-item"));
+    const box = seg.getBoundingClientRect();
+    return {
+      cols: getComputedStyle(seg.querySelector(".u-seg-scroll")).gridTemplateColumns,
+      labels: items.map((x) => x.textContent.trim()),
+      inBounds: items.every((x) => {
+        const r = x.getBoundingClientRect();
+        return r.right <= box.right + 1 && r.left >= box.left - 1 && r.height >= 44;
+      }),
+    };
+  });
+  record("mobile-appearance-2x2", mobileAppearance.cols.split(" ").length === 2 &&
+    mobileAppearance.inBounds, JSON.stringify(mobileAppearance));
+  await shot("compare/after-appearance-390.png");
+
+  await gotoMain("/new", 390, 844);
+  await page.locator(".nw-adv-toggle").click();
+  const dates = await page.evaluate(() => {
+    const out = [];
+    for (const id of ["nw-datefrom", "nw-dateto"]) {
+      const el = document.getElementById(id);
+      el.value = id.endsWith("from") ? "2026-10-01" : "2026-11-06";
+      const r = el.getBoundingClientRect();
+      out.push({ id, width: r.width, height: r.height, value: el.value });
+    }
+    return out;
+  });
+  record("date-390", dates.every((x) => x.width >= 180), JSON.stringify(dates));
+  await shot("compare/after-date-390.png");
+  const ctrl = await page.evaluate(() => {
+    const cb = document.querySelector('#nw-deepscan');
+    const cs = getComputedStyle(cb);
+    return { appearance: cs.appearance || cs.webkitAppearance, width: cb.getBoundingClientRect().width };
+  });
+  record("custom-checkbox", ctrl.appearance === "none", JSON.stringify(ctrl));
+
+  await captureCore("", 1920, 1080);
+  await captureCore("mobile/", 390, 844);
+
+  const exportable = await rpc("tasks_exportable", []);
+  record("tasks-exportable", exportable.ok === true && exportable.tasks.length >= 2,
+    `tasks=${exportable.tasks?.length || 0}`);
+  const exported = await rpc("export_tasks", [[TASK_ID], true]);
+  record("tasks-export", exported.ok === true && exported.count === 1,
+    JSON.stringify({ count: exported.count, filename: exported.filename }));
+  const imported = await rpc("import_tasks", [exported.bundle]);
+  record("tasks-import", imported.ok === true && imported.count === 1,
+    JSON.stringify({ count: imported.count }));
+
+  for (const width of [1280, 1024, 834, 390]) {
+    await gotoMain("/new", width, width === 1280 ? 800 : (width === 390 ? 844 : 1112));
+    await page.locator(".nw-adv-toggle").click();
+    const d = await page.evaluate(() => {
+      const from = document.getElementById("nw-datefrom");
+      const to = document.getElementById("nw-dateto");
+      from.value = "2026-10-01"; to.value = "2026-11-06";
+      const a = from.getBoundingClientRect(), b = to.getBoundingClientRect();
+      return { fromW: a.width, toW: b.width, overlap: !(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top) };
+    });
+    record(`date-${width}`, d.fromW >= 120 && d.toW >= 120 && !d.overlap, JSON.stringify(d));
+  }
+
+  record("no-page-errors", pageErrors.length === 0, pageErrors.join(" ; "));
+  fs.writeFileSync(path.join(OUT, "smoke-v252.log"), log.join("\n") + "\n", "utf8");
+  console.log(log.join("\n"));
+} finally {
+  await browser.close();
+}

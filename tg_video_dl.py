@@ -245,6 +245,10 @@ def relocate_imported_tasks():
     recognizable name falls back to the current root instead of creating a
     path from another machine.
     """
+    if os.environ.get("TGDL_SCREENSHOT_MODE") == "1":
+        # Release screenshots use portable mock paths. Do not rewrite them to
+        # the capture runner's temporary directory.
+        return []
     global _TASK_RELOCATION_DONE
     if _TASK_RELOCATION_DONE:
         return []

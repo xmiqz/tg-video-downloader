@@ -49,6 +49,55 @@ function esc(s) {
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+function edFolderInput() {
+  return document.getElementById("ed2-folder");
+}
+
+function edSetFolderPath(path) {
+  const input = edFolderInput();
+  if (!input) return;
+  if (window.TVGPath) window.TVGPath.setPath(input, path);
+  else input.value = String(path == null ? "" : path);
+}
+
+function edFolderValue() {
+  const input = edFolderInput();
+  if (!input) return "";
+  return window.TVGPath ? window.TVGPath.fullPath(input) : input.value;
+}
+
+async function edCopyFolder() {
+  const text = edFolderValue();
+  if (!text) return;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    alert("路径已复制");
+  } catch (e) {
+    alert("复制路径失败：" + (e && e.message || e));
+  }
+}
+
+function edOpenFolder() {
+  const path = edFolderValue();
+  if (!path) return;
+  api().open_folder(path).then((r) => {
+    if (!r || !r.ok) alert("打开目录失败：" + ((r && r.error) || "目录不存在或无法打开"));
+  }).catch((e) => {
+    alert("打开目录失败：" + (e && e.message || e));
+  });
+}
+
 const STATUS_LABEL = {
   done: ["已完成", "st-done"],
   pending: ["未下载", "st-pending"],
@@ -83,7 +132,9 @@ async function edLoad() {
     "频道：" + (r.task.channel || "");
   document.getElementById("ed2-created").textContent =
     "创建：" + (r.task.created || "");
-  document.getElementById("ed2-folder").value = r.task.folder || "";
+  const folderInput = edFolderInput();
+  if (folderInput && window.TVGPath) window.TVGPath.bind(folderInput);
+  edSetFolderPath(r.task.folder || "");
   document.getElementById("ed2-parallel").value = r.task.parallel || 1;
   document.getElementById("ed2-retries").value =
     (r.task && r.task.retries !== undefined && r.task.retries !== null
@@ -110,7 +161,7 @@ async function edApplyHostMode() {
       if (mode) window.__TVG_HOST_MODE = mode;
     } catch (e) { /* keep the synchronous bridge hint */ }
   }
-  const input = document.getElementById("ed2-folder");
+  const input = edFolderInput();
   const browse = document.getElementById("ed2-folder-browse");
   if (!input) return;
   const headless = mode === "headless";
@@ -590,7 +641,7 @@ function edChooseFolder() {
     }
     if (!r || !r.ok)
       return alert("选择目录失败：" + ((r && r.error) || ""));
-    if (r.path) document.getElementById("ed2-folder").value = r.path;
+    if (r.path) edSetFolderPath(r.path);
   }).catch((e) => {
     settle();
     alert("选择目录失败：" + (e && e.message || e));
@@ -610,8 +661,7 @@ function edOpenFolderPicker() {
   const modal = edFolderModal();
   if (!modal) return;
   modal.classList.remove("hidden");
-  const input = document.getElementById("ed2-folder");
-  const start = input ? input.value.trim() : "";
+  const start = edFolderValue().trim();
   edBrowseFolder(start);
 }
 
@@ -626,8 +676,7 @@ function edFolderUp() {
 
 function edUseCurrentFolder() {
   if (!_edFolderPath) return;
-  const input = document.getElementById("ed2-folder");
-  if (input) input.value = _edFolderPath;
+  edSetFolderPath(_edFolderPath);
   edCloseFolderPicker();
 }
 
@@ -822,7 +871,7 @@ function edSave() {
   if (btn) { btn.disabled = true; btn.textContent = "保存中…"; }
   const fields = {
     title: document.getElementById("ed2-title").value,
-    folder: document.getElementById("ed2-folder").value,
+    folder: edFolderValue(),
     parallel: Number(document.getElementById("ed2-parallel").value),
     move_files: document.getElementById("ed2-move").checked,
     // 2.3 T22：任务级重试次数（空=恢复默认；后端仅收 0..8 整数，转 Number）

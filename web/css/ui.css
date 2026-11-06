@@ -484,9 +484,10 @@ html.liquid .u-toast {
 .u-seg-thumb {
   position: absolute;
   top: 0;
-  bottom: 0;
+  bottom: auto;
   left: 0;
   width: 0;
+  height: 0;
   z-index: 0;
   border-radius: var(--radius-pill);
   background: var(--color-surface-raise);
@@ -495,6 +496,7 @@ html.liquid .u-toast {
   opacity: 0;
   transition: transform var(--dur-md) var(--ease-spring-li),
     width var(--dur-md) var(--ease-spring-li),
+    height var(--dur-md) var(--ease-spring-li),
     opacity var(--dur-sm) var(--ease-standard);
 }
 .u-seg-thumb.is-on { opacity: 1; }
