@@ -7,8 +7,8 @@ services:
       dockerfile: Dockerfile
       args:
         TGDL_VERSION: v2.5.2
-        TGDL_BUILD: 1d1b9f4
-    image: tvg-v252-test:1d1b9f4
+        TGDL_BUILD: 6b6476b
+    image: tvg-v252-test:6b6476b
     container_name: tvg-v2-5-2-test
     restart: unless-stopped
     user: "10001:10001"
