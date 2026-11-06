@@ -9,6 +9,7 @@ HTTP/JSON-RPC 桥接，把引擎的异步能力暴露给 web/ 下的界面。引
 """
 import asyncio
 import base64
+import concurrent.futures
 import contextlib
 import ctypes
 import io
@@ -17,6 +18,7 @@ import logging
 import os
 import pathlib
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -31,11 +33,17 @@ import tg_video_dl as core
 import wallpaper
 from telethon import TelegramClient
 from telethon.errors import (
+    FloodWaitError,
     SessionPasswordNeededError,
     PhoneCodeInvalidError,
     PhoneCodeExpiredError,
     PasswordHashInvalidError,
 )
+
+
+# N-02：preview 本地格式预检（模块级常量，避免依赖实例命名空间）
+_PREVIEW_ENTITY_RE = re.compile(r"[A-Za-z0-9_]{4,}|-?\d+")
+_PREVIEW_PRIVATE_RE = re.compile(r"(?:https?://)?t\.me/c/\d+")
 
 
 def resource_dir():
@@ -364,6 +372,10 @@ class Api:
         # 作业一致：worker finally 清除（含 error/cancelled 全路径）。
         self._scan_tasks = {}
         self._scan_lock = threading.Lock()
+        # N-03：搜索作业协程的在途 asyncio.Task（job_id -> Task，纯内存）。
+        # preview_cancel 经 engine.loop.call_soon_threadsafe(task.cancel)
+        # 立即打断 FloodWait/网络等待；worker 收口时清理。
+        self._search_tasks = {}
         # T51 账号池：唯一调度内核（选号/状态/登录参数化全在
         # core.AccountPool，本层只做参数传递与转发）。event_cb 延迟
         # 绑定 push_event（仿 jobs sink；注入前 no-op）。池侧 emit 传
@@ -1166,16 +1178,36 @@ class Api:
         return {"ok": True}
 
     # ---------- 频道预览（高级搜索；T48 改为 300ms ACK 作业式） ----------
+    # N-02：明显不可能解析的输入（空串、私链 t.me/c/…、非链接/含空格文本）
+    # 在 ACK 前零成本拒绝，避免“ok:true 但永远搜不到结果”。
+    def _preview_precheck(self, params):
+        """preview 本地格式预检（绝不触网）；返回错误文案，空串表示通过。"""
+        if not isinstance(params, dict):
+            return "参数必须是对象"
+        text = str(params.get("channel", "") or "").strip()
+        if not text:
+            return "请输入频道或链接"
+        if _PREVIEW_PRIVATE_RE.search(text):
+            return ("私有频道链接（t.me/c/…）无法直接解析：请改用公开频道的 "
+                    "@用户名 或 t.me/<用户名> 链接")
+        channel_name, _ref_mid = core.parse_channel_ref(text)
+        if not _PREVIEW_ENTITY_RE.fullmatch(channel_name or ""):
+            return f"无法识别的频道或链接：{text}"
+        return ""
+
     def preview(self, params):
         """params: 前端组装的高级搜索参数对象。
 
         T48 起立即返回 {"ok": true, "job_id": ...}（ACK 前不触网），
         后台 daemon 线程消费 core.search_videos_stream 并经 WS 推
         search_items 增量帧 + job_update；done 由终帧（final:true）
-        权威收敛。"""
+        权威收敛。N-02：格式非法输入在 ACK 前直接 ok:false。"""
         if self.client is None:
             print("[GUI] need_login: preview")
             return {"ok": False, "need_login": True}
+        precheck_error = self._preview_precheck(params)
+        if precheck_error:
+            return {"ok": False, "error": precheck_error}
         try:
             channel_in = params.get("channel", "")
             channel_name, ref_mid = core.parse_channel_ref(channel_in)
@@ -1221,18 +1253,55 @@ class Api:
         """搜索作业 daemon 线程（仿 t45_demo 范式）：协程提交到
         engine.loop 消费 stream；任何异常兜底为作业 error，绝不带崩进程
         （cancelled 终态已由 request_cancel 原子置位并直发，registry 对
-        终态 update 静默拒绝，兜底只对未终态生效）。"""
+        终态 update 静默拒绝，兜底只对未终态生效）。
+
+        N-03：preview_cancel 会 task.cancel() 打断在途请求，fut.result()
+        因此抛 concurrent.futures.CancelledError——按 cancelled 收口，
+        不再误记为 error。FloodWaitError（Telethon 主动抛出的限流）在
+        本线程切片等待并透出剩余秒数，等待期间取消同样 1 秒内生效。"""
         try:
             fut = asyncio.run_coroutine_threadsafe(
                 self._search_coro(job_id, cancel_event, channel_name,
                                   ref_mid, params),
                 self.engine.loop)
             fut.result()
+        except concurrent.futures.CancelledError:
+            self.jobs.update(job_id, state="cancelled")
+        except FloodWaitError as e:
+            secs = max(0, int(getattr(e, "seconds", 0) or 0))
+            if not self._search_flood_wait(job_id, cancel_event, secs):
+                return
+            # 等待结束不重跑整个扫描（partial 结果会错位），
+            # 明确失败并给出可重试文案。
+            self.jobs.update(
+                job_id, state="error", phase="flood",
+                phase_detail=f"已等待 {secs} 秒",
+                error=f"Telegram 限流：已等待 {secs} 秒，请稍后重试")
         except Exception as e:  # noqa: BLE001 - worker 线程兜底
             _job_log.warning("search worker 异常 job=%s", job_id,
                               exc_info=True)
             self.jobs.update(job_id, state="error",
                              error=f"{type(e).__name__}: {e}")
+        finally:
+            self._search_tasks.pop(job_id, None)
+
+    def _search_flood_wait(self, job_id, cancel_event, seconds):
+        """N-03：FloodWait 的可中断等待（worker 线程，1 秒切片）。
+
+        phase 置 flood、phase_detail 透出剩余秒数（JobRegistry 12 字段
+        契约不变，不新增键）；cancel_event 置位可在 1 秒内收敛 cancelled。
+        返回 False 表示等待期间被取消。"""
+        deadline = time.monotonic() + max(0, int(seconds or 0))
+        while True:
+            if cancel_event.is_set():
+                self.jobs.update(job_id, state="cancelled")
+                return False
+            remain = deadline - time.monotonic()
+            self.jobs.update(job_id, phase="flood",
+                             phase_detail=f"剩余 {max(0, int(remain))} 秒")
+            if remain <= 0:
+                return True
+            time.sleep(min(1.0, remain))
 
     async def _search_coro(self, job_id, cancel_event, channel_name,
                            ref_mid, params):
@@ -1241,6 +1310,13 @@ class Api:
         _search_previews（cancelled 后已到达部分仍可建任务）。"""
         p = dict(params)
         p.pop("channel", None)
+        # N-03：登记在途 Task，preview_cancel 可立即 cancel 打断网络等待。
+        task = asyncio.current_task()
+        if task is not None:
+            self._search_tasks[job_id] = task
+        if cancel_event.is_set():
+            self.jobs.update(job_id, state="cancelled")
+            return
         # 2.3「更宽上下文命名」开关（与 deep_scan 同款布尔词表解析）
         name_wide = str(p.get("name_wide", "")).strip().lower() in (
             "1", "true", "yes", "y", "on")
@@ -1374,6 +1450,12 @@ class Api:
         作业只会得到 job_not_found/unsupported，无任何副作用。"""
         r = self.jobs.request_cancel(job_id)
         if r == "ok":
+            # N-03：除 cancel_event 外直接 cancel 在途协程，使 FloodWait/
+            # 网络等待中的搜索立即退出（worker 收口为 cancelled）。
+            task = self._search_tasks.get(job_id)
+            if task is not None:
+                with contextlib.suppress(RuntimeError):
+                    self.engine.loop.call_soon_threadsafe(task.cancel)
             return {"ok": True}
         if r == "unsupported":
             return {"ok": False, "unsupported": True}
@@ -1523,7 +1605,14 @@ class Api:
             return {"ok": False, "error": folder_error}
         safe = "".join(c for c in (title or channel) if c not in '\\/:*?"<>|').strip()
         folder_dest = root / (safe or "channel")
-        folder_dest.mkdir(parents=True, exist_ok=True)
+        # N-01：父目录可进入但子目录不可写时 mkdir 会抛 PermissionError，
+        # 这里与 _resolve_runtime_folder 同语义收敛为业务错误（不再冒到
+        # /rpc 变 HTTP 500）。
+        try:
+            folder_dest.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return {"ok": False,
+                    "error": f"目录不可用：{type(e).__name__}: {e}"}
 
         task_items = [core.make_task_item(r) for r in todo]
         tasks = core.build_task_dicts(
@@ -1692,9 +1781,12 @@ class Api:
         return {"ok": False, "error": "未找到该条目"}
 
     def abort_task(self, task_id):
+        """中止任务（N-06 幂等）：会话已收尾/未开始不再报错，重复点击或
+        连接重置后的重试都按“已停止”成功返回，避免前端把 ECONNRESET
+        的补发调用当成失败。"""
         sess = core.ACTIVE_SESSIONS.get(task_id)
         if sess is None:
-            return {"ok": False, "error": "该任务当前没有下载会话"}
+            return {"ok": True, "already_stopped": True}
         sess.request_abort()
         return {"ok": True}
 
@@ -1711,6 +1803,15 @@ class Api:
         t = self._load_one(task_id)
         if t is None:
             return {"ok": False, "error": "任务不存在"}
+        # N-05：小文件常常在用户点“暂停”前就已完成——给明确提示，而不是
+        # 静默改状态（既不误导也不误报失败）。
+        if action == "pause":
+            counts = core.task_counts(t)
+            finished = (counts.get("done", 0) + counts.get("exists", 0)
+                        + counts.get("skipped", 0))
+            if finished >= counts.get("total", 0):
+                return {"ok": False, "completed": True,
+                        "error": "任务已完成，无需暂停"}
         if action == "remove":
             return {"ok": True, "removed": core.remove_items(t, ks)}
         changed = 0

@@ -2142,6 +2142,9 @@ class Monitor:
             self.entries.append(e)
             self.order[(src, p["mid"])] = e
         self.active_count = 0
+        # N-05：最近一次条目状态迁移（供 UI/测试断言“曾经暂停过”）：
+        # {"mid", "src", "status", "ts"}；纯内存，不落盘、不进任务 JSON。
+        self.last_transition = None
         # 边读边下的读取进度（fetched/总数/说明）；非 lazy 模式直接置完成
         self.fetched = 0
         self.fetch_total = len(planned)
@@ -2323,6 +2326,10 @@ class Monitor:
             "parallel": self.parallel,
             "elapsed": snap["now"] - self.t0,
             "agg_speed": round(snap["agg_speed"], 1),
+            # N-04：活动条目数（0 时前端强制速度显示为 —）
+            "active_count": snap["active_count"],
+            # N-05：最近一次状态迁移（无迁移为 None）
+            "last_transition": snap["last_transition"],
             "total_bytes": snap["total_bytes"],
             "total_tot": snap["total_tot"],
             "remaining": snap["remaining"],
@@ -2369,6 +2376,7 @@ class Monitor:
             e = self.order[key]
             if e["started"] is None:
                 e["started"] = time.monotonic()
+                self._note_transition(e, "下载中")
                 e["status"] = "下载中"
                 self.active_count += 1
 
@@ -2384,12 +2392,22 @@ class Monitor:
             while len(e["samples"]) > 2 and now - e["samples"][0][0] > SPEED_WIN_SEC:
                 e["samples"].pop(0)
 
+    def _note_transition(self, e, status):
+        """N-05：记录条目最近一次状态迁移（调用方已持锁）。"""
+        if e["status"] == status:
+            return
+        self.last_transition = {
+            "mid": e["mid"], "src": e["src"], "status": status,
+            "ts": time.time(),
+        }
+
     async def finish(self, key, final):
         async with self.lock:
             e = self.order.get(key)
             if e is None or e["final"]:
                 return                    # 幂等，避免重复计数
             e["final"] = final
+            self._note_transition(e, final)
             e["status"] = final
             e["speed"] = 0.0
             # 完成/已存在：进度补满（部分条目可能未走 add 直接判定）
@@ -2408,6 +2426,7 @@ class Monitor:
             if e is None:
                 return
             e["final"] = ""
+            self._note_transition(e, "等待中")
             e["status"] = "等待中"
             e["speed"] = 0.0
             e["started"] = e["ended"] = None
@@ -2435,6 +2454,7 @@ class Monitor:
         now = time.monotonic()
         active = []
         total_bytes = total_tot = 0
+        active_bytes = 0         # N-04：仅“下载中”条目的已下字节
         done_cnt = fail_cnt = skip_cnt = paused_cnt = 0
         cutoff = now - SPEED_WIN_SEC
         for e in self.entries:
@@ -2453,6 +2473,7 @@ class Monitor:
                         spd = max(0.0, (sm[-1][1] - sm[0][1]) / dt)
                 e["speed"] = spd
                 active.append(e)
+                active_bytes += e["done"]
             total_bytes += e["done"]
             total_tot += e["total"]
             if e["final"] in ("完成", "已存在"):
@@ -2463,10 +2484,12 @@ class Monitor:
                 skip_cnt += 1
             elif e["final"] == "已暂停":
                 paused_cnt += 1
-        # 全局滑动窗口：记录每次快照时“全部条目已下字节总量”，
-        # 总速度 = 最近 SPEED_WIN_SEC 秒的字节增量 / 实际经过时间，每秒更新。
+        # 全局滑动窗口：只记录“下载中”条目的已下字节总量（N-04）。
+        # 条目翻转为“已存在/已跳过/已暂停/完成”时其字节不再计入窗口，
+        # 避免整段大小一次性塞进差分造成 65 MB/s 之类的速度尖峰。
+        # 总速度 = 最近 SPEED_WIN_SEC 秒的活动字节增量 / 实际经过时间。
         win = self.win
-        win.append((now, total_bytes))
+        win.append((now, active_bytes))
         while len(win) > 1 and win[0][0] < cutoff:
             win.pop(0)
         agg_speed = 0.0
@@ -2481,7 +2504,8 @@ class Monitor:
             "total_bytes": total_bytes, "total_tot": total_tot,
             "remaining": remaining, "eta": eta,
             "done": done_cnt, "fail": fail_cnt, "skip": skip_cnt,
-            "paused": paused_cnt,
+            "paused": paused_cnt, "active_count": len(active),
+            "last_transition": self.last_transition,
         }
 
     def _entry_lines(self, e, now, w):

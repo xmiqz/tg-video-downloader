@@ -95,8 +95,11 @@ export function overviewAggregate(states) {
     const s = arr[i] || {};
     totBytes += Number(s.total_bytes) || 0;
     totSize += Number(s.total_tot) || 0;
-    speed += Number(s.agg_speed) || 0;
     const c = s.counts || {};
+    // N-04：没有活动条目的任务不计速度（“已存在/已跳过”不叠加传输速度）
+    const nActive = s.active_count === undefined
+      ? (Number(c.active) || 0) : (Number(s.active_count) || 0);
+    if (nActive > 0) speed += Number(s.agg_speed) || 0;
     cc.done += Number(c.done) || 0;
     cc.skip += Number(c.skip) || 0;
     cc.fail += Number(c.fail) || 0;
@@ -1565,9 +1568,10 @@ function updateCard(card, tid, it, ck) {
     if (mark && mark.textContent !== (on ? "✓" : "")) mark.textContent = on ? "✓" : "";
     cbox.tabIndex = sel && sel.state.active ? "0" : "-1";
   }
-  // 同文不重写（app.js:1452-1455）
+  // 同文不重写（app.js:1452-1455）；N-04：已存在/已跳过不展示速度
   setTextSafely(card.querySelector(".ac-cname"), String(it.name || ""));
-  setTextSafely(card.querySelector(".ac-sp"), humanSpeed(it.speed));
+  const noTransfer = it.status === "已存在" || it.status === "已跳过";
+  setTextSafely(card.querySelector(".ac-sp"), noTransfer ? "—" : humanSpeed(it.speed));
   setTextSafely(card.querySelector(".ac-prog"), human(it.done) + " / " + human(it.size));
   setTextSafely(card.querySelector(".ac-src"), String(it.src || ""));
   // 徽位（app.js:1463-1466）
@@ -2029,7 +2033,18 @@ function doAbort(tid) {
       if (!ready) throw new Error("bridge not ready");
       r = await window.pywebview.api.abort_task(tid);   // 同步直调
     } catch (e) {
+      // N-06：ECONNRESET/超时等传输层失败时先重查活动状态——该任务已
+      // 无活动会话说明中止实际已生效，按成功处理，避免误报“中止失败”。
+      let stillLive = true;
+      try {
+        const live = await window.pywebview.api.active_states();
+        const arr = Array.isArray(live) ? live : [];
+        stillLive = arr.some(function (s) {
+          return String((s && s.task_id) || "") === String(tid);
+        });
+      } catch (e2) { /* 重查失败：按原错误处理 */ }
       pendingOps.release(key);
+      if (!stillLive) { deferRefresh(400); return; }
       return showErr("中止任务失败", e);                  // app.js:1611
     }
     if (needLoginToasted(r)) { pendingOps.release(key); return; }
