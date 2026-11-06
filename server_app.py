@@ -732,23 +732,14 @@ def _prepare_runtime(config):
         api = gui.Api(engine)
         api.data_dir = config.data_dir
         api.cfg = core.load_config()
-        # Restore an existing Telegram session at boot. Without this, a
-        # container restart leaves api.client = None even though the session
-        # file is present, so every RPC answers need_login and the UI spins
-        # forever on the first search. Failure here must not block startup:
-        # the operator can still reach the wizard and log in again.
-        try:
-            restored = api.connect()
-        except Exception as exc:  # noqa: BLE001 - boot must not abort
-            log.warning("启动时恢复 Telegram 会话失败：%s", exc)
-        else:
-            stage = restored.get("stage") if isinstance(restored, dict) else None
-            if stage == "ready":
-                log.info("已从本地会话恢复 Telegram 登录")
-            elif stage == "need_phone":
-                log.info("本地会话未授权，等待浏览器完成登录")
-            else:
-                log.warning("启动时恢复 Telegram 会话未就绪：%s", restored)
+        # Session restore must never sit on the window/server startup critical
+        # path: Telethon can block for the full connect timeout when the
+        # network is slow or a stale session is present. Desktop lets the
+        # first login_state/connect RPC do the restore after the window is up;
+        # headless starts one background restore so a container is immediately
+        # reachable while Telegram reconnects.
+        if not getattr(config, "desktop_mode", False):
+            _start_background_restore(api)
         auth = None
         if config.auth_required:
             auth = server_auth.AuthManager(
@@ -761,6 +752,29 @@ def _prepare_runtime(config):
     except Exception:
         _stop_engine_loop(engine)
         raise
+
+
+def _start_background_restore(api):
+    """Restore a saved Telegram session without blocking server startup."""
+
+    def _run():
+        try:
+            restored = api.connect()
+        except Exception as exc:  # noqa: BLE001 - boot thread must not crash
+            log.warning("后台恢复 Telegram 会话失败：%s", exc)
+            return
+        stage = restored.get("stage") if isinstance(restored, dict) else None
+        if stage == "ready":
+            log.info("已从本地会话恢复 Telegram 登录")
+        elif stage == "need_phone":
+            log.info("本地会话未授权，等待浏览器完成登录")
+        else:
+            log.warning("后台恢复 Telegram 会话未就绪：%s", restored)
+
+    thread = threading.Thread(target=_run, name="telegram-session-restore",
+                              daemon=True)
+    thread.start()
+    return thread
 
 
 def _make_listener(host, port):

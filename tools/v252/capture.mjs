@@ -338,6 +338,33 @@ try {
         name,
         mode === "bing" ? "bright" : "",
       );
+      if (mode === "light") {
+        await navigateMain("/login");
+        await page.waitForSelector(".lg-login-card");
+        await settle(900);
+        const lightInk = await page.evaluate(() => {
+          const card = document.querySelector(".lg-login-card");
+          const title = document.querySelector(".lg-title");
+          const sub = document.querySelector(".lg-sub");
+          const lum = (value) => {
+            const nums = String(value).match(/[\d.]+/g) || [];
+            const [r = 0, g = 0, b = 0] = nums.map(Number);
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          };
+          return {
+            cardBg: getComputedStyle(card).backgroundImage,
+            titleColor: getComputedStyle(title).color,
+            subColor: getComputedStyle(sub).color,
+            titleLum: lum(getComputedStyle(title).color),
+            subLum: lum(getComputedStyle(sub).color),
+          };
+        });
+        record("login-light-1920",
+          lightInk.titleLum > 190 && lightInk.subLum > 170 &&
+          /rgba?\(24, 28, 43/.test(lightInk.cardBg),
+          JSON.stringify(lightInk));
+        await shot("login-light.png");
+      }
     }
 
     await rpc("wallpaper_select", ["2026-11-05"]);
@@ -395,6 +422,53 @@ try {
     record("mobile-appearance-2x2", mobileAppearance.cols.split(" ").length === 2 &&
       mobileAppearance.inBounds, JSON.stringify(mobileAppearance));
     await shot("compare/after-appearance-390.png");
+
+    const thumbState = () => page.evaluate(() => {
+      const seg = document.querySelector(".st-appearance");
+      const thumb = seg?.querySelector(".u-seg-thumb");
+      const active = seg?.querySelector(".u-seg-item.is-active");
+      if (!thumb || !active) return null;
+      const t = thumb.getBoundingClientRect();
+      const a = active.getBoundingClientRect();
+      return {
+        dx: Math.round((t.left - a.left) * 10) / 10,
+        dy: Math.round((t.top - a.top) * 10) / 10,
+        dw: Math.round((t.width - a.width) * 10) / 10,
+        dh: Math.round((t.height - a.height) * 10) / 10,
+      };
+    });
+    let thumb = await thumbState();
+    record("appearance-thumb-390", thumb && Math.abs(thumb.dx) <= 1.5 &&
+      Math.abs(thumb.dy) <= 1.5 && Math.abs(thumb.dw) <= 1.5 &&
+      Math.abs(thumb.dh) <= 1.5, JSON.stringify(thumb));
+    await page.setViewportSize({ width: 834, height: 1112 });
+    await page.waitForTimeout(650);
+    thumb = await thumbState();
+    record("appearance-thumb-reflow-834", thumb && Math.abs(thumb.dx) <= 1.5 &&
+      Math.abs(thumb.dy) <= 1.5 && Math.abs(thumb.dw) <= 1.5 &&
+      Math.abs(thumb.dh) <= 1.5, JSON.stringify(thumb));
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForTimeout(650);
+    thumb = await thumbState();
+    record("appearance-thumb-reflow-390", thumb && Math.abs(thumb.dx) <= 1.5 &&
+      Math.abs(thumb.dy) <= 1.5 && Math.abs(thumb.dw) <= 1.5 &&
+      Math.abs(thumb.dh) <= 1.5, JSON.stringify(thumb));
+    const bottomReflow = await page.evaluate(() => {
+      const thumbEl = document.querySelector(".sh-bottombar .sh-bar-thumb");
+      const active = document.querySelector(".sh-bottombar .sh-nav-item.is-active");
+      if (!thumbEl || !active) return null;
+      const t = thumbEl.getBoundingClientRect();
+      const a = active.getBoundingClientRect();
+      return {
+        dx: Math.round((t.left - a.left) * 10) / 10,
+        dw: Math.round((t.width - a.width) * 10) / 10,
+        opacity: getComputedStyle(thumbEl).opacity,
+      };
+    });
+    record("bottom-thumb-reflow-390",
+      bottomReflow && Math.abs(bottomReflow.dx) <= 1.5 &&
+      Math.abs(bottomReflow.dw) <= 1.5 && bottomReflow.opacity === "1",
+      JSON.stringify(bottomReflow));
 
     await gotoMain("/new", 390, 844);
     await page.evaluate(() => {

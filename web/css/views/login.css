@@ -260,6 +260,15 @@ html[data-theme="wallpaper"] .lg-view .lg-card {
    the page behind uses dark, light, wallpaper or liquid tokens. */
 html body .lg-view .u-card.lg-login-card,
 html body .lg-view .u-card.lg-card {
+  /* The card is intentionally dark in every theme, so its ink must be pinned
+     here as well. Static-light's global overlay-text token is dark; without
+     this local !important table the title/subtitle/labels disappear into the
+     dark card on the real Windows shell. */
+  --color-text: #f2f5ff !important;
+  --color-text-strong: #ffffff !important;
+  --color-text-muted: rgba(238, 242, 252, .82) !important;
+  --color-text-faint: rgba(231, 236, 249, .64) !important;
+  color: #f2f5ff !important;
   background:
     linear-gradient(158deg,
       rgba(24, 28, 43, .985) 0%,

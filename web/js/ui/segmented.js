@@ -63,6 +63,7 @@ export function createSegmented(items, opts) {
   let pendingSync = 0;
   let syncTries = 0;
   let resizeObserver = null;
+  let resizeHandler = null;
 
   const root = doc.createElement("div");
   root.className = "u-seg";
@@ -146,27 +147,35 @@ export function createSegmented(items, opts) {
   }
 
   // The view can append the segmented control one or more frames after
-  // construction (cards, overlays, editor panels). Observe the actual scroll
-  // box so the thumb appears on the first frame where it has real geometry,
-  // then disconnect: this is not a permanent animation loop.
+  // construction (cards, overlays, editor panels), and a later responsive
+  // reflow can move/rewrap it (notably the 2×2 appearance control). Keep a
+  // passive layout observer alive for the component lifetime so the thumb is
+  // re-measured after breakpoint, font, or host-mode layout changes. It only
+  // schedules a paint when layout actually changes; there is no timer loop.
   function watchLayout() {
     const win = typeof window !== "undefined" ? window : null;
     const RO = win && win.ResizeObserver;
     if (typeof RO === "function") {
       const ro = new RO(function () {
         if (disposed) return;
-        if (btns.some(function (b) { return (b.offsetWidth || 0) > 0; })) {
-          syncThumb();
-          if (thumb.classList.contains("is-on")) ro.disconnect();
-        }
+        scheduleSync();
       });
       resizeObserver = ro;
       ro.observe(root);
-    } else {
-      // Older WebViews: a bounded retry after mount is enough. Never keep a
-      // polling timer alive when the host has no layout engine at all.
-      scheduleSync();
     }
+    if (win && typeof win.addEventListener === "function") {
+      resizeHandler = function () { scheduleSync(); };
+      win.addEventListener("resize", resizeHandler, { passive: true });
+    }
+    // Web fonts can change button widths after the first measurement without
+    // resizing the outer root. Re-sync once the font set settles.
+    const fonts = doc.fonts;
+    if (fonts && fonts.ready && typeof fonts.ready.then === "function") {
+      fonts.ready.then(function () {
+        if (!disposed) scheduleSync();
+      }).catch(function () {});
+    }
+    if (typeof RO !== "function") scheduleSync();
   }
 
   function render() {
@@ -234,6 +243,13 @@ export function createSegmented(items, opts) {
       if (resizeObserver) {
         resizeObserver.disconnect();
         resizeObserver = null;
+      }
+      if (resizeHandler) {
+        const win = typeof window !== "undefined" ? window : null;
+        if (win && typeof win.removeEventListener === "function") {
+          win.removeEventListener("resize", resizeHandler);
+        }
+        resizeHandler = null;
       }
       if (root.isConnected) root.remove();
     },

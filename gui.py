@@ -66,7 +66,11 @@ class EngineLoop:
         self.loop.run_forever()
 
     def submit(self, coro):
-        fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        try:
+            fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        except Exception:
+            coro.close()
+            raise
         return fut.result()
 
 
@@ -375,6 +379,12 @@ class Api:
         # 在 client 内存中）。纯内存态：不写盘、不进 JSON、不加配置键。
         # 唯一信号——connect 早退分支与 login_state 的 has_session 共用。
         self._code_sent = False
+        # connect can be requested by the UI probe and by a background
+        # headless restore. Single-flight the probe, and cache a recent
+        # non-ready result briefly so a container browser opening during the
+        # restore does not open a second client on the same session file.
+        self._connect_lock = threading.Lock()
+        self._connect_recent = (0.0, None)
 
     def _resolve_runtime_folder(self, raw, *, create=False):
         """校验无头模式目录；桌面模式保持原有任意目录语义。"""
@@ -786,6 +796,19 @@ class Api:
             pass
 
     def connect(self):
+        with self._connect_lock:
+            if self.client is None:
+                started, recent = self._connect_recent
+                if recent is not None and time.monotonic() - started < 8.0:
+                    return recent
+            result = self._connect_locked()
+            if self.client is None:
+                self._connect_recent = (time.monotonic(), result)
+            else:
+                self._connect_recent = (0.0, None)
+            return result
+
+    def _connect_locked(self):
         # T58 2.2：早退分支按 _code_sent 区分——已发码待验证 → need_code；
         # 已授权就绪 → {"ok":True}（前端等同 ready）。
         if self.client is not None:

@@ -105,7 +105,13 @@ test("segmented thumb waits for a real layout measurement", async () => {
   assert.match(src, /scheduleSync\(\);/, "首次挂载后应重新测量");
   assert.match(src, /syncTries < 4/, "无尺寸环境的重测必须有上限");
   assert.match(src, /ResizeObserver/, "首次挂载应使用布局观察器");
-  assert.match(src, /resizeObserver\.disconnect\(\)/, "测量完成后必须断开观察器");
+  assert.match(src, /resizeObserver\.disconnect\(\)/, "销毁时必须断开观察器");
+  assert.match(src, /resizeHandler = function \(\) \{ scheduleSync\(\); \}/,
+    "窗口尺寸变化必须触发 thumb 重测");
+  assert.match(src, /win\.addEventListener\("resize", resizeHandler/,
+    "窗口/断点变化监听必须挂到 resize");
+  assert.doesNotMatch(src, /if \(thumb\.classList\.contains\("is-on"\)\) ro\.disconnect\(\)/,
+    "thumb 首次定位后不能断开布局观察器，否则重排会留下偏移");
   assert.match(src, /requestAnimationFrame/, "有 rAF 时延后到布局帧");
   assert.match(src, /setTimeout\([\s\S]{0,100}16\)/, "无 rAF 时保留异步兜底");
 });

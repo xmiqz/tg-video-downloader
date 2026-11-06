@@ -267,18 +267,39 @@
 .st-appearance .u-seg-scroll { width: 100%; }
 
 @media (max-width: 767.98px) {
+  html body .st-appearance.u-seg {
+    padding: 0;
+    border: 0;
+    background: transparent !important;
+    box-shadow: none !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
   .st-appearance .u-seg-scroll {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 4px;
+    gap: 10px;
     overflow: visible;
   }
   .st-appearance .u-seg-item {
     width: 100%;
     min-width: 0;
-    padding-inline: 8px;
+    min-height: 58px;
+    padding: 10px 12px;
+    border: 1px solid var(--tvg-glass-nav-border);
+    border-radius: 16px;
+    background: var(--tvg-glass-control-bg);
+    box-shadow: var(--tvg-glass-nav-top-hi);
+    color: var(--color-text-muted);
     white-space: normal;
   }
+  .st-appearance .u-seg-item.is-active {
+    background: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    color: var(--color-text-strong);
+  }
+  .st-appearance .u-seg-thumb { border-radius: 16px; }
 }
 
 /* ---------- 7. 确认弹层多行文案（app.js:650 两行逐字承载） ---------- */
