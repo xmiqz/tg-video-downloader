@@ -167,17 +167,24 @@ jobs:
           mapfile -t FILES < <(find artifacts -type f)
           printf '%s\n' "$TAG"
           # 语义化预发布 tag（如 v2.0.0-beta.1，含连字符）标记为 prerelease，
-          # 正式 tag 才标记 latest；若 Release 已由人工预先创建则走 upload 兜底
+          # 正式 tag 才标记 latest。Release 已存在时必须显式修正 prerelease
+          # 与 latest 状态，只 upload 资产会把历史预发布状态永久留在正式版上。
           if [[ "$TAG" == *-* ]]; then
-            RELEASE_FLAG="--prerelease"
+            CREATE_FLAG="--prerelease"
+            EDIT_FLAG="--prerelease=true --latest=false"
           else
-            RELEASE_FLAG="--latest"
+            CREATE_FLAG="--latest"
+            EDIT_FLAG="--prerelease=false --latest"
           fi
-          gh release create "$TAG" "${FILES[@]}" \
-            --title "$TAG" \
-            --notes "$NOTES" \
-            $RELEASE_FLAG \
-            || gh release upload "$TAG" "${FILES[@]}" --clobber
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TAG" --notes "$NOTES" $EDIT_FLAG
+            gh release upload "$TAG" "${FILES[@]}" --clobber
+          else
+            gh release create "$TAG" "${FILES[@]}" \
+              --title "$TAG" \
+              --notes "$NOTES" \
+              $CREATE_FLAG
+          fi
 
       - name: Set Chinese asset labels
         if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.rebuild_existing == 'true'

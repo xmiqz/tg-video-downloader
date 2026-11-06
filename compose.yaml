@@ -1,14 +1,18 @@
 services:
   tg-video-downloader:
-    image: ${TGVD_IMAGE:-ghcr.io/xmiqz/tg-video-downloader:v2.5.0}
+    image: ${TGVD_IMAGE:-ghcr.io/xmiqz/tg-video-downloader:v2.5.2}
     container_name: tg-video-downloader
     restart: unless-stopped
-    # Run as the unprivileged uid directly: no CAP_SETUID/CAP_SETGID is needed,
-    # so the container stays fully cap-drop'ed (verified on arm64 fnOS).
-    user: "${PUID:-10001}:${PGID:-10001}"
+    # Fixed unprivileged uid/gid, matching the image's /data owner. The named
+    # volume inherits 10001:10001 from the image. A host bind mount must be
+    # chowned to 10001:10001 first; PUID/PGID overrides are intentionally not
+    # offered here because cap_drop: ALL prevents the entrypoint from chowning.
+    user: "10001:10001"
     ports:
       - "${TGDL_PORT:-8787}:8787"
-    # 构建元信息：镜像内已含默认值，这里允许手工覆盖（留空回落 dev）。
+    # Version/build are baked into the image at build time (TGDL_VERSION /
+    # TGDL_BUILD build args). Do not override them with empty values here:
+    # `TGDL_VERSION: ""` would hide the real version from /healthz.
     environment:
       TGDL_HOST: 0.0.0.0
       TGDL_PORT: "8787"
@@ -16,10 +20,6 @@ services:
       TGDL_ALLOWED_ROOTS: /data
       TGDL_COOKIE_SECURE: "${TGDL_COOKIE_SECURE:-0}"
       TGDL_TRUST_PROXY: "${TGDL_TRUST_PROXY:-0}"
-      TGDL_VERSION: "${TGDL_VERSION:-}"
-      TGDL_BUILD: "${TGDL_BUILD:-}"
-      PUID: "${PUID:-10001}"
-      PGID: "${PGID:-10001}"
     volumes:
       # A bind mount (./data:/data) is created by the host as root:root 0755,
       # and this container runs as uid 10001 with cap_drop ALL, so it cannot

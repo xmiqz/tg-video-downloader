@@ -1,5 +1,7 @@
 name: container
 
+# 职责：验证 Docker 镜像（amd64 + arm64），验证通过后才允许发布 GHCR。
+# 顺序固定为 validate -> publish -> verify；publish 不得在 validate 失败时执行。
 on:
   push:
     tags:
@@ -20,8 +22,11 @@ on:
 permissions:
   contents: read
 
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/tg-video-downloader
+
 jobs:
-  validate:
+  validate-amd64:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,67 +38,115 @@ jobs:
         with:
           context: .
           load: true
-          tags: tg-video-downloader:test
+          tags: tg-video-downloader:test-amd64
           cache-from: type=gha,scope=tgvd-amd64
 
-      - name: Container smoke
+      - name: Container smoke (amd64)
         shell: bash
         run: |
           set -euo pipefail
-          # A host directory bind-mounted into /data is created root:root 0755
-          # by the runner, and this container runs as uid 10001 with
-          # cap-drop ALL - it cannot create /data/downloads there and exits
-          # with "Permission denied: '/data/downloads'". A named volume is
-          # created from the image's /data (already owned by 10001:10001),
-          # which is what compose.yaml now uses by default. Exercise that.
           docker volume rm tgvd-smoke-data >/dev/null 2>&1 || true
-          # --user is what keeps this hardened: cap-drop ALL removes
-          # CAP_SETUID/CAP_SETGID, so the entrypoint cannot drop privileges
-          # itself and would previously exit rc 1 here (the workflow never
-          # actually ran before, because requirements-server.txt was missing).
-          cid=$(docker run -d --name tgvd-test \
+          cid=$(docker run -d --name tgvd-test-amd64 \
             --user 10001:10001 \
             --read-only --tmpfs /tmp:rw,size=64m \
             --cap-drop ALL --security-opt no-new-privileges \
-            -e PUID=10001 -e PGID=10001 \
             -v tgvd-smoke-data:/data -p 18787:8787 \
-            tg-video-downloader:test)
-          trap 'docker rm -f tgvd-test >/dev/null 2>&1 || true; docker volume rm tgvd-smoke-data >/dev/null 2>&1 || true' EXIT
-          # Boot took 23s on an ARM NAS; leave headroom on a loaded runner.
+            tg-video-downloader:test-amd64)
+          trap 'docker rm -f tgvd-test-amd64 >/dev/null 2>&1 || true; docker volume rm tgvd-smoke-data >/dev/null 2>&1 || true' EXIT
           ready=0
           for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:18787/healthz >/dev/null; then break; fi
-            if [ "$(docker inspect -f '{{.State.Running}}' tgvd-test)" != "true" ]; then
+            if curl -fsS http://127.0.0.1:18787/healthz >/dev/null; then ready=1; break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' tgvd-test-amd64)" != "true" ]; then
               echo "container exited before becoming ready; logs:" >&2
-              docker logs tgvd-test >&2 || true
+              docker logs tgvd-test-amd64 >&2 || true
               exit 1
             fi
             sleep 1
           done
-          if ! curl -fsS http://127.0.0.1:18787/healthz >/dev/null; then
-            echo "container did not become healthy in 60s; logs:" >&2
-            docker logs tgvd-test >&2 || true
-            exit 1
-          fi
+          test "$ready" = "1" || { docker logs tgvd-test-amd64 >&2 || true; exit 1; }
           curl -fsS http://127.0.0.1:18787/healthz
           test "$(curl -sS -o /tmp/rpc.json -w '%{http_code}' \
             -H 'content-type: application/json' \
             -d '{"method":"login_state","params":[]}' \
             http://127.0.0.1:18787/rpc)" = "401"
-          pid_uid=$(docker exec tgvd-test awk '/^Uid:/{print $2}' /proc/1/status)
-          test "${pid_uid}" = "10001"
-          docker exec --user 10001 tgvd-test python -c \
+          test "$(docker exec tgvd-test-amd64 awk '/^Uid:/{print $2}' /proc/1/status)" = "10001"
+          docker exec --user 10001 tgvd-test-amd64 python -c \
             "from pathlib import Path; Path('/data/write-probe').write_text('ok')"
-          docker exec tgvd-test test -f /data/.setup-token
+          docker exec tgvd-test-amd64 test -f /data/.setup-token
+
+  validate-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build linux/arm64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          load: true
+          tags: tg-video-downloader:test-arm64
+          cache-from: type=gha,scope=tgvd-arm64
+
+      # QEMU 运行验证：只证明 arm64 镜像可启动并完成健康检查，不等同于
+      # 原生 ARM 硬件验证；原生验证仍以 NAS 真机演练为准。
+      - name: Container smoke (arm64 via QEMU)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker volume rm tgvd-smoke-arm64 >/dev/null 2>&1 || true
+          cid=$(docker run -d --name tgvd-test-arm64 \
+            --platform linux/arm64 \
+            --user 10001:10001 \
+            --read-only --tmpfs /tmp:rw,size=64m \
+            --cap-drop ALL --security-opt no-new-privileges \
+            -v tgvd-smoke-arm64:/data -p 18788:8787 \
+            tg-video-downloader:test-arm64)
+          trap 'docker rm -f tgvd-test-arm64 >/dev/null 2>&1 || true; docker volume rm tgvd-smoke-arm64 >/dev/null 2>&1 || true' EXIT
+          ready=0
+          for i in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:18788/healthz >/dev/null; then ready=1; break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' tgvd-test-arm64)" != "true" ]; then
+              echo "arm64 container exited before becoming ready; logs:" >&2
+              docker logs tgvd-test-arm64 >&2 || true
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$ready" = "1" || { docker logs tgvd-test-arm64 >&2 || true; exit 1; }
+          curl -fsS http://127.0.0.1:18788/healthz
+          test "$(docker exec tgvd-test-arm64 uname -m)" = "aarch64"
+          docker exec --user 10001 tgvd-test-arm64 python -c \
+            "from pathlib import Path; Path('/data/write-probe').write_text('ok')"
 
   publish:
+    needs: [validate-amd64, validate-arm64]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    outputs:
+      version: ${{ steps.buildmeta.outputs.version }}
+      short_sha: ${{ steps.buildmeta.outputs.short_sha }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve version and short SHA
+        id: buildmeta
+        shell: bash
+        run: |
+          short="${GITHUB_SHA::7}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="dev"
+          fi
+          echo "short_sha=${short}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -107,11 +160,11 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/tg-video-downloader
+          images: ${{ env.IMAGE }}
           tags: |
             type=ref,event=tag
-            type=sha,prefix=dev-
-            type=raw,value=dev,enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=sha,prefix=dev-,enable=${{ github.ref_type != 'tag' }}
+            type=raw,value=dev,enable=${{ github.event_name == 'workflow_dispatch' && github.ref_type != 'tag' }}
 
       - uses: docker/build-push-action@v6
         with:
@@ -121,9 +174,55 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            TGDL_VERSION=${{ github.ref_name }}
-            TGDL_BUILD=${{ github.sha }}
+            TGDL_VERSION=${{ steps.buildmeta.outputs.version }}
+            TGDL_BUILD=${{ steps.buildmeta.outputs.short_sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: true
           sbom: true
+
+  verify:
+    needs: publish
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify manifest has amd64 and arm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          docker manifest inspect "${IMAGE}:${tag}" > /tmp/manifest.json
+          archs=$(jq -r '.manifests[].platform.architecture' /tmp/manifest.json | sort -u | tr '\n' ' ')
+          echo "architectures: ${archs}"
+          echo "$archs" | grep -qw amd64
+          echo "$archs" | grep -qw arm64
+
+      - name: Verify published image reports the tag version and short SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          short="${GITHUB_SHA::7}"
+          docker volume rm tgvd-verify-data >/dev/null 2>&1 || true
+          cid=$(docker run -d --name tgvd-verify \
+            --user 10001:10001 --read-only --tmpfs /tmp:rw,size=64m \
+            --cap-drop ALL --security-opt no-new-privileges \
+            -v tgvd-verify-data:/data -p 18789:8787 \
+            "${IMAGE}:${tag}")
+          trap 'docker rm -f tgvd-verify >/dev/null 2>&1 || true; docker volume rm tgvd-verify-data >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:18789/healthz > /tmp/health.json; then break; fi
+            sleep 1
+          done
+          cat /tmp/health.json
+          jq -e --arg v "$tag" --arg b "$short" \
+            '.version == $v and .build == $b' /tmp/health.json >/dev/null
