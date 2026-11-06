@@ -511,14 +511,10 @@ html.liquid .u-toast {
    ============================================================ */
 .sh-side { view-transition-name: sh-side; }
 .sh-bottombar { view-transition-name: sh-bottombar; }
-.sh-viewhost { view-transition-name: sh-viewhost; }
-/* 手机档取消视图具名：底部渐隐是 .sh-scroll 的 mask（祖先效果），
-   具名快照只截取元素自身、不带祖先遮罩 → 切页瞬间底部内容会亮一下再被
-   遮回去（用户：黑化遮挡切换瞬间不生效会闪）。取消具名后视图进入带遮罩
-   的根快照，渐隐全程连续；侧栏/底栏仍各自具名保持静止。 */
-@media (max-width: 639.98px) {
-  .sh-viewhost { view-transition-name: none; }
-}
+/* 视图宿主不具名：具名快照只截取元素自身，backdrop-filter 的玻璃底不会被
+   合成进快照，壁纸下切菜单会先闪成透明再变暗。交给根快照后，照片、遮罩和
+   玻璃一起参与过渡；手机档的底部渐隐也保持连续。侧栏/底栏仍各自具名静止。 */
+.sh-viewhost { view-transition-name: none; }
 
 /* 7c. 无 VT 引擎的直切淡入（router.fadeInView 挂类；fill: backwards，
    动画播完由 animationend 摘类，不留动画对象） */

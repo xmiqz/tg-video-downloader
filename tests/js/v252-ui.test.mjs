@@ -86,6 +86,16 @@ test("v2.5.2 date range owns enough width and stacks on phones", async () => {
     "窄屏日期字段必须纵向排列");
 });
 
+test("v2.5.2 mobile naming bar stays compact above the result list", async () => {
+  const css = await read("web/css/views/new.css");
+  assert.match(css,
+    /@media \(max-width: 767\.98px\)[\s\S]*\.nw-naming-acts \.u-btn[\s\S]*min-height:\s*32px/,
+    "移动命名全选/全不选按钮必须收紧到 32px");
+  assert.match(css,
+    /@media \(max-width: 767\.98px\)[\s\S]*\.nw-naming-note[\s\S]*font-size:\s*11px/,
+    "移动命名说明文字必须降级为紧凑辅助行");
+});
+
 test("v2.5.2 wallpaper stage and content panels own a reading base", async () => {
   const css = await read("web/css/glass-system.css");
   const tokens = await read("web/css/tokens.css");

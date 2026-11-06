@@ -135,20 +135,61 @@ function accountNameOf(a) {
   const me = a.me || {};
   if (me.username) return "@" + me.username;
   if (me.first_name || me.name) return me.first_name || me.name;
-  return a.id === "main" ? "主号（未获取资料）" : "小号（未获取资料）";
+  if (a.label) return String(a.label);
+  return a.id === "main" ? "主号" : "小号";
 }
 
 // 舞台上的账号池节点需要具体账号，不再只显示「账号池」三个字。
-function stageAccountsOf(list) {
+function stageAccountsOf(list, usedIds) {
   const arr = Array.isArray(list) ? list : [];
   const out = [];
+  const seen = new Set();
   for (let i = 0; i < arr.length; i++) {
     const a = arr[i];
     if (!a || !a.id) continue;
     if (a.state === "absent") continue;              // 未登录的不上台面
-    out.push({ id: String(a.id), name: accountNameOf(a), state: String(a.state || "") });
+    const id = String(a.id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id: id, name: accountNameOf(a), state: String(a.state || "") });
   }
+  // account_list can lag behind the task snapshot (or omit an alt session
+  // that is still referenced by queued items). Keep the stage honest: show a
+  // compact placeholder instead of silently dropping the small account.
+  const used = usedIds instanceof Set ? usedIds : new Set();
+  used.forEach(function (raw) {
+    const id = String(raw || "");
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    out.push({
+      id: id,
+      name: id === "main" ? "主号" : "小号",
+      state: "referenced",
+    });
+  });
+  // Main first, then small accounts; keeps the node label stable.
+  out.sort(function (a, b) {
+    if (a.id === "main") return -1;
+    if (b.id === "main") return 1;
+    return a.id.localeCompare(b.id);
+  });
   return out;
+}
+
+function collectUsedAccounts(states) {
+  const used = new Set();
+  const arr = Array.isArray(states) ? states : [];
+  for (let i = 0; i < arr.length; i++) {
+    const s = arr[i] || {};
+    const taskAcct = String(s.acct || s.acct_pref || "");
+    if (taskAcct && taskAcct !== "auto") used.add(taskAcct);
+    const items = Array.isArray(s.items) ? s.items : [];
+    for (let j = 0; j < items.length; j++) {
+      const itemAcct = String((items[j] && items[j].acct) || "");
+      if (itemAcct && itemAcct !== "auto") used.add(itemAcct);
+    }
+  }
+  return used;
 }
 
 // S12 舞台场景（T66）：active_states 快照 + acct_hint → stage.update 单帧输入。
@@ -232,7 +273,7 @@ export function buildStageScene(states, focusId, hint, acctList) {
     focusId: focus ? focus.task_id : "",
     operation: "download",
     countdown: countdown,
-    accounts: stageAccountsOf(acctList),
+    accounts: stageAccountsOf(acctList, collectUsedAccounts(arr)),
   };
 }
 

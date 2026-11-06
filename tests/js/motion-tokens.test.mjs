@@ -116,12 +116,14 @@ test("segmented thumb waits for a real layout measurement", async () => {
   assert.match(src, /setTimeout\([\s\S]{0,100}16\)/, "无 rAF 时保留异步兜底");
 });
 
-test("shell slots carry view-transition-name (views morph instead of pop)", async () => {
+test("shell slots keep the sidebar still while the view host uses the root snapshot", async () => {
   const css = await ownedRules(path.join(CSS, "ui.css"));
-  for (const name of ["sh-side", "sh-bottombar", "sh-viewhost"]) {
+  for (const name of ["sh-side", "sh-bottombar"]) {
     assert.match(css, new RegExp("\\." + name + "\\s*\\{[^}]*view-transition-name"),
       `.${name} 缺少 view-transition-name`);
   }
+  assert.match(css, /\.sh-viewhost\s*\{[^}]*view-transition-name:\s*none/,
+    "视图宿主不能具名，否则壁纸玻璃会在切页时先闪成透明");
   assert.match(css, /\.u-view-enter\s*\{[^}]*backwards/,
     "无 VT 引擎的直切淡入必须 fill: backwards（播完不留动画对象）");
 });

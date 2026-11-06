@@ -281,6 +281,30 @@ test("TR5-K normAcctHint 嵌套 / 扁平 / 缺 account_id", () => {
     { account_id: "x", reason: "", has_alt: null }, "非 boolean has_alt 归一 null");
 });
 
+test("TR5-M stage account pool keeps the small account and hides raw missing-profile text", () => {
+  const scene = A.buildStageScene([
+    { task_id: "t1", phase: "downloading", items: [{ status: "下载中", acct: "alt1" }] },
+  ], "t1", "", [{ id: "main", state: "ready", me: null }]);
+  deep(scene.accounts, [
+    { id: "main", name: "主号", state: "ready" },
+    { id: "alt1", name: "小号", state: "referenced" },
+  ], "账号列表缺小号时，任务引用仍补出小号占位");
+  ok(scene.accounts.every((a) => !a.name.includes("未获取资料")),
+    "舞台不能显示「未获取资料」这种内部状态");
+  deep(A.buildStageScene([
+    { task_id: "t2", acct: "auto", items: [{ status: "下载中", acct: "auto" }] },
+  ], "t2", "", []).accounts, [], "auto 是分流策略，不是账号节点");
+
+  const named = A.buildStageScene([], "", "", [
+    { id: "main", state: "ready", me: { username: "boss" } },
+    { id: "alt1", state: "ready", me: { first_name: "备份号" } },
+  ]);
+  deep(named.accounts, [
+    { id: "main", name: "@boss", state: "ready" },
+    { id: "alt1", name: "备份号", state: "ready" },
+  ], "有资料时仍显示真实账号名，主号排在小号前");
+});
+
 test("TR5-L 模块形状与零副作用", () => {
   eq(A.path, "active", "path 导出");
   eq(A.title, "下载中 - TG 视频下载器", "title 导出");

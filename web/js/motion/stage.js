@@ -1505,8 +1505,13 @@ function queueMax() {
     // 账号池不写抽象名：直接显示真实账号（首个）+ 总数，否则认不出是哪个号。
     const acctList = Array.isArray(sceneAccounts) ? sceneAccounts : [];
     const first = acctList[0] || null;
-    const acctLabel = first
+    let acctLabel = first
       ? String(first.name || first.id || "账号池") : "账号池";
+    if (acctList.length > 1) {
+      // The node is small, but dropping the small account made the stage look
+      // like only the main account existed. Keep one compact suffix.
+      acctLabel += " + " + String(acctList[1].name || "小号");
+    }
     const acctSub = acctList.length
       ? "账号池 · 共 " + acctList.length + " 个" : "账号池 · 未登录";
     const labels = {

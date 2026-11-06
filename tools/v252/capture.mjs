@@ -382,6 +382,20 @@ try {
     await rpc("wallpaper_select", ["2026-11-05"]);
     await clickAppearance("每日壁纸");
     await activeThemeScreenshot("bing", "theme-bing-dark.png", "dark");
+    await gotoMain("/active", 1920, 1080);
+    await settle(700);
+    await page.evaluate(() => {
+      document.querySelector('.sh-side [data-nav="settings"]')?.click();
+    });
+    await page.screenshot({
+      path: path.join(OUT, "compare", "nav-wallpaper-immediate.png"),
+      animations: "allow",
+    });
+    await settle(500);
+    await page.screenshot({
+      path: path.join(OUT, "compare", "nav-wallpaper-settled.png"),
+      animations: "allow",
+    });
     await rpc("wallpaper_select", ["2026-11-06"]);
 
     await clickAppearance("静态暗");
