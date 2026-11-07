@@ -71,7 +71,7 @@ Telegram 频道的视频通常散落在消息、相册和转发内容里。临�
 </tr>
 <tr>
 <td width="50%"><img src="docs/images/task-edit.png" alt="任务编辑"></td>
-<td width="50%"></td>
+<td width="50%"><img src="docs/images/task-edit-folder.png" alt="编辑任务 · 目录选择"></td>
 </tr>
 </table>
 
@@ -111,6 +111,7 @@ Telegram 频道的视频通常散落在消息、相册和转发内容里。临�
 <td width="25%"><img src="docs/images/mobile/hero-dashboard.png" alt="移动端下载中"></td>
 <td width="25%"><img src="docs/images/mobile/login.png" alt="移动端登录"></td>
 <td width="25%"><img src="docs/images/mobile/task-edit.png" alt="移动端任务编辑"></td>
+<td width="25%"><img src="docs/images/mobile/task-edit-folder.png" alt="移动端编辑任务 · 目录选择"></td>
 </tr>
 </table>
 

@@ -141,6 +141,8 @@ test("v2.5.2 public screenshot matrix is present and README stays neutral", asyn
     "docs/images/theme-light.png",
     "docs/images/theme-bing.png",
     "docs/images/theme-liquid.png",
+    "docs/images/task-edit-folder.png",
+    "docs/images/mobile/task-edit-folder.png",
     "docs/images/mobile/settings.png",
     "docs/images/tablet/settings.png",
     "docs/images/compare/login-1920-before-after.png",

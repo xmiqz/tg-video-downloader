@@ -16,6 +16,7 @@ const BASE = String(args["base-url"] || "").replace(/\/+$/, "");
 const TOKEN = String(args.token || "");
 const TASK_ID = String(args["task-id"] || "t252_active");
 const QUICK = !!args.quick;
+const ONLY = String(args.only || "");
 const RUNTIME = "C:/Users/xqz/.cache/codex-runtimes/codex-primary-runtime/dependencies/node";
 const EDGE = "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe";
 const require = createRequire(path.join(RUNTIME, "noop.cjs"));
@@ -328,9 +329,122 @@ async function captureCore(prefix, width, height) {
     pathState.full === pathState.title,
     JSON.stringify(pathState));
   await shot(`${prefix}task-edit.png`);
+
+  // 目录选择：编辑任务里的「浏览」在浏览器/服务端模式下打开目录选择弹层。
+  // 采集脚本以 headless 服务方式驱动打包 EXE，走的正是这条真实路径。
+  await page.evaluate(() => {
+    // The host hint is derived synchronously from the injected bridge; in the
+    // screenshot server there is no pywebview API, so force the headless
+    // branch the same way a browser pointed at the NAS build would behave.
+    window.__TVG_HOST_MODE = "headless";
+  });
+  // 任务目录本身是最深一级（没有子目录），直接截图只会看到「此目录下没有
+  // 子文件夹」。直接调用页面内的选择器函数浏览上一级，既避开可能覆盖页面
+  // 的登录层，也仍然走真实的 browse_folders RPC。
+  await page.evaluate(async () => {
+    edOpenFolderPicker();
+    await edBrowseFolder("T:\\TVD\\深夜频道\\第12季");
+  });
+  await page.waitForSelector("#ed2-folder-modal:not(.hidden)");
+  await page.waitForFunction(
+    () => document.querySelectorAll("#ed2-folder-list .ed-folder-row").length > 0,
+  );
+  await settle(500);
+  const picker = await page.evaluate(() => {
+    const modal = document.getElementById("ed2-folder-modal");
+    const current = document.getElementById("ed2-folder-current");
+    return {
+      open: !!modal && !modal.classList.contains("hidden"),
+      current: current ? current.value : "",
+      roots: document.querySelectorAll("#ed2-folder-roots .btn").length,
+      dirs: document.querySelectorAll("#ed2-folder-list .ed-folder-row").length,
+      status: document.getElementById("ed2-folder-status")?.textContent || "",
+    };
+  });
+  record(`taskedit-folder-picker-${width}`,
+    picker.open && picker.dirs > 0 && picker.roots > 0 &&
+    picker.current.startsWith("T:\\TVD\\"),
+    JSON.stringify(picker));
+  await shot(`${prefix}task-edit-folder.png`);
 }
 
 try {
+  if (ONLY === "folder") {
+    // 只补采集「编辑任务 · 目录选择」：完整流程里主题循环会被登录遮罩拦截，
+    // 与本步骤无关，单独跑才能稳定复现真实弹层。
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await page.goto(
+      `${BASE}/taskedit.html?id=${encodeURIComponent(TASK_ID)}#t=${enc}`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await page.waitForSelector("#ed2-rows .ed-row");
+    await settle(800);
+    await page.evaluate(async () => {
+      edOpenFolderPicker();
+      // 任务目录是最深一级；从输入框里的真实路径推导上一级，避免硬编码
+      // 盘符与产品代码 resolve() 之后的实际路径不一致。
+      const input = document.getElementById("ed2-folder-current");
+      const cur = String(input?.value || "").replace(/[\\/]+$/, "");
+      const parent = cur.replace(/[\\/][^\\/]+$/, "");
+      await edBrowseFolder(parent || cur);
+    });
+    await page.waitForSelector("#ed2-folder-modal:not(.hidden)");
+    // 浏览到下载根（…/downloads），展示真实存在的频道目录。
+    await page.evaluate(async () => {
+      for (let i = 0; i < 6; i++) {
+        const input = document.getElementById("ed2-folder-current");
+        const cur = String(input?.value || "").replace(/[\\/]+$/, "");
+        if (/[\\/]downloads$/i.test(cur)) return;
+        const parent = cur.replace(/[\\/][^\\/]+$/, "");
+        if (!parent || parent === cur) return;
+        await edBrowseFolder(parent);
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    });
+    await settle(1200);
+    console.log("PICKER PROBE " + JSON.stringify(await page.evaluate(() => ({
+      status: document.getElementById("ed2-folder-status")?.textContent || "",
+      current: document.getElementById("ed2-folder-current")?.value || "",
+      dirs: document.querySelectorAll("#ed2-folder-list .ed-folder-row").length,
+      roots: Array.from(document.querySelectorAll("#ed2-folder-roots .btn"))
+        .map((b) => b.title),
+    }))));
+    await settle(300);
+    await shot("task-edit-folder.png");
+    // 移动端同一功能，补齐 README 移动端最后一列。
+    await page.setViewportSize({ width: 390, height: 844 });
+    await settle(600);
+    await shot("mobile/task-edit-folder.png");
+    const mobileBox = await page.evaluate(() => {
+      const el = document.getElementById("ed2-folder-current");
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height };
+    });
+    if (mobileBox) {
+      fs.writeFileSync(path.join(OUT, "mobile", "task-edit-folder.redact.json"),
+        JSON.stringify({ box: mobileBox, dpr: 1 }), "utf8");
+    }
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await settle(300);
+    // 公开素材不得出现采集机的个人目录：记录路径输入框位置，由
+    // run_capture.py 在成图上做模糊遮蔽（与登录页手机号打码同一口径）。
+    const box = await page.evaluate(() => {
+      const el = document.getElementById("ed2-folder-current");
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height };
+    });
+    if (box) {
+      fs.writeFileSync(path.join(OUT, "task-edit-folder.redact.json"),
+        JSON.stringify({ box, dpr: 1 }), "utf8");
+    }
+    record("taskedit-folder-picker-only", true, "1920x1080");
+    console.log(log.join("\n"));
+    await browser.close();
+    process.exit(0);
+  }
+
   await gotoMain("/active", 1920, 1080);
   await page.waitForSelector(".xian-stage-bay");
   await shot("hero-dashboard.png");
