@@ -24,6 +24,12 @@ on:
 permissions:
   contents: write
 
+# 同一个 Tag 同时只跑一条发布流水线：第二次触发排队等待，而不是并行，
+# 也不是取消正在进行的正式发布（cancel-in-progress 必须为 false）。
+concurrency:
+  group: release-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   # 发布前置校验：决定这次运行是否允许写 Release，并锁定唯一的源码提交。
   # 规则在 tools/release_preflight.py 中实现并有单元测试，避免只靠 workflow
@@ -168,7 +174,11 @@ jobs:
     needs: [preflight, build]
     runs-on: ubuntu-latest
     steps:
+      # Release Notes（release-notes/<tag>.md）、资产标签脚本与发布逻辑都取自
+      # 这里 checkout 的仓库内容，必须锁定到六平台构建所用的同一提交。
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.source_sha }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -270,6 +280,34 @@ jobs:
           set_label "TGVideoDownloader_linux_arm64" "Linux ARM64 · 命令行版"
           set_label "TGVideoDownloader_mac_x64" "macOS Intel · 命令行版（附 .command 双击启动）"
           set_label "TGVideoDownloader_mac_arm64" "macOS Apple Silicon · 命令行版（附 .command 双击启动）"
+          set_label "TGVideoDownloader_mac_x64.command" "macOS Intel · 双击启动脚本"
+          set_label "TGVideoDownloader_mac_arm64.command" "macOS Apple Silicon · 双击启动脚本"
+
+      # 重建走 --clobber，若中途中断可能留下「新资产 + 旧资产」的混合状态。
+      # 上传后逐项比对远端 digest 与本地产物，确保 Release 资产确实等于本次构建。
+      - name: Verify uploaded asset digests
+        if: needs.preflight.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.preflight.outputs.release_tag }}"
+          mapfile -t FILES < <(find artifacts -type f)
+          test "${#FILES[@]}" -gt 0 || { echo "::error::没有可校验的构建产物"; exit 1; }
+          failed=0
+          for f in "${FILES[@]}"; do
+            name=$(basename "$f")
+            local_sha=$(sha256sum "$f" | awk '{print $1}')
+            remote_sha=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+              --jq ".assets[]|select(.name==\"${name}\")|.digest" \
+              | sed 's/^sha256://' || true)
+            if [ "$remote_sha" != "$local_sha" ]; then
+              echo "::error::${name} 远端 digest=${remote_sha:-<missing>} 与本地 ${local_sha} 不一致"
+              failed=1
+            fi
+          done
+          test "$failed" = "0"
 
       - name: Create pre-release (manual dispatch)
         if: needs.preflight.outputs.publish != 'true'

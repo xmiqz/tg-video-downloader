@@ -34,6 +34,12 @@ on:
 permissions:
   contents: read
 
+# 正式发布按 Tag 串行：排队而不取消，避免两条流水线同时写同一个镜像标签。
+# PR 验证按分支串行并取消旧运行，节省 runner。
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.ref) || format('release-{0}', inputs.tag || github.ref_name) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/tg-video-downloader
 

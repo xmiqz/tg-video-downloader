@@ -132,6 +132,55 @@ def test_build_refuses_to_overwrite_assets_from_another_commit():
         "写 Release、打标签与上传都必须由 publish 输出放行")
 
 
+def test_release_job_checkout_is_pinned_to_built_source():
+    text = _read(BUILD)
+    release = text.split("\n  release:\n", 1)[1]
+    assert "uses: actions/checkout@v4" in release, "release job 必须 checkout 仓库"
+    pinned = "ref: ${{ needs.preflight.outputs.source_sha }}"
+    assert pinned in release, (
+        "release job 的 checkout 必须锁定到六平台构建的同一提交，"
+        "否则 Release Notes 与发布脚本可能来自另一个提交")
+    assert release.index(pinned) < release.index("Download all artifacts"), (
+        "checkout 必须发生在读取 release-notes 与处理资产之前")
+
+
+def test_release_upload_verifies_asset_digests():
+    text = _read(BUILD)
+    assert "Verify uploaded asset digests" in text, (
+        "重建后必须核对远端资产 digest，避免中断留下新旧混合的 Release")
+    assert "sha256sum" in text and "|.digest" in text
+
+
+def test_macos_command_assets_have_labels():
+    text = _read(BUILD)
+    assert 'set_label "TGVideoDownloader_mac_x64.command"' in text, (
+        "macOS Intel 的 .command 资产缺少中文标签")
+    assert 'set_label "TGVideoDownloader_mac_arm64.command"' in text, (
+        "macOS Apple Silicon 的 .command 资产缺少中文标签")
+
+
+def test_build_release_runs_are_serialized_per_tag():
+    text = _read(BUILD)
+    block = re.search(r"^concurrency:\n((?:  .*\n)+)", text, re.M)
+    assert block, "build.yml 缺少 concurrency 配置"
+    body = block.group(1)
+    assert "group: release-${{ inputs.release_tag || github.ref_name }}" in body, (
+        "同一 Tag 的发布必须进入同一个并发组")
+    assert "cancel-in-progress: false" in body, (
+        "不得取消正在进行的正式发布，只能排队")
+
+
+def test_container_release_runs_are_serialized_per_tag():
+    text = _read(CONTAINER)
+    assert (
+        "group: ${{ github.event_name == 'pull_request' && "
+        "format('pr-{0}', github.ref) || "
+        "format('release-{0}', inputs.tag || github.ref_name) }}"
+    ) in text, "container 缺少按 Tag 串行的并发组"
+    assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in text, (
+        "只有 PR 验证可以取消旧运行，正式发布不得被取消")
+
+
 def test_build_dispatch_dev_release_uses_resolved_sha():
     text = _read(BUILD)
     assert 'TAG="dev-${SRC:0:7}"' in text, (
