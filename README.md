@@ -81,7 +81,9 @@ Telegram 频道的视频通常散落在消息、相册和转发内容里。临�
 
 ### 四种外观
 
-同一页面、同一任务状态分别截图。每日壁纸跟随 Bing 每日一图，也可保存历史壁纸或上传自己的背景。
+以下均为 Windows 桌面版打包程序的实机截图（v2.5.1 运行时画面），保留原始截图内容，未做拼接或重绘。
+静态暗、静态亮、每日壁纸取自同一页面、同一任务状态；液态玻璃取「新建下载 · 选择视频」页，
+以便看清实时采样窗口后方画面形成的磨砂玻璃效果。每日壁纸跟随 Bing 每日一图，也可保存历史壁纸或上传自己的背景。
 
 <table>
 <tr>
@@ -90,7 +92,7 @@ Telegram 频道的视频通常散落在消息、相册和转发内容里。临�
 </tr>
 <tr>
 <td width="50%"><img src="docs/images/theme-bing.png" alt="每日壁纸"></td>
-<td width="50%"><img src="docs/images/theme-liquid.png" alt="液态玻璃"></td>
+<td width="50%"><img src="docs/images/theme-liquid.png" alt="液态玻璃（新建下载 · 选择视频页）"></td>
 </tr>
 </table>
 

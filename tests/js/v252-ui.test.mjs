@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -154,4 +155,29 @@ test("v2.5.2 public screenshot matrix is present and README stays neutral", asyn
     "README 不得包含个人目录、worktree、evidence 路径或测试服务器信息");
   assert.match(readme, /docs\/images\/theme-dark\.png/,
     "README 需要引用四主题截图矩阵");
+});
+
+test("four appearance shots are the v2.5.1 real-device captures", async () => {
+  // 用户要求另外四种外观改用 v2.5.1 实机截图：文件必须逐字节等于 v2.5.1 素材，
+  // 且必须保留 1920x1269（含窗口标题栏）的原始比例，防止被重绘或拉伸替换。
+  const expected = {
+    "docs/images/theme-dark.png":
+      "32A054F3AED138B5609210C430230D4922A04CDA2777B558535DC915357C279A",
+    "docs/images/theme-light.png":
+      "3BA15F6F67383776F797D2D3E7292F407C5DB304D1366F4E3B78C1212D910C59",
+    "docs/images/theme-bing.png":
+      "19E6CAF8E24FB69C656F61DAAD8595E6AA0E5B312A8C4287BFE8CA0656DB5070",
+    "docs/images/theme-liquid.png":
+      "56167115E280DFF8E7744D34D3BC179670535765DD76DA4171666EF5EC0E2631",
+  };
+  for (const [rel, sha] of Object.entries(expected)) {
+    const buf = readFileSync(path.join(ROOT, rel));
+    const digest = createHash("sha256").update(buf).digest("hex").toUpperCase();
+    assert.equal(digest, sha, `${rel} 必须与 v2.5.1 实机截图逐字节一致`);
+    // PNG IHDR: 8 字节签名 + 4 长度 + 4 "IHDR" + 4 宽 + 4 高
+    assert.equal(buf.readUInt32BE(16), 1920, `${rel} 宽度必须保持 1920`);
+    assert.equal(buf.readUInt32BE(20), 1269, `${rel} 高度必须保持 1269`);
+  }
+  assert.ok(!existsSync(path.join(ROOT, "docs/images/theme-bing-dark.png")),
+    "已被 v2.5.1 每日壁纸实机图取代的旧图应删除");
 });
