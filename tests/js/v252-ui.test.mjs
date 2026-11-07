@@ -183,3 +183,15 @@ test("four appearance shots are the v2.5.1 real-device captures", async () => {
   assert.ok(!existsSync(path.join(ROOT, "docs/images/theme-bing-dark.png")),
     "已被 v2.5.1 每日壁纸实机图取代的旧图应删除");
 });
+
+test("folder-picker screenshots are present for both layouts", async () => {
+  // 像素级脱敏校验在 Python 侧（tests/test_screenshot_redaction.py），
+  // 这里只保证两张图确实被采集并入库，避免漏提交导致 README 链接失效。
+  for (const rel of ["docs/images/task-edit-folder.png",
+    "docs/images/mobile/task-edit-folder.png"]) {
+    assert.ok(existsSync(path.join(ROOT, rel)), `缺少截图 ${rel}`);
+  }
+  const readme = await read("README.md");
+  assert.match(readme, /docs\/images\/task-edit-folder\.png/);
+  assert.match(readme, /docs\/images\/mobile\/task-edit-folder\.png/);
+});

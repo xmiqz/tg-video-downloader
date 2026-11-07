@@ -32,28 +32,83 @@ def _unsubst(drive: str) -> None:
         subprocess.run(["subst", drive, "/D"], capture_output=True, text=True)
 
 
-def _redact_folder_path(out: pathlib.Path) -> None:
-    """Blur the folder-picker path field so public shots never show local dirs."""
+FOLDER_PICKER_SHOTS = (
+    ("task-edit-folder", "task-edit-folder"),
+    ("mobile/task-edit-folder", "mobile/task-edit-folder"),
+)
+
+# 路径字段里的文字是浅色（>140 灰度）。模糊后必须一个亮像素都不剩，
+# 否则说明脱敏没有真正生效。
+REDACT_BRIGHT_LIMIT = 140
+
+
+class RedactionError(RuntimeError):
+    """Raised when a public screenshot cannot be proven to be redacted."""
+
+
+def _require_pil():
     try:
         from PIL import Image, ImageFilter
-    except Exception:
-        return
-    for rel in (("task-edit-folder", "task-edit-folder"),
-                ("mobile/task-edit-folder", "mobile/task-edit-folder")):
-        image = out / f"{rel[1]}.png"
-        meta = out / f"{rel[0]}.redact.json"
-        if not meta.is_file() or not image.is_file():
+    except Exception as exc:  # pragma: no cover - exercised via monkeypatch
+        raise RedactionError(
+            f"Pillow 不可用，无法脱敏目录选择截图：{exc}"
+        ) from exc
+    return Image, ImageFilter
+
+
+def _bright_pixels(region, Image) -> int:
+    gray = region.convert("L")
+    # getdata() 在 Pillow 14 会被移除；histogram 更稳且更快。
+    hist = gray.histogram()
+    return sum(hist[REDACT_BRIGHT_LIMIT + 1:])
+
+
+def _redact_folder_path(out: pathlib.Path) -> None:
+    """Blur the folder-picker path field; fail closed if it cannot be verified.
+
+    A silently skipped redaction leaves a screenshot that exposes the capture
+    machine's working directory, so every unexpected state raises instead of
+    returning: missing Pillow, missing capture metadata, an unusable rect, or
+    text still readable after blurring.
+    """
+    Image, ImageFilter = _require_pil()
+    for meta_rel, image_rel in FOLDER_PICKER_SHOTS:
+        image = out / f"{image_rel}.png"
+        meta = out / f"{meta_rel}.redact.json"
+        if not image.is_file():
+            # 该次采集没有产出这张图（例如只跑了别的步骤），无需脱敏。
+            meta.unlink(missing_ok=True)
             continue
-        box = json.loads(meta.read_text(encoding="utf-8")).get("box")
+        if not meta.is_file():
+            raise RedactionError(
+                f"{image} 已生成但缺少脱敏记录 {meta.name}，拒绝发布未脱敏截图"
+            )
+        try:
+            box = json.loads(meta.read_text(encoding="utf-8")).get("box")
+        except Exception as exc:
+            raise RedactionError(f"{meta.name} 无法解析：{exc}") from exc
         if not box:
-            continue
+            raise RedactionError(f"{meta.name} 缺少 box，拒绝发布未脱敏截图")
+
+        x, y = int(box["x"]), int(box["y"])
+        w, h = int(box["width"]), int(box["height"])
+        if w <= 0 or h <= 0:
+            raise RedactionError(f"{meta.name} 的 box 尺寸非法：{w}x{h}")
+
         with Image.open(image) as img:
-            x, y = int(box["x"]), int(box["y"])
-            w, h = int(box["width"]), int(box["height"])
+            if x < 0 or y < 0 or x + w > img.width or y + h > img.height:
+                raise RedactionError(
+                    f"{meta.name} 的 box 超出图片范围：{img.size} vs {box}"
+                )
             region = img.crop((x, y, x + w, y + h))
             # 半径按区域高度自适应：移动端字段更窄，固定 7px 仍能看出笔画。
             radius = max(12, int(h * 0.9))
-            img.paste(region.filter(ImageFilter.GaussianBlur(radius=radius)), (x, y))
+            blurred = region.filter(ImageFilter.GaussianBlur(radius=radius))
+            if _bright_pixels(blurred, Image) > 0:
+                raise RedactionError(
+                    f"{image_rel}.png 模糊后仍有可读文字，脱敏失败"
+                )
+            img.paste(blurred, (x, y))
             img.save(image)
         meta.unlink(missing_ok=True)
 
