@@ -24,8 +24,51 @@ on:
 permissions:
   contents: write
 
+# 同一个 Tag 同时只跑一条发布流水线：第二次触发排队等待，而不是并行，
+# 也不是取消正在进行的正式发布（cancel-in-progress 必须为 false）。
+concurrency:
+  group: release-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
+  # 发布前置校验：决定这次运行是否允许写 Release，并锁定唯一的源码提交。
+  # 规则在 tools/release_preflight.py 中实现并有单元测试，避免只靠 workflow
+  # 里的 shell 判断（历史上 workflow_dispatch 会把分支名当成 Release tag）。
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      release_tag: ${{ steps.plan.outputs.release_tag }}
+      source_ref: ${{ steps.plan.outputs.source_ref }}
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release inputs
+        id: plan
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+          INPUT_REF: ${{ inputs.source_ref }}
+          INPUT_REBUILD: ${{ inputs.rebuild_existing }}
+        run: |
+          set -euo pipefail
+          python3 tools/release_preflight.py \
+            --workflow build \
+            --event "$EVENT" \
+            --release-tag "$INPUT_TAG" \
+            --source-ref "$INPUT_REF" \
+            --rebuild-existing "$INPUT_REBUILD" \
+            --ref-name "$GITHUB_REF_NAME" \
+            --ref "$GITHUB_REF" \
+            --sha "$GITHUB_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
   build:
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:
@@ -46,12 +89,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.source_ref || github.ref }}
+          # 用 preflight 解析出的提交，而不是可能移动的分支名。
+          ref: ${{ needs.preflight.outputs.source_ref }}
 
       - name: Resolve source commit
         id: source
         shell: bash
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          # 构建源码必须与 preflight 锁定的提交一致，否则直接失败。
+          test "$sha" = "${{ needs.preflight.outputs.source_sha }}"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -69,8 +118,8 @@ jobs:
       - name: Build
         shell: bash
         env:
-          TGDL_VERSION: ${{ github.event.inputs.release_tag || github.ref_name }}
-          TGDL_BUILD: ${{ steps.source.outputs.sha }}
+          TGDL_VERSION: ${{ needs.preflight.outputs.release_tag || github.ref_name }}
+          TGDL_BUILD: ${{ needs.preflight.outputs.source_sha }}
         run: python build.py dist
 
       - name: Rename to ASCII release names
@@ -122,10 +171,14 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: [preflight, build]
     runs-on: ubuntu-latest
     steps:
+      # Release Notes（release-notes/<tag>.md）、资产标签脚本与发布逻辑都取自
+      # 这里 checkout 的仓库内容，必须锁定到六平台构建所用的同一提交。
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.source_sha }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -135,12 +188,30 @@ jobs:
       - name: List assets
         run: find artifacts -type f -print
 
-      - name: Create release (tag)
-        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.rebuild_existing == 'true'
+      # 上传前再核对一次远端 Tag 指向：preflight 与这里之间仍可能有并发改动，
+      # 正式资产绝不能落到与 Tag 不一致的提交上。
+      - name: Assert tag still points at the built commit
+        if: needs.preflight.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.preflight.outputs.release_tag }}"
+          SRC="${{ needs.preflight.outputs.source_sha }}"
+          remote_sha=$(git ls-remote origin "refs/tags/${TAG}^{}" | awk '{print $1}')
+          if [ -z "$remote_sha" ]; then
+            remote_sha=$(git ls-remote origin "refs/tags/${TAG}" | awk '{print $1}')
+          fi
+          if [ "$remote_sha" != "$SRC" ]; then
+            echo "::error::Tag ${TAG} 指向 ${remote_sha:-<missing>}，构建源码是 ${SRC}；拒绝覆盖正式资产"
+            exit 1
+          fi
+
+      - name: Create or update release (tag)
+        if: needs.preflight.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ github.event.inputs.release_tag || github.ref_name }}"
+          TAG="${{ needs.preflight.outputs.release_tag }}"
           # Release Notes 单一信源：仓库 release-notes/<tag>.md；
           # 缺失时回落到内置通用说明
           if [ -f "release-notes/${TAG}.md" ]; then
@@ -187,11 +258,11 @@ jobs:
           fi
 
       - name: Set Chinese asset labels
-        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.rebuild_existing == 'true'
+        if: needs.preflight.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ github.event.inputs.release_tag || github.ref_name }}"
+          TAG="${{ needs.preflight.outputs.release_tag }}"
           set_label() {  # $1=ASCII 资产名，$2=中文说明
             local id
             id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
@@ -209,13 +280,44 @@ jobs:
           set_label "TGVideoDownloader_linux_arm64" "Linux ARM64 · 命令行版"
           set_label "TGVideoDownloader_mac_x64" "macOS Intel · 命令行版（附 .command 双击启动）"
           set_label "TGVideoDownloader_mac_arm64" "macOS Apple Silicon · 命令行版（附 .command 双击启动）"
+          set_label "TGVideoDownloader_mac_x64.command" "macOS Intel · 双击启动脚本"
+          set_label "TGVideoDownloader_mac_arm64.command" "macOS Apple Silicon · 双击启动脚本"
 
-      - name: Create pre-release (manual dispatch)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') && github.event.inputs.rebuild_existing != 'true' }}
+      # 重建走 --clobber，若中途中断可能留下「新资产 + 旧资产」的混合状态。
+      # 上传后逐项比对远端 digest 与本地产物，确保 Release 资产确实等于本次构建。
+      - name: Verify uploaded asset digests
+        if: needs.preflight.outputs.publish == 'true'
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="dev-${GITHUB_SHA::7}"
+          set -euo pipefail
+          TAG="${{ needs.preflight.outputs.release_tag }}"
+          mapfile -t FILES < <(find artifacts -type f)
+          test "${#FILES[@]}" -gt 0 || { echo "::error::没有可校验的构建产物"; exit 1; }
+          failed=0
+          for f in "${FILES[@]}"; do
+            name=$(basename "$f")
+            local_sha=$(sha256sum "$f" | awk '{print $1}')
+            remote_sha=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+              --jq ".assets[]|select(.name==\"${name}\")|.digest" \
+              | sed 's/^sha256://' || true)
+            if [ "$remote_sha" != "$local_sha" ]; then
+              echo "::error::${name} 远端 digest=${remote_sha:-<missing>} 与本地 ${local_sha} 不一致"
+              failed=1
+            fi
+          done
+          test "$failed" = "0"
+
+      - name: Create pre-release (manual dispatch)
+        if: needs.preflight.outputs.publish != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 用 preflight 解析出的源码 SHA，而不是分支 HEAD：
+          # 手动指定 source_ref 时两者可能不同。
+          SRC="${{ needs.preflight.outputs.source_sha }}"
+          TAG="dev-${SRC:0:7}"
           mapfile -t FILES < <(find artifacts -type f)
           gh release create "$TAG" "${FILES[@]}" \
             --title "开发构建 $TAG" \
