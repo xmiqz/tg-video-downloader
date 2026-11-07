@@ -40,6 +40,17 @@ from server_config import RuntimeConfig, build_info
 
 log = logging.getLogger("server_app")
 
+
+class _JsonResponse(JSONResponse):
+    """JSON 响应统一声明 charset=utf-8。
+
+    Starlette 只对 ``text/*`` 补 charset，``application/json`` 默认不带；
+    中文错误文案/phase_detail 在部分客户端会被按 Latin-1 解码成乱码，
+    这里显式声明编码（N-02 附带修复）。"""
+
+    media_type = "application/json; charset=utf-8"
+
+
 RPC_METHODS = frozenset({
     "abort_task", "account_add_start", "account_list",
     "account_remove", "account_verify_code", "account_verify_password",
@@ -214,7 +225,7 @@ def _json_error(message, status_code, retry_after=0):
     headers = {"Cache-Control": "no-store"}
     if retry_after:
         headers["Retry-After"] = str(int(retry_after))
-    return JSONResponse(
+    return _JsonResponse(
         {"ok": False, "error": message},
         status_code=status_code,
         headers=headers,
@@ -362,7 +373,7 @@ def create_app(config, *, engine, api, token="", auth=None):
 
     @app.get("/healthz")
     async def healthz():
-        return JSONResponse(
+        return _JsonResponse(
             {"ok": True, "service": "tg-video-downloader", **build_info()},
             headers={"Cache-Control": "no-store"},
         )
@@ -377,7 +388,7 @@ def create_app(config, *, engine, api, token="", auth=None):
         bearer = _request_bearer(request)
         if bearer and token and server_auth.tokens_equal(bearer, token):
             authenticated = True
-        return JSONResponse(
+        return _JsonResponse(
             {
                 "ok": True,
                 "setup_required": bool(auth is not None and not auth.configured),
@@ -407,7 +418,7 @@ def create_app(config, *, engine, api, token="", auth=None):
         if not result.ok:
             return _json_error(result.error, 400, result.retry_after)
         return _set_session_cookie(
-            JSONResponse({"ok": True}), auth, result.session_token,
+            _JsonResponse({"ok": True}), auth, result.session_token,
             secure=_effective_cookie_secure(request),
         )
 
@@ -434,7 +445,7 @@ def create_app(config, *, engine, api, token="", auth=None):
             status = 429 if result.retry_after else 401
             return _json_error(result.error, status, result.retry_after)
         return _set_session_cookie(
-            JSONResponse({"ok": True}), auth, result.session_token,
+            _JsonResponse({"ok": True}), auth, result.session_token,
             max_age=auth.remember_seconds if remember else auth.session_seconds,
             secure=_effective_cookie_secure(request),
         )
@@ -448,7 +459,7 @@ def create_app(config, *, engine, api, token="", auth=None):
                 request.cookies.get(server_auth.COOKIE_NAME, ""),
                 request.headers.get("user-agent", ""),
             )
-        response = JSONResponse({"ok": True})
+        response = _JsonResponse({"ok": True})
         response.delete_cookie(server_auth.COOKIE_NAME, path="/")
         response.headers["Cache-Control"] = "no-store"
         return response
@@ -500,7 +511,13 @@ def create_app(config, *, engine, api, token="", auth=None):
         handler = getattr(api, method)
         try:
             result = await asyncio.to_thread(handler, *params)
-            return JSONResponse(result)
+            return _JsonResponse(result)
+        except OSError as exc:
+            # N-01：目录不可写/不存在等属于可预期的环境问题，按既有
+            # “业务错误”语义返回 HTTP 200 + ok:false，不再统一变 500。
+            log.warning("RPC environment error: %s (%s)", method,
+                        type(exc).__name__)
+            return _json_error(f"{type(exc).__name__}: {exc}", 200)
         except Exception as exc:
             # Do not log exception text: Telegram/config exceptions can contain
             # user-entered identifiers. The authenticated caller still gets it.
@@ -657,7 +674,7 @@ def create_app(config, *, engine, api, token="", auth=None):
             wp = wallpaper.WallpaperCache(config.data_dir)
             api._wallpaper_cache = wp
         result = wp.import_image(blob, filename=filename)
-        return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+        return _JsonResponse(result, status_code=200 if result.get("ok") else 400)
 
     @app.get("/wallpaper/{name}")
     async def wallpaper_image(name: str, request: Request):

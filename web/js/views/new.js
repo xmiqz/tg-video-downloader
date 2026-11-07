@@ -54,6 +54,7 @@ const SEARCH_PHASE_TEXT = {
   local_scan: "本地翻页扫描",
   enrich: "引用内容补全",
   filter: "结果整理",
+  flood: "Telegram 限流等待",     // N-03：FloodWait 期间显示剩余秒数
 };
 // 引用来源标签：与 TUI REF_SOURCE_MARKS 同文（app.js:165）
 const REF_SOURCE_LABEL = { reply: "[引用]", album: "[相册]", fwd: "[转发]" };
