@@ -49,8 +49,7 @@
 官方依据（IID 与 vtable 顺序逐方法核对，二进制 GUID 形态以头文件
 EXTERN_C const IID 行交叉验证）：
   - Microsoft.Web.WebView2 NuGet 1.0.4258.31（2026 年当前稳定版），
-    包内 build/native/include/WebView2.h（本地取证副本：
-    .trae/team/evidence/T03/WebView2.h，2,939,599 字节），
+    包内 build/native/include/WebView2.h，
     下载源（与 fetch_webview2.py 同源）：
     https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/
         1.0.4258.31/microsoft.web.webview2.1.0.4258.31.nupkg
@@ -82,7 +81,7 @@ EXTERN_C const IID 行交叉验证）：
     https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/
     webview2-idl#createcorewebview2environmentwithoptions
 
-约束：只允许 ctypes/ctypes.wintypes/sys/json/os/argparse/struct；
+约束：只允许 ctypes/ctypes.wintypes/sys/json/os/argparse/tempfile/struct；
 threading.Event 为任务第 4 条明确要求。不导入 comtypes/pywin32。
 代码风格与 wv2_native.py（Task 2 已验收）保持一致：显式
 argtypes/restype、模块级回调保活、EVIDENCE JSON 行、时间戳双源。
@@ -93,6 +92,7 @@ import sys
 import os
 import json
 import argparse
+import tempfile
 import threading
 
 # ============================================================================
@@ -1077,16 +1077,15 @@ def main(argv=None):
     # 选到 x64 loader；不支持的架构直接 RuntimeError，不再回退错误旧路径。
     default_loader = os.path.join(
         here, "lib", loader_arch_dir(), "WebView2Loader.dll")
-    default_user_data = (
-        r"c:\Users\xqz\Documents\trae_projects\dayly"
-        r"\.trae\team\evidence\T03\wv2data")
+    default_user_data = os.path.join(
+        tempfile.gettempdir(), "tvd-webview2-com", "wv2data")
 
     parser = argparse.ArgumentParser(
         description="Task 3 WebView2 COM 环境创建 harness（ctypes 手写 COM）")
     parser.add_argument("--loader", default=default_loader,
                         help="WebView2Loader.dll 路径（默认仓库内 arm64）")
     parser.add_argument("--user-data", default=default_user_data,
-                        help="WebView2 用户数据目录（默认 T03 证据/wv2data）")
+                        help="WebView2 用户数据目录（默认系统临时目录）")
     parser.add_argument("--rounds", type=int, default=2,
                         help="连续创建/释放环境的轮数（默认 2）")
     parser.add_argument("--timeout", type=float, default=30.0,

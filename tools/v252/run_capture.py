@@ -8,6 +8,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -116,8 +117,10 @@ def _redact_folder_path(out: pathlib.Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--exe", default="")
-    parser.add_argument("--out", required=True)
-    parser.add_argument("--work", default=str(ROOT / "work" / "v252-capture"))
+    parser.add_argument("--out", default=str(
+        pathlib.Path(tempfile.gettempdir()) / "tvd-v252-capture" / "docs-images"))
+    parser.add_argument("--work", default=str(
+        pathlib.Path(tempfile.gettempdir()) / "tvd-v252-capture" / "work"))
     parser.add_argument("--keep-data", action="store_true")
     parser.add_argument("--source-server", action="store_true")
     parser.add_argument("--quick", action="store_true")
@@ -125,6 +128,10 @@ def main() -> int:
                         help="只采集指定步骤（目前支持 folder）")
     parser.add_argument("--mock-root", default="",
                         help="直接使用该中性目录作为 mock 根（不创建 subst 盘）")
+    parser.add_argument("--node", default=os.environ.get("TVD_NODE", "node"))
+    parser.add_argument("--playwright-modules",
+                        default=os.environ.get("TVD_PLAYWRIGHT_MODULES", ""))
+    parser.add_argument("--edge", default=os.environ.get("TVD_EDGE_PATH", ""))
     args = parser.parse_args()
 
     exe = pathlib.Path(args.exe).expanduser().resolve() if args.exe else None
@@ -227,17 +234,19 @@ def main() -> int:
         if not info:
             raise RuntimeError("等待截图服务连接信息超时")
 
-        node = pathlib.Path(
-            r"C:\Users\xqz\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
-        )
         with capture_log.open("w", encoding="utf-8") as f:
             capture_cmd = [
-                str(node), str(TOOLS / "capture.mjs"),
+                args.node, str(TOOLS / "capture.mjs"),
                 f"--out={out}",
                 f"--base-url={info['base_url']}",
                 f"--token={info['token']}",
                 "--task-id=t252_active",
             ]
+            if args.playwright_modules:
+                capture_cmd.append(
+                    f"--module-root={args.playwright_modules}")
+            if args.edge:
+                capture_cmd.append(f"--edge={args.edge}")
             if args.quick:
                 capture_cmd.append("--quick")
             if args.only:

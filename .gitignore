@@ -16,6 +16,51 @@ tasks/
 !requirements-dev.txt
 !requirements-server.txt
 
+# 临时验收证据、日志与截图（不是正式用户文档或截图资产）
+evidence/
+work/
+*.log
+*.redact.json
+smoke-v252.log
+smoke-before.log
+
+# 本地构建与发布包
+*.zip
+*.tar.gz
+*.tgz
+*.msi
+*.dmg
+*.app/
+*.command
+TGVideoDownloader
+TGVideoDownloader_*
+build_tmp/assets/
+
+# 浏览器自动化与 Playwright 本地缓存
+playwright-report/
+test-results/
+.playwright/
+ms-playwright/
+
+# Docker 与 Compose 本地临时文件
+.env
+.env.*
+!.env.example
+compose.override.yaml
+compose.override.yml
+docker-compose.override.yaml
+docker-compose.override.yml
+*.tar
+
+# Codex / IDE 本地状态
+.codex/
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
 # 本地启动器（含本机绝对路径）
 *.bat
 
@@ -41,6 +86,14 @@ tg_video_dl_noapi.py
 # Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 .venv*/
+venv/
 .pytest_cache/
 .pytest-basetemp-*/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
