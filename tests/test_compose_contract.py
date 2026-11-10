@@ -12,8 +12,8 @@
 
 实现约束：不引入 PyYAML 等新依赖，只用 pathlib + 正则 + 一个极简的
 「顶层 key / services 缩进」解析辅助函数。本测试必须在无 Docker、
-无网络的机器上通过：它锁的是文件内容契约；容器行为面由真机演练
-（evidence/v2.4.1/T63/drill.md）覆盖。
+无网络的机器上通过：它锁的是文件内容契约；容器行为面由发布前 Docker / NAS
+验收覆盖。
 """
 from __future__ import annotations
 
