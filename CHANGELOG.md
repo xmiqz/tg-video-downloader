@@ -77,8 +77,7 @@
 
 - 前端：`167 tests`，`167 passed / 0 todo / 0 failed`。
 - 后端：`348 passed / 3 warnings`。
-- 视觉夹具：`evidence/v2.5.1/r9/active-wallpaper-stage-desktop.png`、`login-build-footer.png`、`setup-shared-icon.png`。
-- 说明：v2.5.0 仓库的 CRLF index 与 `.gitattributes` 有既有行尾噪声；实际代码改动以 `git diff --ignore-space-at-eol` 为准。
+- 视觉夹具与复跑日志随该版本发布验收归档。
 
 ## [2.5.0] — 2026-11-02
 

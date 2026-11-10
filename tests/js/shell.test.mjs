@@ -4,7 +4,7 @@
 // buildShellDom 是模块私有、只由 boot() 调用；boot() 需要一整套浏览器 DOM
 // （innerHTML 解析 / matchMedia / CSS.supports / canvas / Image / rAF）。
 // 零依赖下不引入 jsdom，故改为「只读源码 + 静态契约断言」。
-// 详见 evidence/V2/seams.md TR3「漏掉什么」。
+// 壳层接缝回归：覆盖空态、导航与容器挂载边界。
 // ============================================================
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
