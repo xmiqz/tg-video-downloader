@@ -89,7 +89,7 @@ docker compose up -d
 
 ## 升级步骤
 
-`compose.yaml` 默认镜像 tag 固定为已发布版本（`v2.5.0`），升级就是
+`compose.yaml` 默认镜像 tag 固定为当前正式版本（`v2.5.2`），升级就是
 换 tag 后拉镜像重建容器，数据卷原样保留。
 
 1. **先备份**：按上一节操作。
@@ -99,13 +99,13 @@ docker compose up -d
    方式 A —— 在部署目录写 `.env`（不动 `compose.yaml`）：
 
    ```bash
-   echo 'TGVD_IMAGE=ghcr.io/xmiqz/tg-video-downloader:v2.5.0' > .env
+   echo 'TGVD_IMAGE=ghcr.io/xmiqz/tg-video-downloader:<目标版本>' > .env
    ```
 
    方式 B —— 直接编辑 `compose.yaml` 第 3 行，把默认 tag 改成新版本：
 
    ```yaml
-   image: ${TGVD_IMAGE:-ghcr.io/xmiqz/tg-video-downloader:v2.5.0}
+   image: ${TGVD_IMAGE:-ghcr.io/xmiqz/tg-video-downloader:<目标版本>}
    ```
 
 3. **拉取新镜像并重建容器**：
@@ -156,17 +156,17 @@ docker compose up -d
 
 ## 数据兼容边界
 
-v2.5.0 是收口补丁，**没有**任何数据结构迁移：
+本节描述 v2.4.1 引入长效会话时的历史兼容边界；v2.5.x 沿用同一数据布局，**没有**新的数据结构迁移：
 
-- `auth.json`：v2.5.0 仅在此文件**追加** `session_key` 与 `revoked_sessions`
+- `auth.json`：v2.4.1 在此文件**追加** `session_key` 与 `revoked_sessions`
   两个键，用于「记住此设备」长效会话的签名与吊销。旧版本读取该文件时只校验
-  必需键、忽略未知键，因此 v2.5.0 写出的 `auth.json` 在 v2.4.0 下照常可用。
+  必需键、忽略未知键，因此较新版本写出的 `auth.json` 在 v2.4.0 下照常可用。
 - 任务清单：任务 JSON 顶层 7 键不变；搜索结果 meta 13 键不变。
 - 下载目录：`/data/downloads` 位置与结构不变，升级/回滚不移动任何文件。
 
 **回滚到 v2.4.0 后的登录状态**：
 
-- 在 v2.5.0 下勾选「记住此设备」签发的长效会话 Cookie **不被 v2.4.0 识别**，
+- 在 v2.4.1 及之后版本勾选「记住此设备」签发的长效会话 Cookie **不被 v2.4.0 识别**，
   回滚后浏览器会要求重新登录一次；管理员密码本身不变，直接用原密码登录即可。
 - 未勾选「记住此设备」的会话本来就是内存会话，不跨服务重启；回滚后同样需要
   重新登录，与升级前的行为一致，没有额外损失。

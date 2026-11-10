@@ -203,9 +203,9 @@ docker compose exec tg-video-downloader cat /data/.setup-token
 | `TGDL_ALLOWED_ROOTS` | 数据目录 | 允许写入的下载根目录 |
 | `TGDL_COOKIE_SECURE` | `0` | HTTPS 反向代理后设为 `1` |
 | `TGDL_TRUST_PROXY` | `0` | 可信反向代理后设为 `1` |
-| `PUID` / `PGID` | `10001` | 容器运行用户 |
+| `TGDL_TRUSTED_PROXIES` | 空 | `TGDL_TRUST_PROXY=1` 时的可信反代 IP / CIDR 白名单 |
 
-配置优先级：命令行参数 > `TGDL_*` 环境变量 > `tg_config.json` / `server.json` > 默认值。
+正式 `compose.yaml` 固定使用 `10001:10001`，不提供 `PUID` / `PGID` 覆盖；这样可避免只读容器因无法 chown 而启动失败。配置优先级：命令行参数 > `TGDL_*` 环境变量 > `tg_config.json` / `server.json` > 默认值。
 
 ## 命令行
 
