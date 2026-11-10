@@ -3,30 +3,37 @@ from __future__ import annotations
 
 import pathlib
 import re
+import subprocess
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-TEXT_SUFFIXES = {".md", ".py", ".mjs", ".js", ".yaml", ".yml", ".json",
-                 ".html", ".css", ".sh"}
+TEXT_SUFFIXES = {".md", ".txt", ".py", ".mjs", ".js", ".ts", ".yaml",
+                 ".yml", ".json", ".html", ".css", ".sh", ".ps1", ".bat",
+                 ".cfg", ".ini"}
 PERSONAL_PATTERNS = (
     re.compile(r"C:\\Users\\[^\\]+|C:/Users/[^/\s]+|(?<![\w])/home/[a-z0-9._-]+",
                re.IGNORECASE),
     re.compile(r"codex-runtimes|Documents[\\/]Codex|trae_projects|\.trae[\\/]team",
                re.IGNORECASE),
 )
-EXCLUDED_DIRS = {".git", "__pycache__", ".pytest_cache", "lib", "tests"}
-EXCLUDED_FILES = {"tests/test_repository_hygiene.py"}
+EXCLUDED_PATHS = {
+    "lib",
+    "tests/test_repository_hygiene.py",
+}
 
 
 def _tracked_text_files():
-    for path in ROOT.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
+    output = subprocess.check_output(
+        ["git", "ls-files", "-z"], cwd=ROOT, text=False)
+    for raw in output.split(b"\0"):
+        if not raw:
             continue
-        relative = path.relative_to(ROOT)
-        if (set(relative.parts) & EXCLUDED_DIRS
-                or relative.as_posix() in EXCLUDED_FILES):
+        relative = pathlib.PurePosixPath(raw.decode("utf-8"))
+        if (relative.suffix.lower() not in TEXT_SUFFIXES
+                or any(part == "lib" for part in relative.parts)
+                or relative.as_posix() in EXCLUDED_PATHS):
             continue
-        yield path
+        yield ROOT / pathlib.Path(relative)
 
 
 def test_no_personal_paths_or_private_hosts_in_tracked_text():
@@ -53,8 +60,8 @@ def test_temporary_deployment_and_evidence_packages_are_not_tracked():
 
 def test_markdown_local_links_resolve():
     missing = []
-    for path in ROOT.rglob("*.md"):
-        if ".git" in path.relative_to(ROOT).parts:
+    for path in _tracked_text_files():
+        if path.suffix.lower() != ".md":
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         for target in re.findall(r"!?\[[^\]]*\]\(([^)]+)\)", text):
@@ -73,3 +80,38 @@ def test_markdown_local_links_resolve():
             if not resolved.is_file():
                 missing.append(f"{path.relative_to(ROOT)} -> {target}")
     assert not missing, f"存在失效的本地文档链接：{missing}"
+
+
+def test_build_outputs_are_ignored_without_broad_asset_patterns():
+    ignored = [
+        "dist/TGVideoDownloader.exe",
+        "dist/TGVideoDownloader_mac_arm64.command",
+        "dist/TGVideoDownloader_mac_arm64",
+        "dist/release.zip",
+        "dist/release.tar.gz",
+        "build_tmp/app.spec",
+        "build_pyi/app.bin",
+        "build/local.tmp",
+        "TGVideoDownloader.exe",
+    ]
+    preserved = [
+        "examples/task-bundle.zip",
+        "tests/fixtures/sample.tar",
+        "tests/fixtures/TGVideoDownloader_mac_x64.command",
+        "docs/examples/installer.msi",
+        "docs/examples/installer.dmg",
+        "docs/examples/TGVideoDownloader.app/Contents/Info.plist",
+        "tools/fixtures/TGVideoDownloader_linux_x64",
+        "build/tvg.ico",
+        "requirements-dev.txt",
+    ]
+    for candidate in ignored:
+        result = subprocess.run(
+            ["git", "check-ignore", "--no-index", "-q", candidate],
+            cwd=ROOT, capture_output=True)
+        assert result.returncode == 0, f"构建产物应被忽略：{candidate}"
+    for candidate in preserved:
+        result = subprocess.run(
+            ["git", "check-ignore", "--no-index", "-q", candidate],
+            cwd=ROOT, capture_output=True)
+        assert result.returncode != 0, f"合法资产不应被忽略：{candidate}"
