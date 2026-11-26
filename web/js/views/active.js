@@ -37,7 +37,7 @@ import {
   el, createProgress, createSegmented, createToaster, createOverlay,
   createSelectionController, createBottomActionBar,
 } from "../ui/index.js";
-// T17 手势增量（边缘返回/滑动托盘/聚焦保持；见 evidence/T17/t17_diff_list.md）
+// T17 手势增量：边缘返回、滑动托盘与输入聚焦保持。
 import {
   attachEdgeBack, attachSwipeActions, attachFocusKeep, trayFromButtons,
 } from "../gestures.js";
