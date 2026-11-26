@@ -33,6 +33,7 @@ RUN groupadd --gid 10001 tgdl \
 COPY --from=builder /opt/venv /opt/venv
 COPY server_app.py server_auth.py server_config.py gui.py host.py \
      tg_video_dl.py wallpaper.py taskport.py docker-entrypoint.py LICENSE /app/
+COPY telegram_login.py /app/
 COPY web /app/web
 
 WORKDIR /app

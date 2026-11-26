@@ -4,6 +4,37 @@
 
 ---
 
+## [2.6.0] — 2026-11-23
+
+> 🔐 **扫码登录与投递渠道透明化**：Telegram 登录优先使用手机 App 扫码，验证码保留为备用方式；不再把验证码渠道写死为 Telegram App，首次设置页与登录弹层会显示 Telegram 实际返回的服务通知、短信、电话或邮箱提示。
+
+### ✨ 新增
+
+- 新增二维码登录：桌面登录弹层和 NAS / 浏览器首次设置页均可生成一次性 Telegram 登录二维码；手机 Telegram 的“已登录设备”扫码确认即可，不依赖验证码推送。
+- 小号同样支持扫码登录：设置页“添加小号”提供扫码入口，二维码会话独立于主号，登录成功后按既有账号池收口。
+- 二维码登录支持 Telegram 两步验证；扫码后如需 2FA，复用现有密码验证界面。
+- 二维码会话仅在进程内存保存，刷新或新开会话会作废旧码；二维码 token 不写日志、不进入错误提示。
+- 新增 `qr_login_start` / `qr_login_status` / `qr_login_poll` / `qr_login_cancel` / `qr_login_password` 五个主号二维码 RPC 与 `account_add_qr_start` / `account_add_qr_poll` / `account_add_qr_password` / `account_add_qr_cancel` 四个小号扫码 RPC，RPC 白名单从 57 增至 66。
+- 新增 `telegram_login.py`，集中承载二维码会话生命周期；`gui.Api` 保留手机号验证码与账号池兼容路径。
+
+### 🐛 修复
+
+- 首次设置页不再吞掉 `send_code.notice`；Telegram 返回的实际投递渠道和后续可用渠道会显示给用户。
+- 修复新浏览器登录管理员后在 `/login` 页触发 RPC 401 时 `location.replace("/login")` 造成的整页重载循环；现在回到管理员登录表单并提示会话过期。
+- 修复已登录服务的第二个浏览器直接进入「准备你的下载服务 / API 凭据」的问题；未认证浏览器现在必须先输入管理员密码。
+- 修正“验证码会发送到 Telegram App”的误导文案；验证码渠道由 Telegram 服务端决定。
+- 网络异常不再对发码请求自动重试，避免重复投递或触发 Telegram 频率限制。
+
+### 🧪 验证
+
+- 修复二维码容器始终 `hidden` 导致扫码页只显示“刷新二维码”按钮、看不到二维码的问题；同时让刷新按钮进入二维码步骤块。
+- 修复二维码登录写入独立 `tg_session-qr` 文件导致重启后登录态丢失的问题，现与主 session 共用同一文件。
+- 后端：`379 passed, 3 warnings`（`pytest -q tests`；工作区内 `deploy/` 为历史副本，含同名测试模块，需排除）。
+- 前端：`189 pass, 0 fail`（`node --test "tests/js/*.test.mjs"`）。
+- Docker：新增 `telegram_login.py` COPY 与依赖 `segno`，由 Dockerfile 契约测试覆盖；`compose.yaml` 默认镜像遵循发布治理仍指向当前 stable `v2.5.2`，正式切到 `v2.6.0` 需发布完成后单独变更；本轮未构建 amd64/arm64 镜像。
+
+---
+
 ## [2.5.2] — 2026-11-06
 
 > 🪟 **可读性与截图审计修复**：登录、平板卡片边缘、移动外观选择器、选中态、表单控件、日期筛选、壁纸舞台和长路径逐项收口；桌面启动不再等待 Telegram 会话恢复；RPC、任务 JSON、数据目录与 NAS 兼容性不变。

@@ -7,3 +7,4 @@ PyYAML>=6
 PyInstaller>=6
 Pillow>=10
 telethon>=1.45
+segno>=1.6,<2

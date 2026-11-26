@@ -270,6 +270,35 @@ button:disabled { cursor: wait; opacity: .58; transform: none; }
   font-size: var(--text-sm);
 }
 
+.setup-notice {
+  margin: 0 0 18px;
+  padding: 11px 13px;
+  border: 1px solid color-mix(in srgb, var(--color-warning) 42%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-warning) 10%, transparent);
+  color: var(--color-warning);
+  font-size: var(--text-sm);
+}
+
+.setup-notice[hidden] { display: none; }
+
+.setup-qr {
+  display: flex;
+  justify-content: center;
+  margin: 14px 0 10px;
+}
+
+.setup-qr svg {
+  width: min(232px, 100%);
+  max-width: 100%;
+  height: auto;
+  display: block;
+  box-sizing: border-box;
+  border-radius: var(--radius-sm);
+  background: #fff;
+  padding: 10px;
+}
+
 #done-step { text-align: center; }
 #done-step .setup-lead { margin-top: 8px; }
 
