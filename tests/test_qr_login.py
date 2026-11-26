@@ -28,8 +28,17 @@ class FakeQR:
 
     def __init__(self, result=None):
         self._result = result
+        self._gate = threading.Event()
+        if result is not None:
+            self._gate.set()
+
+    def release(self):
+        """让等待中的 wait() 返回（result=None 的用例默认一直等待）。"""
+        self._gate.set()
 
     async def wait(self):
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._gate.wait)
         if isinstance(self._result, Exception):
             raise self._result
         return self._result
@@ -89,7 +98,8 @@ def make_api(monkeypatch, qr_result=None):
 
 
 def test_start_returns_svg_and_poll_waits(monkeypatch):
-    api, fake = make_api(monkeypatch, types.SimpleNamespace(id=1))
+    # result=None：wait() 阻塞，确保 poll 读到的是等待态而不是竞态下的 ready。
+    api, fake = make_api(monkeypatch, None)
     result = api.qr_login_start()
     assert result["ok"] is True
     assert "<svg" in result["svg"]
@@ -99,6 +109,7 @@ def test_start_returns_svg_and_poll_waits(monkeypatch):
     assert status["ok"] is True
     assert status["stage"] == "qr_waiting"
     assert api.login_state()["qr"]["active"] is True
+    fake._qr.release()
     api.qr_login_cancel()
     assert api.login_state()["qr"]["active"] is False
     assert fake.disconnected is True

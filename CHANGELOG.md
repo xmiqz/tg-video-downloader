@@ -4,12 +4,18 @@
 
 ---
 
-## [未发布]
+## [2.6.1] — 2026-11-26
 
 ### 🐛 修复
 
 - 下载中重命名任务标题或条目后，live 会话的旧快照会在下一次 force 保存时把改名写回；现在改名会同步到会话快照。
 - 已下载条目的原文件不存在时，改名明确报错，不再记录一个永远无法应用的拟用名。
+- 修复容器发布流水线读取 preflight 输出的键名错误（`tag` → `release_tag`），Tag 触发的 GHCR 发布不再因空 Tag 失败。
+
+### 🧪 验证
+
+- 后端：`436 passed, 1 skipped`（`pytest -q tests`）。
+- 前端：`189 pass, 0 fail`（`node --test "tests/js/*.test.mjs"`）。
 
 ## [2.6.0] — 2026-11-23
 
@@ -38,7 +44,7 @@
 - 修复二维码登录写入独立 `tg_session-qr` 文件导致重启后登录态丢失的问题，现与主 session 共用同一文件。
 - 后端：`379 passed, 3 warnings`（`pytest -q tests`；工作区内 `deploy/` 为历史副本，含同名测试模块，需排除）。
 - 前端：`189 pass, 0 fail`（`node --test "tests/js/*.test.mjs"`）。
-- Docker：新增 `telegram_login.py` COPY 与依赖 `segno`，由 Dockerfile 契约测试覆盖；`compose.yaml` 默认镜像遵循发布治理仍指向当前 stable `v2.5.2`，正式切到 `v2.6.0` 需发布完成后单独变更；本轮未构建 amd64/arm64 镜像。
+- Docker：新增 `telegram_login.py` COPY 与依赖 `segno`，由 Dockerfile 契约测试覆盖；发布后 `compose.yaml` 默认镜像已切到 `v2.6.0`。
 
 ---
 

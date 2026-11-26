@@ -106,6 +106,6 @@ test("glass system: standalone task editor uses the shared control language", ()
     "任务编辑批量条未进入 overlay");
 });
 
-test("glass system: release version is 2.6.0", () => {
-  assert.equal(PACKAGE.version, "2.6.0");
+test("glass system: release version is 2.6.1", () => {
+  assert.equal(PACKAGE.version, "2.6.1");
 });
