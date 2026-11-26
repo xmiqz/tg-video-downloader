@@ -22,6 +22,14 @@ test("v2.6 setup page never reloads itself on RPC 401", async () => {
   assert.match(source, /if \(resp\.status === 401\) \{\s*\n\s*if \(location\.pathname !== "\/login"\) location\.replace\("\/login"\);\s*\n\s*setPhase\("login"\);/);
 });
 
+test("new browser must log in before the Telegram setup wizard", async () => {
+  // 已登录的服务：未认证浏览器访问 /login 必须停在管理员密码表单，
+  // 不能直接进入“准备你的下载服务 / API 凭据”步骤。
+  const source = await readFile(SETUP_JS, "utf8");
+  assert.doesNotMatch(source, /canStartTelegramSetup/);
+  assert.match(source, /if \(status\.authenticated\) \{[\s\S]{0,200}setupMode = false;\s*\n\s*setPhase\("login"\);/);
+});
+
 test("v2.6 login view exposes QR login", async () => {
   const source = await readFile(LOGIN_JS, "utf8");
   assert.match(source, /扫码登录（推荐）/);

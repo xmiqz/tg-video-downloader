@@ -21,6 +21,7 @@
 
 - 首次设置页不再吞掉 `send_code.notice`；Telegram 返回的实际投递渠道和后续可用渠道会显示给用户。
 - 修复新浏览器登录管理员后在 `/login` 页触发 RPC 401 时 `location.replace("/login")` 造成的整页重载循环；现在回到管理员登录表单并提示会话过期。
+- 修复已登录服务的第二个浏览器直接进入「准备你的下载服务 / API 凭据」的问题；未认证浏览器现在必须先输入管理员密码。
 - 修正“验证码会发送到 Telegram App”的误导文案；验证码渠道由 Telegram 服务端决定。
 - 网络异常不再对发码请求自动重试，避免重复投递或触发 Telegram 频率限制。
 
@@ -29,7 +30,7 @@
 - 修复二维码容器始终 `hidden` 导致扫码页只显示“刷新二维码”按钮、看不到二维码的问题；同时让刷新按钮进入二维码步骤块。
 - 修复二维码登录写入独立 `tg_session-qr` 文件导致重启后登录态丢失的问题，现与主 session 共用同一文件。
 - 后端：`379 passed, 3 warnings`（`pytest -q tests`；工作区内 `deploy/` 为历史副本，含同名测试模块，需排除）。
-- 前端：`188 pass, 0 fail`（`node --test "tests/js/*.test.mjs"`）。
+- 前端：`189 pass, 0 fail`（`node --test "tests/js/*.test.mjs"`）。
 - Docker：新增 `telegram_login.py` COPY 与依赖 `segno`，由 Dockerfile 契约测试覆盖；`compose.yaml` 默认镜像遵循发布治理仍指向当前 stable `v2.5.2`，正式切到 `v2.6.0` 需发布完成后单独变更；本轮未构建 amd64/arm64 镜像。
 
 ---

@@ -127,12 +127,6 @@ async function continueAfterAdmin() {
   }
 }
 
-function canStartTelegramSetup(status) {
-  if (!status || status.setup_required || !status.configured || status.authenticated) return false;
-  const hash = String(location.hash || "");
-  return hash === "#/setup" || hash === "#/tasks" || hash === "";
-}
-
 async function init() {
   let status;
   try {
@@ -157,12 +151,11 @@ async function init() {
     await continueAfterAdmin();
     return;
   }
+  // 已配置的服务：任何新浏览器都必须先输入管理员密码。
+  // 未认证时进入 Telegram 设置向导会让用户在 401 上打转，也会暴露
+  // 一个本应登录后才能看到的页面。
   setupMode = false;
-  if (canStartTelegramSetup(status)) {
-    setPhase("welcome");
-  } else {
-    setPhase("login");
-  }
+  setPhase("login");
 }
 
 $("admin-form").addEventListener("submit", async (event) => {
