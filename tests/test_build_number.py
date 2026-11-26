@@ -38,6 +38,8 @@ def test_release_workflow_uses_the_resolved_source_sha():
     root = Path(__file__).resolve().parents[1]
     workflow = (root / ".github" / "workflows" / "build.yml").read_text(
         encoding="utf-8")
-    assert "TGDL_BUILD: ${{ steps.source.outputs.sha }}" in workflow
-    assert "ref: ${{ github.event.inputs.source_ref || github.ref }}" in workflow
+    # 构建号仍必须是解析出的源码 SHA，只是解析改由 preflight 统一完成，
+    # 不再直接信任可变的 github.ref / workflow 输入。
+    assert "TGDL_BUILD: ${{ needs.preflight.outputs.source_sha }}" in workflow
+    assert "ref: ${{ needs.preflight.outputs.source_ref }}" in workflow
     assert "rebuild_existing" in workflow

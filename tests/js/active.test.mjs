@@ -55,19 +55,31 @@ test("TR5-C overviewAggregate 累加 / pct / eta / fetchDetails 去重", () => {
     { total_bytes: 100, total_tot: 400, agg_speed: 50, counts: { done: 1, skip: 0, fail: 0, active: 1, paused: 0 },
       phase: "fetching", phase_detail: "抓取元数据" },
     { total_bytes: 100, total_tot: 400, agg_speed: 50, counts: { done: 0, skip: 1, fail: 1, active: 0, paused: 1 },
-      phase: "fetching", phase_detail: "抓取元数据" }, // 重复 detail
+      phase: "fetching", phase_detail: "抓取元数据" }, // 重复 detail；N-04：无活动条目 -> 不计速度
     null, // 容错
     { total_bytes: "x", total_tot: undefined, agg_speed: null }, // 脏值 -> 0
   ];
   const r = A.overviewAggregate(states);
   eq(r.totBytes, 200, "totBytes 累加");
   eq(r.totSize, 800, "totSize 累加");
-  eq(r.speed, 100, "speed 累加");
+  // N-04：只有存在活动下载条目的任务才计入聚合速度，
+  // “已存在/已跳过”的 agg_speed 不得叠加（第二组 active=0）。
+  eq(r.speed, 50, "N-04：仅活动任务计入速度");
   eq(r.remaining, 600, "remaining = totSize - totBytes");
   eq(r.pct, 25, "pct = round(200/800*100)");
-  eq(r.etaSec, 6, "etaSec = remaining / speed");
+  eq(r.etaSec, 12, "etaSec = 600 / 50（只按活动速度估算）");
   deep(r.cc, { done: 1, skip: 1, fail: 1, active: 1, paused: 1 }, "counts 五类累加");
   deep(r.fetchDetails, ["抓取元数据"], "fetching 阶段 detail 去重");
+
+  // N-04：后端 active_count 存在时优先于 counts.active
+  const byActiveCount = A.overviewAggregate([
+    { total_bytes: 0, total_tot: 100, agg_speed: 40, active_count: 2, counts: { active: 0 } },
+  ]);
+  eq(byActiveCount.speed, 40, "active_count > 0 时计入速度（字段优先）");
+  const byCounts = A.overviewAggregate([
+    { total_bytes: 0, total_tot: 100, agg_speed: 40, active_count: 0, counts: { active: 3 } },
+  ]);
+  eq(byCounts.speed, 0, "active_count 显式为 0 时不再回落到 counts.active");
 
   // 边界：超量（totBytes > totSize）时 remaining 夹 0、eta null
   const over = A.overviewAggregate([{ total_bytes: 900, total_tot: 100, agg_speed: 10 }]);

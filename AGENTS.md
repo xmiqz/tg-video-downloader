@@ -41,6 +41,8 @@ docker compose config       # 涉及 Compose 时
 - 构建号统一使用 7 位提交短 SHA。
 - 发布前核对：Tag 指向、Release 的 prerelease 状态、资产 SHA-256、GHCR manifest 的 amd64/arm64。
 - 未经最终确认，不得创建正式 Tag、发布 Release 或推送正式 Docker 镜像。
+- 手动触发发布必须显式指定目标 Tag：桌面端需 `release_tag` + `source_ref` + `rebuild_existing=true`，Docker 需 `publish=true` + `tag`；默认手动运行只做验证。
+- 发布规则以 `tools/release_preflight.py` 为准，修改规则必须同步 `tests/test_release_preflight.py`。
 - 不得把 Token、密码、`.session`、`auth.json`、`.setup-token` 或内网地址写入仓库与截图。
 
 ## 5. 数据与兼容性
@@ -65,3 +67,4 @@ docker compose config       # 涉及 Compose 时
 - `.github/workflows/ci.yml`：PR 与 main 的检查。
 - `.github/workflows/build.yml`：Tag 触发的多平台桌面构建与 Release。
 - `.github/workflows/container.yml`：Docker 验证、GHCR 发布与发布后校验。
+- `tools/release_preflight.py`：两条发布工作流共用的 Tag / 源码一致性校验。

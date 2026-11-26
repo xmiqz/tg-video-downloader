@@ -174,6 +174,9 @@ def main() -> int:
     core.save_config({
         "appearance": "dark",
         "download_root": neutral_root,
+        # 目录选择器只列出允许根内的文件夹；夹具把 mock 盘根声明为允许根，
+        # 公开截图里才会出现中性的 T:\TVD 路径而不是采集机的工作目录。
+        "allowed_roots": [neutral_root.split("\\TVD\\")[0] + "\\TVD"],
         "parallel": 2,
         "retries": 3,
         "phone": "",
