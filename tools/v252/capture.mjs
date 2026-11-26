@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const args = Object.fromEntries(
@@ -11,15 +12,17 @@ const args = Object.fromEntries(
   }),
 );
 
-const OUT = path.resolve(args.out || "docs/images");
+const OUT = path.resolve(args.out || path.join(os.tmpdir(), "tvd-v252-capture"));
 const BASE = String(args["base-url"] || "").replace(/\/+$/, "");
 const TOKEN = String(args.token || "");
 const TASK_ID = String(args["task-id"] || "t252_active");
 const QUICK = !!args.quick;
 const ONLY = String(args.only || "");
-const RUNTIME = "C:/Users/xqz/.cache/codex-runtimes/codex-primary-runtime/dependencies/node";
-const EDGE = "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe";
-const require = createRequire(path.join(RUNTIME, "noop.cjs"));
+const MODULE_ROOT = String(args["module-root"] || process.env.TVD_PLAYWRIGHT_MODULES || "");
+const EDGE = String(args.edge || process.env.TVD_EDGE_PATH || "");
+const require = createRequire(MODULE_ROOT
+  ? path.join(path.resolve(MODULE_ROOT), "noop.cjs")
+  : import.meta.url);
 const { chromium } = require("playwright");
 
 if (!BASE || !TOKEN) throw new Error("需要 --base-url 与 --token");
@@ -49,7 +52,7 @@ async function rpc(method, params = []) {
 }
 
 const browser = await chromium.launch({
-  executablePath: EDGE,
+  ...(EDGE ? { executablePath: EDGE } : {}),
   headless: true,
   args: ["--disable-gpu", "--force-device-scale-factor=1"],
 });

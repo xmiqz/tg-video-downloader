@@ -1,8 +1,7 @@
 // ============================================================
 // router.js — T8 v2.2 新壳路由与响应式应用外壳（全版地基）
 //
-// 设计契约：evidence/T8/t8_contract.md（一次冻结，下游 T11–T16
-// 只替换 web/js/views/* 占位与其 css 切片，零改本文件/壳样式/引导）。
+// 设计契约：hash 路由与 View Transition 在本模块集中处理；业务状态仍由各视图持有。
 // fix1（2026-10-15，spec 评审 hard 闭环）：产品默认路由模式恒 hash，
 // history 模式实现仅保留为注入面（seam 兼容）；v22history/v22hashmode/
 // v22shell/v22theme 测试钩子已随 T18 翻版清理。模式解析收在纯函数

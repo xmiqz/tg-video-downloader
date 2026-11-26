@@ -145,12 +145,13 @@ test("v2.5.2 public screenshot matrix is present and README stays neutral", asyn
     "docs/images/mobile/task-edit-folder.png",
     "docs/images/mobile/settings.png",
     "docs/images/tablet/settings.png",
-    "docs/images/compare/login-1920-before-after.png",
   ]) {
     assert.ok(existsSync(path.join(ROOT, rel)), `缺少发布截图 ${rel}`);
   }
   assert.ok(!existsSync(path.join(ROOT, "docs/images/wallpaper-stage.png")),
     "含义不明的 wallpaper-stage.png 必须删除");
+  assert.ok(!existsSync(path.join(ROOT, "docs/images/compare")),
+    "一次性 before/after 对比图不应进入正式截图目录");
 
   const readme = await read("README.md");
   assert.doesNotMatch(readme, /C:\\Users|xqz|worktree|evidence\/|192\.168\.|测试服务器/i,

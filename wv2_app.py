@@ -26,7 +26,7 @@
      建窗 -> 导航桩 URL -> 程序化三组尺寸变化（Bounds 逐字段 0 误差）
      -> 深色渲染截图 -> WM_CLOSE 干净退出。
 
-官方依据（证据副本 .trae/team/evidence/T03/WebView2.h，1.0.4258.31）：
+官方依据（Microsoft.Web.WebView2 NuGet 1.0.4258.31 的 WebView2.h）：
   - Environment.CreateCoreWebView2Controller：44189（vtable 槽 3）；
   - WebView2.get_Settings：3023（槽 3）/ Navigate：3029（槽 5）/
     get_BrowserProcessId：3141（槽 37）；
@@ -51,6 +51,7 @@ import json
 import math
 import os
 import sys
+import tempfile
 import threading
 import time
 
@@ -1394,8 +1395,8 @@ def run_liquid_sink(args):
 
 def main(argv=None):
     here = os.path.dirname(os.path.abspath(__file__))
-    default_evidence = os.path.abspath(os.path.join(
-        here, "..", "..", "..", ".trae", "team", "evidence", "T04"))
+    default_evidence = os.path.join(
+        tempfile.gettempdir(), "tvd-webview2-selftest")
 
     parser = argparse.ArgumentParser(
         description="TG 视频下载器 v2.0 原生壳（ctypes 直宿主 WebView2）")

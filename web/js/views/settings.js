@@ -72,7 +72,7 @@ import {
   el, createSegmented, createOverlay, createToaster,
 } from "../ui/index.js";
 
-// T17 手势增量（边缘返回/聚焦保持；见 evidence/T17/t17_diff_list.md）
+// T17 手势增量：边缘返回与输入聚焦保持。
 import { attachEdgeBack, attachFocusKeep } from "../gestures.js";
 
 export const path = "settings";
