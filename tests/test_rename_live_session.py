@@ -96,3 +96,33 @@ def test_apply_item_rename_missing_file_pending_records(isolated):
     assert result == {"ok": True, "renamed": False, "name": "clip.mp4",
                       "error": ""}
     assert task["items"][0]["rename"] == "new.mp4"
+
+
+class _InlineLoop:
+    """把会话循环的投递就地执行，模拟事件循环线程上的串行保存。"""
+
+    def is_closed(self):
+        return False
+
+    def call_soon_threadsafe(self, fn):
+        fn()
+
+
+def test_rename_sync_persists_on_session_loop(isolated, monkeypatch):
+    """同步投递到会话循环后应立即回写，最后一个落盘快照必须带新名称。"""
+    (isolated.parent / "clip.mp4").write_bytes(b"x")
+    task = _task("t-loop", isolated.parent, [_item()])
+    live = _sess(copy.deepcopy(task))
+    live.loop = _InlineLoop()
+    monkeypatch.setitem(core.ACTIVE_SESSIONS, task["id"], live)
+    out = _api(task).edit_task(task["id"], {
+        "title": "循环标题",
+        "renames": [{"src": core.SRC_CHANNEL, "mid": 7001,
+                     "name": "循环名字.mp4"}],
+    })
+    assert out["ok"] is True
+    assert live.task["channel_title"] == "循环标题"
+    assert live.task["items"][0]["name"] == "循环名字.mp4"
+    stored = {t["id"]: t for t in core.load_tasks()}[task["id"]]
+    assert stored["channel_title"] == "循环标题"
+    assert stored["items"][0]["name"] == "循环名字.mp4"

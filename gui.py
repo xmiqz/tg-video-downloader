@@ -2302,26 +2302,48 @@ class Api:
                 return t
         return None
 
-    def _sync_live_items(self, task_id, task, keys):
+    def _sync_live_items(self, task_id, task, keys, *, title=None):
         """live 会话同步：只覆盖本次涉及的条目，避免下载中旧快照
-        force 保存回退改名；新对象已移除的键同时清掉残留。"""
+        force 保存回退改名；新对象已移除的键同时清掉残留。
+
+        下载线程的 force 保存都在会话事件循环线程里执行。这里把
+        同步也投递到同一循环并立即回写一次，保证任何保存顺序的最后
+        一次落盘都携带新名称（而不是在 RPC 线程与保存并发交错）。
+        """
         sess = core.ACTIVE_SESSIONS.get(task_id)
         if sess is None:
             return
-        for key in keys:
-            live_ti = core.find_item(sess.task, key)
-            if live_ti is None:
-                continue
-            new_ti = core.find_item(task, key)
-            if new_ti is None:
+
+        def _apply():
+            for key in keys:
+                live_ti = core.find_item(sess.task, key)
+                if live_ti is None:
+                    continue
+                new_ti = core.find_item(task, key)
+                if new_ti is None:
+                    for field in ("name", "rename", "orig_name"):
+                        live_ti.pop(field, None)
+                    continue
                 for field in ("name", "rename", "orig_name"):
-                    live_ti.pop(field, None)
-                continue
-            for field in ("name", "rename", "orig_name"):
-                if field in new_ti:
-                    live_ti[field] = new_ti[field]
-                else:
-                    live_ti.pop(field, None)
+                    if field in new_ti:
+                        live_ti[field] = new_ti[field]
+                    else:
+                        live_ti.pop(field, None)
+            if title is not None:
+                sess.task["channel_title"] = title
+            try:
+                core.save_task(sess.task, force=True)
+            except Exception:
+                pass
+
+        loop = getattr(sess, "loop", None)
+        if loop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(_apply)
+                return
+            except Exception:
+                pass
+        _apply()
 
     def edit_task(self, task_id, fields):
         """批量修改任务属性：title/parallel/folder（+move_files）。
@@ -2335,9 +2357,8 @@ class Api:
             core.rename_task(t, fields["title"])
             # live 会话同步：下载中的 force 保存用 sess.task 旧快照，
             # 不同步标题会把改名写回旧值。
-            sess = core.ACTIVE_SESSIONS.get(task_id)
-            if sess is not None:
-                sess.task["channel_title"] = t.get("channel_title", "")
+            self._sync_live_items(
+                task_id, t, (), title=t.get("channel_title", ""))
         if fields.get("parallel"):
             core.set_parallel(t, int(fields["parallel"]))
         # T51：账号偏好（不加新 RPC；T52 经 edit_task 切换任务偏好）。
