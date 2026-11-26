@@ -4192,6 +4192,9 @@ def apply_item_rename(task, ti, new_name=None):
     cur = ti["name"]
     folder = pathlib.Path(task["folder"])
     if not (folder / cur).exists():
+        if ti.get("status") in DONE_STATUSES:
+            return {"ok": False, "renamed": False, "name": cur,
+                    "error": "原文件不存在，无法改名"}
         ti["rename"] = want
         return {"ok": True, "renamed": False, "name": cur, "error": ""}
     final, err = _rename_on_disk(folder, cur, want)

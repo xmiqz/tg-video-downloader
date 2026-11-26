@@ -2302,6 +2302,27 @@ class Api:
                 return t
         return None
 
+    def _sync_live_items(self, task_id, task, keys):
+        """live 会话同步：只覆盖本次涉及的条目，避免下载中旧快照
+        force 保存回退改名；新对象已移除的键同时清掉残留。"""
+        sess = core.ACTIVE_SESSIONS.get(task_id)
+        if sess is None:
+            return
+        for key in keys:
+            live_ti = core.find_item(sess.task, key)
+            if live_ti is None:
+                continue
+            new_ti = core.find_item(task, key)
+            if new_ti is None:
+                for field in ("name", "rename", "orig_name"):
+                    live_ti.pop(field, None)
+                continue
+            for field in ("name", "rename", "orig_name"):
+                if field in new_ti:
+                    live_ti[field] = new_ti[field]
+                else:
+                    live_ti.pop(field, None)
+
     def edit_task(self, task_id, fields):
         """批量修改任务属性：title/parallel/folder（+move_files）。
         T50：目录有变化且勾选搬文件 → 建 move_folder 作业异步搬运，
@@ -2312,6 +2333,11 @@ class Api:
             return {"ok": False, "error": "任务不存在"}
         if fields.get("title"):
             core.rename_task(t, fields["title"])
+            # live 会话同步：下载中的 force 保存用 sess.task 旧快照，
+            # 不同步标题会把改名写回旧值。
+            sess = core.ACTIVE_SESSIONS.get(task_id)
+            if sess is not None:
+                sess.task["channel_title"] = t.get("channel_title", "")
         if fields.get("parallel"):
             core.set_parallel(t, int(fields["parallel"]))
         # T51：账号偏好（不加新 RPC；T52 经 edit_task 切换任务偏好）。
@@ -2373,6 +2399,7 @@ class Api:
                 return {"ok": False, "error": "renames 必须为列表"}
             renamed = recorded = 0
             warnings = []
+            touched_keys = set()
             for row in rows:
                 if not isinstance(row, dict):
                     return {"ok": False, "error": "renames 条目必须为对象"}
@@ -2388,6 +2415,7 @@ class Api:
                 name = str(row.get("name") or "").strip()
                 if not name:
                     continue
+                touched_keys.add(key)
                 r = core.apply_item_rename(t, ti, name)
                 if not r["ok"]:
                     warnings.append(f"#{key[1]} {r['error']}")
@@ -2396,6 +2424,7 @@ class Api:
                 else:
                     recorded += 1
             core.save_task(t, force=True)
+            self._sync_live_items(task_id, t, touched_keys)
             return {"ok": True, "renamed": renamed, "recorded": recorded,
                     "warnings": warnings}
         if "restore" in fields:
@@ -2413,6 +2442,7 @@ class Api:
                     return {"ok": False, "error": "restore 条目 mid 无效"}
             out = core.restore_item_names(t, rkeys)
             core.save_task(t, force=True)
+            self._sync_live_items(task_id, t, rkeys)
             return out
         folder = (fields.get("folder") or "").strip()
         if not folder:
