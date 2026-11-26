@@ -203,8 +203,8 @@ def test_preflight_rules_live_in_tested_module():
 
 def test_compose_default_image_matches_current_stable():
     text = _read(COMPOSE)
-    assert "ghcr.io/xmiqz/tg-video-downloader:v2.5.2" in text, (
-        "compose 默认镜像必须指向当前稳定版 v2.5.2")
+    assert "ghcr.io/xmiqz/tg-video-downloader:v2.6.0" in text, (
+        "compose 默认镜像必须指向当前稳定版 v2.6.0")
     assert ":latest" not in text
 
 
