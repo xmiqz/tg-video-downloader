@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       publish: ${{ steps.resolve.outputs.publish }}
-      tag: ${{ steps.resolve.outputs.tag }}
+      tag: ${{ steps.resolve.outputs.release_tag }}
       sha: ${{ steps.resolve.outputs.source_sha }}
       short_sha: ${{ steps.resolve.outputs.short_sha }}
     steps:

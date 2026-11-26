@@ -201,10 +201,22 @@ def test_preflight_rules_live_in_tested_module():
         "preflight 规则必须有对应单元测试")
 
 
+def test_container_preflight_maps_release_tag_output():
+    """container 的 preflight 必须映射脚本输出的 release_tag。
+
+    历史上写成 steps.resolve.outputs.tag，脚本从未输出该键，导致
+    正式 Tag 的 GHCR 发布在「Record publish target」处拿到空 tag 失败。
+    """
+    text = _read(CONTAINER)
+    assert "tag: ${{ steps.resolve.outputs.release_tag }}" in text, (
+        "container preflight 输出 tag 必须来自 release_preflight.py 的 release_tag")
+    assert "steps.resolve.outputs.tag }}" not in text
+
+
 def test_compose_default_image_matches_current_stable():
     text = _read(COMPOSE)
-    assert "ghcr.io/xmiqz/tg-video-downloader:v2.5.2" in text, (
-        "compose 默认镜像必须指向当前稳定版 v2.5.2")
+    assert "ghcr.io/xmiqz/tg-video-downloader:v2.6.0" in text, (
+        "compose 默认镜像必须指向当前稳定版 v2.6.0")
     assert ":latest" not in text
 
 
