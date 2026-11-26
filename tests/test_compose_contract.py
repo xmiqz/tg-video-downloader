@@ -2,7 +2,8 @@
 
 锁定 compose.yaml 的容器安全与数据契约：
   - restart: unless-stopped、healthcheck 打 http://127.0.0.1:8787/healthz
-  - 默认命名卷 tgvd-data → /data，卷名固定 tg-video-downloader-data，
+  - 默认命名卷 tgvd-data → /data，卷名固定 tg-video-downloader-data；
+    NAS 可用 TGVD_DATA_DIR 指向宿主机目录（如容器名目录下的 data/）。
     服务 volumes 只挂 /data，只读根 + 唯一可写 tmpfs /tmp
   - cap_drop: ALL、no-new-privileges:true、user 默认 10001:10001
   - 镜像固定为 ghcr.io/xmiqz/tg-video-downloader 的版本 tag，禁止 :latest
@@ -122,10 +123,11 @@ def test_named_volume_declared_once_with_fixed_name():
     assert names == ["name: " + VOLUME_NAME], f"卷名必须固定为 {VOLUME_NAME}，实际 {names}"
 
 
-def test_service_mounts_only_named_volume_at_data():
+def test_service_mounts_only_data_with_optional_host_dir():
+    """默认命名卷；NAS 可用 TGVD_DATA_DIR 换成宿主机目录（需 chown）。"""
     items = _list_items("volumes")
-    assert items == [f"{NAMED_VOLUME}:/data"], (
-        f"服务 volumes 只允许命名卷挂 /data，实际 {items}")
+    assert items == [f"${{TGVD_DATA_DIR:-{NAMED_VOLUME}}}:/data"], (
+        f"服务 volumes 只允许一处 /data 挂载，实际 {items}")
 
 
 def test_readonly_rootfs():

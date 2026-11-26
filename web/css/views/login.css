@@ -201,6 +201,23 @@ html.liquid .lg-login-card {
 }
 .lg-notice[hidden] { display: none; }
 
+.lg-qr {
+  display: flex;
+  justify-content: center;
+  margin: 12px 0 4px;
+}
+
+.lg-qr svg {
+  width: min(220px, 100%);
+  max-width: 100%;
+  height: auto;
+  display: block;
+  box-sizing: border-box;
+  background: #fff;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+}
+
 /* 游客按钮（2.1 #guest-btn：style.css:1018 margin-top 6px） */
 .lg-guest-btn { margin-top: 6px; }
 

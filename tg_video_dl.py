@@ -637,6 +637,108 @@ def _mask_phone(p):
     return "****" + s[-2:] if len(s) >= 2 else "****"
 
 
+def sent_code_delivery(sent_code):
+    """把 Telegram auth.SentCode 的投递方式映射为稳定的前端/CLI 语义。"""
+    def type_name(value):
+        name = type(value).__name__
+        if name.startswith("SentCodeType"):
+            return "CodeType" + name[len("SentCodeType"):]
+        return name
+
+    def delivery(value):
+        name = type_name(value)
+        if not name.startswith("CodeType"):
+            return "unknown"
+        name = name[len("CodeType"):]
+        if name in ("SmsWord", "SmsPhrase"):
+            return "sms"
+        if name == "SetUpEmailRequired":
+            return "email_setup_required"
+        return {
+            "App": "app",
+            "Sms": "sms",
+            "Call": "call",
+            "FlashCall": "flash_call",
+            "MissedCall": "missed_call",
+            "EmailCode": "email",
+            "FragmentSms": "fragment",
+            "FirebaseSms": "firebase_sms",
+        }.get(name, "unknown")
+
+    sent_type = getattr(sent_code, "type", None)
+    next_type = getattr(sent_code, "next_type", None)
+    timeout = getattr(sent_code, "timeout", None)
+    result_type = type(sent_code).__name__
+    return {
+        "delivery": delivery(sent_type),
+        "next_delivery": delivery(next_type) if next_type is not None else "",
+        "timeout": timeout if isinstance(timeout, int) and timeout > 0 else None,
+        "type": type(sent_type).__name__,
+        "next_type": type(next_type).__name__ if next_type is not None else "",
+        "result": result_type,
+    }
+
+
+def app_code_only(info):
+    """判定"验证码只会以 App 服务通知投递且无备用渠道"这一卡死态。
+
+    Telegram 官方 auth 文档：auth.sentCodeTypeApp 的码只发往"所有其他
+    已登录会话"（other logged-in sessions）。next_type 为空即代表 Telegram
+    本次不再提供短信/电话等替代渠道，重发只会得到
+    SEND_CODE_UNAVAILABLE。此时若该号码没有任何活跃会话，App 端必然
+    永远收不到——必须引导用户改用扫码登录。
+    """
+    if not isinstance(info, dict):
+        return False
+    if info.get("delivery") != "app":
+        return False
+    return not info.get("next_delivery")
+
+
+def app_code_only_hint():
+    """app-only 卡死态的用户文案：解释根因并给出唯一可靠出路。"""
+    return ("Telegram 本次只把验证码发送到已登录的 Telegram App 会话，"
+            "且不再提供短信或电话等备用渠道。"
+            "若手机 App 里没有出现新的登录码，请确认该号码在 Telegram App"
+            "内仍处于登录状态；已退出或已换机的情况下，"
+            "请改用扫码登录（手机 Telegram → 设置 → 设备 → 扫码登录）。")
+
+
+def sent_code_hint(info):
+    """根据 Telegram 返回的投递类型生成用户可见的渠道说明。"""
+    channel = {
+        "app": "已登录的 Telegram App（服务通知）",
+        "sms": "短信",
+        "call": "语音电话",
+        "flash_call": "闪电话",
+        "missed_call": "未接来电",
+        "email": "登录邮箱",
+        "email_setup_required": "登录邮箱设置",
+        "fragment": "Fragment 短信",
+        "firebase_sms": "Firebase 短信",
+    }.get(info.get("delivery"), "其他渠道")
+    if channel == "登录邮箱设置":
+        text = "Telegram 要求先设置登录邮箱，当前验证码未发送；请在官方 Telegram App 完成设置后重试。"
+    else:
+        text = f"Telegram 本次通过{channel}提供验证码，请按对应渠道查看；不要只等待 Telegram App 消息。"
+    next_delivery = info.get("next_delivery")
+    if next_delivery and next_delivery != "unknown":
+        next_channel = {
+            "app": "Telegram App",
+            "sms": "短信",
+            "call": "语音电话",
+            "flash_call": "闪电话",
+            "missed_call": "未接来电",
+            "email": "登录邮箱",
+            "fragment": "Fragment",
+            "firebase_sms": "Firebase 短信",
+        }.get(next_delivery, "其他渠道")
+        timeout = info.get("timeout")
+        text += (f" 等待 {timeout} 秒后可改用{next_channel}。" if timeout
+                 else f" 后续可改用{next_channel}。")
+    return text
+
+
 def reconcile_phones(cfg):
     """T59 §2.2 启动对账：异常手机号清洗——只标记不删除（零网络、
     幂等）。由 ensure_dirs_and_migrate 在 reconcile_session_promotion
@@ -5011,12 +5113,23 @@ class AccountPool:
 
     async def login_main_tui(self, cfg):
         """TUI 主号登录：封装原 run() 内联流程（TelegramClient 构造、
-        client.start(phone)、内置凭证失效换用户凭证重试一次、get_me），
-        行为逐行不变；成功后托管进池并返回 client。"""
+        发码并记录投递渠道、client.start(phone)、内置凭证失效换用户凭证
+        重试一次、get_me）；成功后托管进池并返回 client。"""
         client = self._raw_client(ACCT_MAIN, cfg)
-        print("\n正在登录 Telegram …（首次需输入 Telegram App 收到的验证码）")
+        print("\n正在登录 Telegram …（首次需输入 Telegram 返回的登录验证码）")
+
+        def ask_code():
+            return ask("收到的 Telegram 登录验证码")
+
+        async def send_code(target_client):
+            info = sent_code_delivery(
+                await target_client.send_code_request(cfg["phone"]))
+            print(paint(f" {sent_code_hint(info)}", YELLOW))
+
         try:
-            await client.start(phone=lambda: cfg["phone"])
+            await send_code(client)
+            await client.start(phone=lambda: cfg["phone"],
+                               code_callback=ask_code)
         except Exception as e:
             if cfg.get("builtin_api") and type(e).__name__ in (
                 "ApiIdInvalidError", "ApiIdPublishedFloodError",
@@ -5025,7 +5138,9 @@ class AccountPool:
                 await client.disconnect()
                 prompt_manual_api(cfg)
                 client = self._raw_client(ACCT_MAIN, cfg)
-                await client.start(phone=lambda: cfg["phone"])
+                await send_code(client)
+                await client.start(phone=lambda: cfg["phone"],
+                                   code_callback=ask_code)
             else:
                 raise
         me = await client.get_me()
@@ -5040,7 +5155,8 @@ class AccountPool:
     # ---------- 小号登录（参数化；gui RPC 与 TUI 菜单同一套协程） ----------
     async def add_start(self, account_id, phone):
         """alt1 添加第 1 步：构造+connect+(已授权即 ready)否则发码。
-        返回 "need_code"|"ready"；异常原样上抛由调用方映射（gui
+        返回 {"stage": "need_code", "delivery_info": ...}|"ready"；
+        异常原样上抛由调用方映射（gui
         connect/send_code 同款语义）。
         T58：connect/授权阶段异常维持 _cleanup_add 后 re-raise（码绝无
         发出）；send_code_request 阶段异常保留 _adding 与 client 原样
@@ -5073,8 +5189,9 @@ class AccountPool:
         # T58 发码阶段分流：异常保留 _adding 与 client 原样上抛（不
         # disconnect、不 pop）；半成品回收只靠三处既有路径（verify 成功
         # _finish_add / gui 重入 _cleanup_add / shutdown_alts 等拆除）。
-        await client.send_code_request(phone)
-        return "need_code"
+        sent_code = await client.send_code_request(phone)
+        return {"stage": "need_code",
+                "delivery_info": sent_code_delivery(sent_code)}
 
     async def add_verify_code(self, account_id, code):
         """alt1 添加第 2 步：sign_in(phone, code)；2FA 返回
@@ -7347,8 +7464,10 @@ async def account_menu(pool):
                 if not phone:
                     continue
                 r = await pool.add_start(ACCT_ALT, phone)
-                if r == "need_code":
-                    code = ask("Telegram App 内收到的验证码")
+                if isinstance(r, dict) and r.get("stage") == "need_code":
+                    info = r.get("delivery_info") or {}
+                    print(paint(f" {sent_code_hint(info)}", YELLOW))
+                    code = ask("收到的 Telegram 登录验证码")
                     r = await pool.add_verify_code(ACCT_ALT, code)
                 if r == "need_password":
                     pw = ask("两步验证密码（该账号设置了 2FA）")

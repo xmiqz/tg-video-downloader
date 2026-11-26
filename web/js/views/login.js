@@ -55,15 +55,15 @@ export function resolveEntryState(st) {
   return "anonymous";
 }
 
-// S2 send_code 返回 → {step:"code",warning} | {recover:true,error} | {error}
+// S2 send_code 返回 → {step:"code",warning,notice} | {recover:true,error} | {error}
 // （app.js doSendCode 447-474 纯化；T58 3.2 分支唯一入口）。
 export function resolveSendCodeOutcome(r, fallbackError) {
   const fallback = fallbackError || "发送验证码失败";
   if (r && typeof r === "object") {
     if (r.ok === true) {
-      // 完全成功 / 软成功（SendCodeUnavailable——码经 App 消息已到）：
-      // 只信 ok → 码步；warning 原句透传内联（软成功文案）。
-      return { step: "code", warning: r.warning || "" };
+      // 完全成功 / 软成功：只信 ok → 码步；warning 保留错误/特殊说明，
+      // 投递渠道说明走 notice，不再硬编码为 Telegram App 消息。
+      return { step: "code", warning: r.warning || "", notice: r.notice || "" };
     }
     if (r.recoverable === true) {
       // 网络抖动（码可能已发出但响应回程失败）：停 phone 步 + 明示
@@ -96,7 +96,7 @@ export function resolveVerifyOutcome(r) {
 // S4 步骤机（task §3.S4）：三步向导 phone→code→pwd 单链；
 //   phone 不可再退（prevStep 钳制）、pwd 末步钳制；未知输入安全默认
 //   phone。返回上一步纯前端切步零 RPC、保值（TR11-1 走查）。
-const STEP_CHAIN = ["phone", "code", "pwd"];
+const STEP_CHAIN = ["qr", "phone", "code", "pwd"];
 export function nextStep(cur) {
   const i = STEP_CHAIN.indexOf(cur);
   if (i < 0) return "phone";
@@ -141,6 +141,7 @@ let root = null;                // 视图根节点缓存（mount 恰一次）
 let epoch = 0;                  // onEnter 世代（重入/离开使旧异步回调失效）
 let pollId = null;              // 游客态轮询句柄（onLeave 必清）
 let pollBusy = false;
+let qrPollId = null;
 let busy = false;               // 提交互斥（防重复发码/重复校验）
 
 const $ = {};                   // 节点引用（mount 时赋值）
@@ -196,12 +197,19 @@ function setStep(step) {
     const node = stepEls[k];
     if (node) node.hidden = k !== s;
   });
+  if (s !== "code") showQrFallback(false);
   // T58 3.2：每次进入 phone 步重置“直接输入”恢复入口。
   if (s === "phone") hideRecover();
 }
 
 function hideRecover() {
   if ($.btnRecover) $.btnRecover.hidden = true;
+}
+
+// App-only 卡死态（delivery=app 且无 next_delivery）：Telegram 只把验证码
+// 发到其他已登录会话，此时码步必须露出扫码兜底入口。
+function showQrFallback(show) {
+  if ($.btnQrFromCode) $.btnQrFromCode.hidden = !show;
 }
 
 // —— 内联错误 / 受控提示（零 alert；role=alert 区域）——
@@ -214,6 +222,60 @@ function noticeShow(msg) {
   if (!$.notice) return;
   $.notice.textContent = msg || "";
   $.notice.hidden = !msg;
+}
+
+function stopQrPoll() {
+  if (qrPollId) {
+    clearInterval(qrPollId);
+    qrPollId = null;
+  }
+}
+
+function startQrPoll() {
+  stopQrPoll();
+  qrPollId = setInterval(async () => {
+    try {
+      const state = await api().qr_login_poll();
+      if (!state || !state.ok) {
+        stopQrPoll();
+        errShow(state && state.error ? state.error : "二维码已失效，请刷新");
+        return;
+      }
+      if (state.stage === "need_password") {
+        stopQrPoll();
+        setStep("pwd");
+      } else if (state.stage === "ready") {
+        stopQrPoll();
+        const me = await api().me();
+        showAccountCard();
+        fetchMe(me);
+      }
+    } catch (e) {
+      stopQrPoll();
+      errShow(e.message);
+    }
+  }, 1500);
+}
+
+async function startQrLogin() {
+  stopQrPoll();
+  errShow("");
+  noticeShow("正在生成二维码…");
+  if ($.qrImage) $.qrImage.innerHTML = "";
+  if ($.qrImage) $.qrImage.hidden = true;
+  try {
+    const result = await api().qr_login_start();
+    if (!result || !result.ok) throw new Error((result && result.error) || "生成二维码失败");
+    if ($.qrImage) $.qrImage.innerHTML = result.svg || "";
+    setStep("qr");
+    if ($.qrImage) $.qrImage.hidden = false;
+    if ($.btnQrRefresh) $.btnQrRefresh.hidden = false;
+    noticeShow("请用手机 Telegram 扫码；二维码过期后点刷新。");
+    startQrPoll();
+  } catch (e) {
+    errShow(e.message);
+    noticeShow("");
+  }
 }
 function errShowAcct(msg) {
   if (!$.acctErr) return;
@@ -256,6 +318,8 @@ function doSendCode() {
   const phone = sanitizePhone($.inputPhone.value);
   if (!phone) { errShow("请输入手机号"); return; }
   errShow("");
+  noticeShow("");
+  stopQrPoll();
   hideRecover(); // T58 3.2：新一轮发送即重置恢复按钮
   withSubmit($.btnPhone, "发送中…", async function () {
     let r = null;
@@ -267,11 +331,16 @@ function doSendCode() {
       exc ? "发送验证码失败：" + (exc && exc.message ? exc.message : String(exc)) : undefined);
     if (out.step === "code") {
       setStep("code");
-      errShow(out.warning || "");   // 软成功 warning 原句内联
+      errShow(out.warning || "");
+      noticeShow(out.notice || "");
+      const info = (r && r.delivery_info) || null;
+      showQrFallback(!!info && info.delivery === "app" && !info.next_delivery);
     } else if (out.recover) {
+      showQrFallback(false);
       errShow(out.error);           // 停 phone 步显错 + 明示入口
       $.btnRecover.hidden = false;
     } else {
+      showQrFallback(false);
       errShow(out.error);           // flood/bad_phone/banned/api_invalid…无恢复入口
     }
   });
@@ -303,7 +372,13 @@ function doVerifyPassword() {
   withSubmit($.btnPwd, "确认中…", async function () {
     let r = null;
     let exc = null;
-    try { r = await api().verify_password(sanitizePwd($.inputPwd.value)); }
+    const password = sanitizePwd($.inputPwd.value);
+    try {
+      const state = await api().login_state();
+      r = state && state.qr && state.qr.need_password
+        ? await api().qr_login_password(password)
+        : await api().verify_password(password);
+    }
     catch (e) { exc = e; }
     const out = resolveVerifyOutcome(r);
     if (out === "ready") {
@@ -642,7 +717,7 @@ function showLoginForm(entryState) {
 // ------------------------------------------------------------
 function buildDom() {
   const labelPhone = el("label", { class: "lg-label", for: "lg-phone", text: "手机号（含国家区号，不带 +）" });
-  const labelCode = el("label", { class: "lg-label", for: "lg-code", text: "Telegram 发来的验证码" });
+  const labelCode = el("label", { class: "lg-label", for: "lg-code", text: "Telegram 登录验证码" });
   const labelPwd = el("label", { class: "lg-label", for: "lg-pwd", text: "两步验证密码" });
 
   $.inputPhone = el("input", {
@@ -662,6 +737,15 @@ function buildDom() {
   });
 
   $.btnPhone = el("button", { class: "u-btn u-btn--primary lg-block", type: "button", text: "发送验证码", onClick: function () { doSendCode(); } });
+  $.btnQr = el("button", {
+    class: "u-btn u-btn--ghost lg-block", type: "button",
+    text: "扫码登录（推荐）", onClick: function () { startQrLogin(); },
+  });
+  $.btnQrRefresh = el("button", {
+    class: "u-btn u-btn--ghost lg-block", type: "button", hidden: true,
+    text: "刷新二维码", onClick: function () { startQrLogin(); },
+  });
+  $.qrImage = el("div", { class: "lg-qr", hidden: true });
   // T58 3.2：可恢复错误明示入口（默认隐藏；仅用户主动点击才进码步）。
   $.btnRecover = el("button", {
     class: "u-btn u-btn--ghost lg-block", type: "button", hidden: true,
@@ -671,15 +755,25 @@ function buildDom() {
   $.btnCode = el("button", { class: "u-btn u-btn--primary lg-block", type: "button", text: "登录", onClick: function () { doVerifyCode(); } });
   // 2.1 code 步返回钮逐字「返回」（index.html:57）；pwd 步无返回钮（:59-62）
   $.btnBackCode = el("button", { class: "u-btn u-btn--ghost lg-block", type: "button", text: "返回", onClick: function () { setStep(prevStep("code")); } });
+  // App-only 投递卡死态的出路：Telegram 只把验证码发到已登录会话时，
+  // 已退出/已换机的用户在码步永远等不到，这里提供直接切扫码的入口。
+  $.btnQrFromCode = el("button", {
+    class: "u-btn u-btn--ghost lg-block", type: "button", hidden: true,
+    text: "收不到验证码？改用扫码登录",
+    onClick: function () { startQrLogin(); },
+  });
   $.btnPwd = el("button", { class: "u-btn u-btn--primary lg-block", type: "button", text: "确认", onClick: function () { doVerifyPassword(); } });
 
   $.stepPhone = el("div", { class: "lg-step", dataset: { step: "phone" } },
-    [labelPhone, $.inputPhone, $.btnPhone, $.btnRecover]);
+    [labelPhone, $.inputPhone, $.btnPhone, $.btnRecover, $.btnQr]);
+  $.stepQr = el("div", { class: "lg-step", dataset: { step: "qr" }, hidden: true },
+    [$.qrImage, $.btnQrRefresh]);
   $.stepCode = el("div", { class: "lg-step", dataset: { step: "code" }, hidden: true },
-    [labelCode, $.inputCode, $.btnCode, $.btnBackCode]);
+    [labelCode, $.inputCode, $.btnCode, $.btnBackCode, $.btnQrFromCode]);
   $.stepPwd = el("div", { class: "lg-step", dataset: { step: "pwd" }, hidden: true },
     [labelPwd, $.inputPwd, $.btnPwd]);
   stepEls.phone = $.stepPhone;
+  stepEls.qr = $.stepQr;
   stepEls.code = $.stepCode;
   stepEls.pwd = $.stepPwd;
 
@@ -704,7 +798,7 @@ function buildDom() {
     class: "u-card lg-card lg-login-card", role: "dialog",
     "aria-label": "登录", "aria-busy": "false",
   }, [logoBadge, cardTitle, cardSub, $.stepPhone, $.stepCode, $.stepPwd,
-    $.err, $.notice, $.btnGuestEnter]);
+    $.stepQr, $.err, $.notice, $.btnGuestEnter]);
 
   // 账号卡（已登录态渲染账号信息/资料重试；成功态提供“去任务库”导航）。
   $.meAvatar = el("div", { class: "lg-avatar", "aria-hidden": "true", text: "…" });
@@ -741,6 +835,9 @@ function buildDom() {
   $.acctCard.el.hidden = true;
 
   submitLabels.set($.btnPhone, "发送验证码");
+  submitLabels.set($.btnQrFromCode, "收不到验证码？改用扫码登录");
+  submitLabels.set($.btnQr, "扫码登录（推荐）");
+  submitLabels.set($.btnQrRefresh, "刷新二维码");
   submitLabels.set($.btnCode, "登录");
   submitLabels.set($.btnPwd, "确认");
   submitLabels.set($.btnRetryMe, "重试获取资料");
@@ -833,6 +930,7 @@ export function onEnter(params) {
     }
     let st = null;
     try { st = await api().login_state(); } catch (e) { st = null; }
+    if (st && st.notice) noticeShow(st.notice);
     if (idle(my)) return;
     const entry = resolveEntryState(st);
     if (entry === "connected") {
@@ -840,10 +938,19 @@ export function onEnter(params) {
       fetchMe(my);
       return;
     }
+    if (st && st.qr && st.qr.active) {
+      showLoginForm(entry);
+      setStep("qr");
+      if ($.qrImage) $.qrImage.hidden = false;
+      if ($.btnQrRefresh) $.btnQrRefresh.hidden = false;
+      startQrPoll();
+      return;
+    }
     showLoginForm(entry);
     // 发码中（has_session 新语义=本轮 _code_sent）：卡首现即码步
     //（app.js:241-252 口径；guest 同样只信后端发码信号）。
     setStep(st && st.has_session ? "code" : "phone");
+    if (st && st.qr && st.qr.need_password) setStep("pwd");
     let r = null;
     try { r = await api().connect(); } catch (e) { r = null; }
     if (idle(my)) return;
@@ -855,9 +962,17 @@ export function onEnter(params) {
       fetchMe(my);
       return;
     }
+    if (r && r.ok && r.stage === "qr_waiting") {
+      setStep("qr");
+      if ($.qrImage) $.qrImage.hidden = false;
+      if ($.btnQrRefresh) $.btnQrRefresh.hidden = false;
+      startQrPoll();
+      return;
+    }
     if (codeStep) {
       setStep("code");
       if (r && r.warning) errShow(r.warning);
+      else if (r && r.notice) noticeShow(r.notice);
     } else if (r && r.ok && r.stage === "need_phone") {
       setStep("phone");
       // T58 3.1：cfg 旧手机号仅预填输入框，不触发任何发送。
@@ -876,6 +991,7 @@ export function onEnter(params) {
 export function onLeave() {
   epoch++;
   stopPoll();
+  stopQrPoll();
   pollBusy = false;
   if (busy) setBusyUi(false);
   destroyConfirm(); // T19f-D：离场收确认弹层（close 先行收敛 await）

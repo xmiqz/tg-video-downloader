@@ -132,7 +132,7 @@ Windows 图形界面需要 WebView2 Runtime；Windows 11 已预装，Windows 10 
 
 ### 2 · 登录 Telegram
 
-首次启动输入包含国家区号的手机号，例如 `8613800000000`，不要带 `+`。验证码会发送到已登录的 Telegram App；如果账号启用了两步验证，再输入两步密码。
+首次连接 Telegram 推荐使用**扫码登录**：在手机 Telegram 的“已登录设备”中扫码确认，无需等待短信或 App 推送。若账号启用了两步验证，扫码后仍需输入两步密码。也可以改用手机号验证码；Telegram 会决定验证码投递渠道，登录界面会显示本次渠道，不再写死为 Telegram App。
 
 程序内置 Telegram 公开客户端凭证，通常无需自己申请。若内置凭证不可用，可按提示到 [my.telegram.org/apps](https://my.telegram.org/apps) 创建自己的 `api_id` / `api_hash`。
 
@@ -167,23 +167,25 @@ ghcr.io/xmiqz/tg-video-downloader:v2.5.2
 
 支持 `linux/amd64` 与 `linux/arm64`。镜像内已写入版本号与 7 位构建 SHA，`/healthz` 可直接核对；Compose 不再用空环境变量覆盖它们。
 
-在 Docker 主机或 NAS 上使用仓库中的 [compose.yaml](./compose.yaml)：
+在 Docker 主机或 NAS 上可直接拉取仓库中的 [compose.yaml](./compose.yaml) 在线部署：
 
 ```bash
-docker compose up -d
-docker compose ps
-docker compose logs -f --tail=100
+mkdir -p /volume1/docker/tg-video-downloader/data
+sudo chown -R 10001:10001 /volume1/docker/tg-video-downloader/data
+TGVD_DATA_DIR=/volume1/docker/tg-video-downloader/data \
+  docker compose -f https://raw.githubusercontent.com/xmiqz/tg-video-downloader/main/compose.yaml up -d
+docker compose -f https://raw.githubusercontent.com/xmiqz/tg-video-downloader/main/compose.yaml ps
 ```
 
 首次启动读取一次性初始化令牌：
 
 ```bash
-docker compose exec tg-video-downloader cat /data/.setup-token
+docker exec tg-video-downloader cat /data/.setup-token
 ```
 
 浏览器打开 `http://主机地址:8787`，输入令牌并设置管理员密码。该密码只保护 Web 管理界面，不是 Telegram 两步验证密码；设置成功后令牌文件会自动删除。
 
-容器默认使用命名卷 `tg-video-downloader-data`，固定以 `10001:10001` 运行，并启用只读根文件系统、`cap_drop: ALL` 与 `no-new-privileges`。命名卷会继承镜像 `/data` 的属主，无需手工 chown；如需绑定到宿主机目录，请先 `chown -R 10001:10001 <目录>`，再修改 [compose.yaml](./compose.yaml) 中的卷映射。
+容器固定以 `10001:10001` 运行，并启用只读根文件系统、`cap_drop: ALL` 与 `no-new-privileges`。未设置 `TGVD_DATA_DIR` 时使用命名卷 `tg-video-downloader-data`（继承镜像 `/data` 属主，无需手工 chown）；NAS 推荐把应用数据放在容器名目录下，用 `TGVD_DATA_DIR` 指向该绝对路径，并先 `chown -R 10001:10001 <目录>`。部署文件本身不必长期保留，升级时重新拉取同一份 YAML 即可。
 
 > 内置 HTTP 不提供 TLS。仅在本机或可信局域网直接使用 HTTP；跨网络访问时请置于 HTTPS 反向代理之后，并设置 `TGDL_COOKIE_SECURE=1`。
 
@@ -268,7 +270,7 @@ GitHub Actions 会构建 Windows x64 / ARM64、Linux x64 / ARM64、macOS Intel /
 ## 常见问题
 
 **收不到验证码？**
-验证码由 Telegram 发送到已登录的 App，不是短信。确认 App 能接收 Telegram 服务消息，并使用最新一条验证码。
+先看登录界面显示的投递渠道。Telegram 可能把验证码发到已登录的 App、短信、电话或登录邮箱；按提示检查对应渠道，并使用最新一条验证码。如果显示的是未知渠道，可查看应用日志中的投递类型。
 
 **Windows 提示未知发布者？**
 程序未购买代码签名证书。点击“更多信息” → “仍要运行”。这不改变程序功能。

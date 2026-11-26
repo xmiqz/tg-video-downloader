@@ -21,16 +21,14 @@ services:
       TGDL_COOKIE_SECURE: "${TGDL_COOKIE_SECURE:-0}"
       TGDL_TRUST_PROXY: "${TGDL_TRUST_PROXY:-0}"
     volumes:
-      # A bind mount (./data:/data) is created by the host as root:root 0755,
-      # and this container runs as uid 10001 with cap_drop ALL, so it cannot
-      # create /data/downloads and dies at boot with
-      # "Permission denied: '/data/downloads'". A named volume is created from
-      # the image's /data (already owned by 10001:10001), so the default path
-      # needs no manual chown.
-      # To keep data on a specific host path instead, use:
-      #   - /vol1/1000/docker/tg-video-downloader:/data
-      # and chown it to 10001:10001 first.
-      - tgvd-data:/data
+      # Default: named volume (compatible with existing installs; the image's
+      # /data owner 10001:10001 is inherited, so no manual chown is needed).
+      # NAS layout: keep app data in a plain host directory next to the
+      # container name, e.g. /volume1/docker/tg-video-downloader/data, and set
+      # TGVD_DATA_DIR to that absolute path. A host bind mount must be owned by
+      # 10001:10001 first, otherwise the container (uid 10001, cap_drop ALL)
+      # cannot create /data/downloads and exits with Permission denied.
+      - ${TGVD_DATA_DIR:-tgvd-data}:/data
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777

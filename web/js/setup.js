@@ -6,19 +6,35 @@ const steps = {
   login: "login-form",
   welcome: "welcome-step",
   credentials: "credentials-form",
+  qr: "qr-step",
   phone: "phone-form",
   code: "code-form",
   password: "password-form",
   done: "done-step",
 };
-const progressOrder = ["admin", "welcome", "credentials", "phone", "code", "done"];
+const progressOrder = ["admin", "welcome", "credentials", "qr", "phone", "code", "done"];
 let phase = location.pathname === "/login" ? "login" : "admin";
 let setupMode = location.pathname === "/setup";
+let qrPollId = null;
 
 function showError(message) {
   const node = $("error");
   node.textContent = message || "";
   node.hidden = !message;
+}
+
+function showNotice(message) {
+  const node = $("notice");
+  if (!node) return;
+  node.textContent = message || "";
+  node.hidden = !message;
+}
+
+function stopQrPoll() {
+  if (qrPollId) {
+    clearInterval(qrPollId);
+    qrPollId = null;
+  }
 }
 
 function renderFoot(status) {
@@ -32,6 +48,7 @@ function renderFoot(status) {
 }
 
 function setPhase(next) {
+  stopQrPoll();
   phase = next;
   Object.entries(steps).forEach(([name, id]) => {
     $(id).hidden = name !== next;
@@ -88,7 +105,11 @@ async function rpc(method, ...params) {
   });
   let data = null;
   try { data = await resp.json(); } catch (e) {}
-  if (resp.status === 401) location.replace("/login");
+  if (resp.status === 401) {
+    if (location.pathname !== "/login") location.replace("/login");
+    setPhase("login");
+    throw new Error((data && data.error) || "管理员会话已过期，请重新登录");
+  }
   if (!resp.ok) throw new Error((data && data.error) || `HTTP ${resp.status}`);
   return data;
 }
@@ -97,11 +118,19 @@ async function continueAfterAdmin() {
   const state = await rpc("login_state").catch(() => null);
   if (state && state.logged_in) {
     setPhase("done");
+  } else if (state && state.qr && state.qr.need_password) {
+    setPhase("password");
   } else if (setupMode) {
     setPhase("welcome");
   } else {
     location.replace("/");
   }
+}
+
+function canStartTelegramSetup(status) {
+  if (!status || status.setup_required || !status.configured || status.authenticated) return false;
+  const hash = String(location.hash || "");
+  return hash === "#/setup" || hash === "#/tasks" || hash === "";
 }
 
 async function init() {
@@ -129,7 +158,11 @@ async function init() {
     return;
   }
   setupMode = false;
-  setPhase("login");
+  if (canStartTelegramSetup(status)) {
+    setPhase("welcome");
+  } else {
+    setPhase("login");
+  }
 }
 
 $("admin-form").addEventListener("submit", async (event) => {
@@ -197,7 +230,8 @@ $("credentials-form").addEventListener("submit", async (event) => {
   busy(form, true, "保存中…");
   try {
     if (apiId) await rpc("set_api_credentials", apiId, apiHash);
-    setPhase("phone");
+    setPhase("qr");
+    await startQrLogin();
   } catch (e) {
     showError(e.message);
   } finally {
@@ -205,9 +239,53 @@ $("credentials-form").addEventListener("submit", async (event) => {
   }
 });
 
+async function startQrLogin() {
+  stopQrPoll();
+  showError("");
+  showNotice("正在生成二维码…");
+  const image = $("qr-image");
+  if (image) image.innerHTML = "";
+  try {
+    const result = await rpc("qr_login_start");
+    if (!result || !result.ok) throw new Error((result && result.error) || "生成二维码失败");
+    if (image) image.innerHTML = result.svg || "";
+    showNotice(result.expires_in
+      ? `二维码 ${result.expires_in} 秒内有效，扫码后无需重复点击。`
+      : "请用手机 Telegram 扫码。");
+    stopQrPoll();
+    qrPollId = setInterval(async () => {
+      try {
+        const state = await rpc("qr_login_poll");
+        if (!state || !state.ok) {
+          stopQrPoll();
+          showError(state && state.error ? state.error : "二维码已失效，请刷新");
+          return;
+        }
+        if (state.stage === "need_password") {
+          stopQrPoll();
+          setPhase("password");
+        } else if (state.stage === "ready") {
+          stopQrPoll();
+          setPhase("done");
+        }
+      } catch (e) {
+        stopQrPoll();
+        showError(e.message);
+      }
+    }, 1500);
+  } catch (e) {
+    showError(e.message);
+    showNotice("");
+  }
+}
+
+$("qr-refresh")?.addEventListener("click", () => startQrLogin());
+
 $("phone-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   showError("");
+  showNotice("");
+  stopQrPoll();
   const form = event.currentTarget;
   const phone = $("phone").value.trim().replace(/^\+/, "");
   if (!phone) {
@@ -219,6 +297,7 @@ $("phone-form").addEventListener("submit", async (event) => {
     const result = await rpc("send_code", phone);
     if (!result || !result.ok) throw new Error((result && result.error) || "发送失败");
     if (result.warning) showError(result.warning);
+    if (result.notice) showNotice(result.notice);
     setPhase("code");
   } catch (e) {
     showError(e.message);
@@ -254,7 +333,11 @@ $("password-form").addEventListener("submit", async (event) => {
   const form = event.currentTarget;
   busy(form, true, "验证中…");
   try {
-    const result = await rpc("verify_password", $("tg-password").value);
+    const password = $("tg-password").value;
+    const state = await rpc("qr_login_status").catch(() => null);
+    const result = state && state.stage === "need_password"
+      ? await rpc("qr_login_password", password)
+      : await rpc("verify_password", password);
     if (!result || !result.ok) throw new Error((result && result.error) || "验证失败");
     $("tg-password").value = "";
     setPhase("done");

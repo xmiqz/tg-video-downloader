@@ -39,6 +39,7 @@
     </ol>
 
     <div class="setup-error" id="error" role="alert" hidden></div>
+    <div class="setup-notice" id="notice" hidden></div>
 
     <form id="admin-form" class="setup-step" hidden>
       <p class="setup-lead">先给这个 Web 服务设置管理员密码。它只用于保护浏览器界面，不是 Telegram 两步验证密码。</p>
@@ -92,6 +93,16 @@
       </div>
     </form>
 
+    <section id="qr-step" class="setup-step" hidden>
+      <p class="setup-lead">推荐用手机 Telegram 扫码登录，无需等待短信或 App 推送。</p>
+      <div class="setup-qr" id="qr-image" aria-label="Telegram 登录二维码"></div>
+      <p class="setup-hint" id="qr-hint">打开手机 Telegram → 设置 → 已登录设备 → 扫码登录。</p>
+      <div class="setup-actions">
+        <button type="button" class="secondary" data-back="credentials">改用手机号</button>
+        <button type="button" class="primary" id="qr-refresh">刷新二维码</button>
+      </div>
+    </section>
+
     <form id="phone-form" class="setup-step" hidden>
       <p class="setup-lead">输入包含国家区号的手机号，开头不要加 <code>+</code>。</p>
       <label>手机号
@@ -104,7 +115,7 @@
     </form>
 
     <form id="code-form" class="setup-step" hidden>
-      <p class="setup-lead">验证码会发送到 Telegram App。请填写最新收到的一组数字。</p>
+      <p class="setup-lead">请按页面上方提示的渠道，填写 Telegram 发来的最新验证码。</p>
       <label>验证码
         <input id="code" inputmode="numeric" autocomplete="one-time-code" required>
       </label>

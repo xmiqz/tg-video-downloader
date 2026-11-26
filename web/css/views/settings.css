@@ -211,6 +211,22 @@
   background: var(--color-surface-sunk);   /* 旧壳 rgba(255,255,255,.04)（style.css:1391） */
 }
 .st-add-card[hidden] { display: none; }
+.st-add-qr {
+  display: flex;
+  justify-content: center;
+  margin: 8px 0;
+}
+.st-add-qr svg {
+  width: min(200px, 100%);
+  max-width: 100%;
+  height: auto;
+  display: block;
+  box-sizing: border-box;
+  background: #fff;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+}
+.st-add-qr[hidden] { display: none; }
 .st-step {
   display: flex;
   flex-direction: column;

@@ -1639,6 +1639,10 @@ function buildAddCard() {
       class: "u-btn u-btn--primary st-block", type: "button", text: "发送验证码",
       onclick: function (e) { addStart(e.currentTarget); },
     }),
+    el("button", {
+      class: "u-btn u-btn--ghost st-block", type: "button", text: "扫码登录（推荐）",
+      onclick: function () { addQrStart(null); },
+    }),
     btnRecover,
     el("button", {
       class: "u-btn u-btn--ghost st-block", type: "button", text: "取消",
@@ -1648,7 +1652,7 @@ function buildAddCard() {
 
   const stepCode = el("div", { class: "st-step", hidden: true }, [
     el("label", { class: "st-label", for: "st-add-code",
-      text: "Telegram 发来的验证码" }),
+      text: "Telegram 登录验证码" }),
     inputCode,
     el("button", {
       class: "u-btn u-btn--primary st-block", type: "button", text: "验证并登录",
@@ -1669,7 +1673,7 @@ function buildAddCard() {
     inputPwd,
     el("button", {
       class: "u-btn u-btn--primary st-block", type: "button", text: "确认",
-      onclick: function (e) { verifyPassword(e.currentTarget); },
+      onclick: function (e) { verifyAddPasswordQrAware(e.currentTarget); },
     }),
     el("button", {
       class: "u-btn u-btn--ghost st-block", type: "button", text: "返回",
@@ -1681,13 +1685,30 @@ function buildAddCard() {
     }),
   ]);
 
+  const qrImage = el("div", { class: "st-add-qr", hidden: true });
+  const btnQrRefresh = el("button", {
+    class: "u-btn u-btn--ghost st-block", type: "button", hidden: true,
+    text: "刷新二维码",
+    onclick: function () { addQrStart(null); },
+  });
+  const stepQr = el("div", { class: "st-step", hidden: true }, [
+    el("p", { class: "st-hint", text: "用手机 Telegram 的“已登录设备”扫码添加小号；二维码过期后点刷新。" }),
+    qrImage,
+    btnQrRefresh,
+    el("button", {
+      class: "u-btn u-btn--ghost st-block", type: "button", text: "取消",
+      onclick: function () { addQrCancel(); },
+    }),
+  ]);
+
   const elRoot = el("div", {
     class: "st-add-card", hidden: true,
-  }, [stepPhone, stepCode, stepPwd, addErrEl]);
+  }, [stepPhone, stepCode, stepPwd, stepQr, addErrEl]);
 
   return {
     el: elRoot,
     stepPhone: stepPhone, stepCode: stepCode, stepPwd: stepPwd,
+    stepQr: stepQr, qrImage: qrImage, btnQrRefresh: btnQrRefresh,
     inputPhone: inputPhone, inputCode: inputCode, inputPwd: inputPwd,
     btnRecover: btnRecover, errEl: addErrEl,
   };
@@ -1699,6 +1720,9 @@ function setAddStep(step, keepRecover) {
   a.stepPhone.hidden = step !== "phone";
   a.stepCode.hidden = step !== "code";
   a.stepPwd.hidden = step !== "pwd";
+  a.stepQr.hidden = step !== "qr";
+  stopAddQrPoll();
+  if (step !== "qr" && a.qrImage) a.qrImage.hidden = true;
   if (step === "phone" && !keepRecover) hideAddRecover();  // T58 补充1
 }
 
@@ -1715,8 +1739,77 @@ function openAdd() {
   a.el.hidden = false;
 }
 
+// —— 小号扫码登录（v2.6）：独立二维码会话 + 池收口 ——
+let addQrPollId = null;
+
+function stopAddQrPoll() {
+  if (addQrPollId) {
+    clearInterval(addQrPollId);
+    addQrPollId = null;
+  }
+}
+
+async function addQrStart(btn) {
+  addErr("");
+  stopAddQrPoll();
+  const a = refs.add;
+  a.qrImage.innerHTML = "";
+  a.qrImage.hidden = true;
+  a.btnQrRefresh.hidden = true;
+  setAddStep("qr");
+  const restore = btn ? busyOn(btn, "生成中…") : null;
+  let r = null;
+  try {
+    const ready = await ensureApi();
+    if (!ready) throw new Error("bridge not ready");
+    r = await window.pywebview.api.account_add_qr_start(addingId);
+  } catch (e) {
+    if (restore) restore();
+    return addErr("生成失败：" + ((e && e.message) || e));
+  }
+  if (restore) restore();
+  if (!r || !r.ok) return addErr((r && r.error) || "生成二维码失败");
+  a.qrImage.innerHTML = r.svg || "";
+  a.qrImage.hidden = false;
+  a.btnQrRefresh.hidden = false;
+  stopAddQrPoll();
+  addQrPollId = setInterval(async function () {
+    let s = null;
+    try {
+      s = await window.pywebview.api.account_add_qr_poll(addingId);
+    } catch (e) {
+      stopAddQrPoll();
+      return addErr("扫码登录失败：" + ((e && e.message) || e));
+    }
+    if (!s || !s.ok) {
+      stopAddQrPoll();
+      return addErr((s && s.error) || "二维码已失效，请刷新");
+    }
+    if (s.stage === "need_password") {
+      stopAddQrPoll();
+      setAddStep("pwd");
+    } else if (s.stage === "ready") {
+      stopAddQrPoll();
+      closeAdd();
+      refreshAccounts();
+    }
+  }, 1500);
+}
+
+async function addQrCancel() {
+  stopAddQrPoll();
+  try {
+    const ready = await ensureApi();
+    if (ready && addingId) {
+      await window.pywebview.api.account_add_qr_cancel(addingId);
+    }
+  } catch (e) { /* 取消失败静默：本地步骤已关闭 */ }
+  closeAddQuiet();
+}
+
 function closeAdd() {
   if (!refs || !refs.add) return;
+  stopAddQrPoll();
   refs.add.el.hidden = true;
   addErr("");
   addingId = null;
@@ -1772,8 +1865,8 @@ async function addStart(btn) {
   restore();
   const c = classifyAddStart(r);
   if (c === "code") {
-    // 软成功 warning 原句先落错误行再切码步（app.js:3402-3405）
-    if (r.warning) addErr(r.warning);
+    // 投递渠道说明与软成功说明都保持可见（app.js:3402-3405）
+    addErr(r.notice || r.warning || "");
     setAddStep("code");
   } else if (c === "recover") {
     addErr(r.error);
@@ -1818,6 +1911,27 @@ async function verifyPassword(btn) {
   }
   restore();
   if (r && r.ok) { closeAdd(); refreshAccounts(); }
+  else addErr((r && r.error) || "两步验证密码错误");
+}
+
+async function verifyAddPasswordQrAware(btn) {
+  addErr("");
+  const restore = busyOn(btn, "确认中…");
+  let r = null;
+  try {
+    const ready = await ensureApi();
+    if (!ready) throw new Error("bridge not ready");
+    const state = await window.pywebview.api.account_add_qr_poll(addingId)
+      .catch(function () { return null; });
+    r = state && state.ok && state.stage === "need_password"
+      ? await window.pywebview.api.account_add_qr_password(addingId, refs.add.inputPwd.value)
+      : await window.pywebview.api.account_verify_password(addingId, refs.add.inputPwd.value);
+  } catch (e) {
+    restore();
+    return addErr("确认失败：" + ((e && e.message) || e));
+  }
+  restore();
+  if (r && r.ok) { stopAddQrPoll(); closeAdd(); refreshAccounts(); }
   else addErr((r && r.error) || "两步验证密码错误");
 }
 

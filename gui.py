@@ -28,6 +28,7 @@ import host
 
 import taskport
 import tg_video_dl as core
+import telegram_login
 import wallpaper
 from telethon import TelegramClient
 from telethon.errors import (
@@ -46,6 +47,21 @@ def resource_dir():
         if p.exists():
             return str(p)
     return str(pathlib.Path(__file__).resolve().parent / "web")
+
+
+_login_log = logging.getLogger("gui.login")
+_login_log.setLevel(logging.INFO)
+_login_diagnostic_path = (
+    core.DATA_DIR / "login-delivery.log" if getattr(sys, "frozen", False)
+    else None
+)
+if _login_diagnostic_path is not None:
+    with contextlib.suppress(Exception):
+        _login_diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(_login_diagnostic_path, encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(message)s"))
+        _login_log.addHandler(handler)
 
 
 class EngineLoop:
@@ -379,6 +395,10 @@ class Api:
         # 在 client 内存中）。纯内存态：不写盘、不进 JSON、不加配置键。
         # 唯一信号——connect 早退分支与 login_state 的 has_session 共用。
         self._code_sent = False
+        self._code_delivery = {}
+        self._qr_login = telegram_login.QRLoginManager(logger=_login_log)
+        self._qr_client = None
+        self._qr_pending_password = False
         # connect can be requested by the UI probe and by a background
         # headless restore. Single-flight the probe, and cache a recent
         # non-ready result briefly so a container browser opening during the
@@ -468,6 +488,10 @@ class Api:
         _code_sent 复位（集中覆盖 connect/_ensure_client/send_code/
         logout_promote 全部丢弃调用点）。"""
         self._code_sent = False
+        self._code_delivery = {}
+        if client is getattr(self, "_qr_client", None):
+            self._qr_client = None
+            self._qr_pending_password = False
         if client is None:
             return
 
@@ -481,6 +505,16 @@ class Api:
             self.engine.submit(_do())
         except Exception:
             pass
+
+    def _cancel_qr_login(self):
+        manager = getattr(self, "_qr_login", None)
+        client = getattr(self, "_qr_client", None)
+        if manager is not None:
+            manager.cancel()
+        self._qr_client = None
+        self._qr_pending_password = False
+        if client is not None:
+            self._discard_client(client)
 
     def _remove_session_files(self):
         for p in (core.SESSION_PATH + ".session",
@@ -518,6 +552,7 @@ class Api:
         """Web 首跑向导写入 api_id/api_hash；不改 Telethon 登录流程。"""
         if self.client is not None:
             return {"ok": False, "error": "已连接 Telegram，请先退出登录"}
+        self._cancel_qr_login()
         aid = str(api_id or "").strip()
         ahash = str(api_hash or "").strip()
         if not aid.isdigit() or not 1 <= int(aid) <= 9_999_999_999:
@@ -588,6 +623,7 @@ class Api:
             pass
         self.client = None
         self._code_sent = False
+        self._code_delivery = {}
         if self.guest:
             print("[GUI] guest=False（logout）")
         self.guest = False
@@ -616,6 +652,7 @@ class Api:
         client = self.client
         # T58 2.1：退出/提升路径无待验证码
         self._code_sent = False
+        self._code_delivery = {}
 
         async def _main_do():
             # 主号 Telegram 授权注销；限时 20s 防挂死，失败/超时降级
@@ -757,11 +794,20 @@ class Api:
         # has_session 新语义=“本轮已发码待验证”，仅在 _code_sent 时为 true。
         if self.client is not None:
             if self._code_sent:
-                return {"logged_in": False, "has_session": True,
-                        "guest": bool(self.guest)}
+                state = {"logged_in": False, "has_session": True,
+                         "guest": bool(self.guest)}
+                if self._code_delivery:
+                    state["delivery"] = self._code_delivery.get("delivery", "unknown")
+                    state["delivery_info"] = dict(self._code_delivery)
+                    state["notice"] = core.sent_code_hint(self._code_delivery)
+                return state
             return {"logged_in": True, "guest": False}
+        manager = getattr(self, "_qr_login", None)
+        qr_state = manager.state() if manager is not None else {"active": False}
+        if getattr(self, "_qr_pending_password", False):
+            qr_state["need_password"] = True
         return {"logged_in": False, "has_session": False,
-                "guest": bool(self.guest)}
+                "guest": bool(self.guest), "qr": qr_state}
 
     def _adopt_and_cache_me(self):
         """T51：主号就绪（connect ok / verify ready 后调用）——交池
@@ -813,8 +859,23 @@ class Api:
         # 已授权就绪 → {"ok":True}（前端等同 ready）。
         if self.client is not None:
             if self._code_sent:
-                return {"ok": True, "stage": "need_code"}
+                result = {"ok": True, "stage": "need_code"}
+                if self._code_delivery:
+                    result["delivery"] = self._code_delivery.get(
+                        "delivery", "unknown")
+                    result["delivery_info"] = dict(self._code_delivery)
+                    result["notice"] = core.sent_code_hint(self._code_delivery)
+                return result
             return {"ok": True}
+        # v2.6：二维码会话期间，页面入场探测不得重建普通 session 并取消
+        # 正在等待扫码的临时 client；直接告诉前端停在二维码步骤。
+        manager = getattr(self, "_qr_login", None)
+        if manager is not None:
+            qr_state = manager.state()
+            if getattr(self, "_qr_pending_password", False):
+                return {"ok": True, "stage": "need_password"}
+            if qr_state.get("active"):
+                return {"ok": True, "stage": "qr_waiting"}
         core.ensure_dirs_and_migrate()
         # T56 Bug1：GUI 改用非交互补凭证（绝不 input；phone 缺失由
         # need_phone 步骤补），消除 windowed GUI 无控制台时的冻结风险
@@ -822,6 +883,8 @@ class Api:
         client = self._new_client()
         # T58 2.1：新建探测 client → 本轮无待验证码
         self._code_sent = False
+        self._code_delivery = {}
+        self._cancel_qr_login()
 
         async def _do():
             # 连接 + 鉴权探测整体限时：网络不通 / 同一 session 被另一实例
@@ -880,13 +943,14 @@ class Api:
                 or isinstance(e, (asyncio.TimeoutError, TimeoutError,
                                   ConnectionError, OSError)))
 
-    def _submit_net_retry(self, coro_fn):
+    def _submit_net_retry(self, coro_fn, *, retry=True):
         """engine.submit 网络族异常恰重试一次（环境网络瞬时劫持自愈）；
-        非网络族异常或重试仍失败原样上抛，由调用方映射。"""
+        非网络族异常或重试仍失败原样上抛，由调用方映射。
+        retry=False 用于可能产生外部投递副作用的发码请求。"""
         try:
             return self.engine.submit(coro_fn())
         except Exception as e:
-            if not self._is_net_exc(e):
+            if not retry or not self._is_net_exc(e):
                 raise
             return self.engine.submit(coro_fn())
 
@@ -897,8 +961,8 @@ class Api:
         不进本辅助。按异常类名匹配（不新增 telethon import 依赖）。"""
         ename = type(e).__name__
         if ename == "SendCodeUnavailableError":
-            # 首次 SendCodeRequest 已成功（验证码已经 App 内消息送达）；
-            # 失败的只是升级重发 → 由调用方按软成功解释。
+            # 首次 SendCodeRequest 已成功，失败的只是升级重发；
+            # 不能据此推断首次使用的投递渠道。
             return {"__soft__": True}
         if ename == "FloodWaitError":
             secs = getattr(e, "seconds", None)
@@ -937,11 +1001,12 @@ class Api:
             return {"ok": False, "error": err}
 
         async def _do():
-            await self.client.send_code_request(phone)
+            return await self.client.send_code_request(phone)
 
         try:
-            self._submit_net_retry(_do)   # 网络族异常恰重试一次（D1 加固）
+            sent_code = self._submit_net_retry(_do, retry=False)
         except Exception as e:
+            _login_log.info("主号发码失败：%s", type(e).__name__)
             ename = type(e).__name__
             if ename == "AuthKeyDuplicatedError":
                 # T58 2.4：维持现行清理（discard+置空+删会话文件），
@@ -950,20 +1015,34 @@ class Api:
                 self.client = None
                 self._remove_session_files()
                 self._code_sent = False
+                self._code_delivery = {}
                 return {"ok": False, "error": f"{ename}: {e}"}
             mapped = self._map_send_code_exc(e)
             if mapped.get("__soft__"):
-                # 首次发送已成功，验证码已到 App；失败的只是短信升级重发
+                _login_log.info("主号发码软成功：%s", ename)
+                # 首次发送已成功，升级重发失败；实际投递渠道未知
                 self.cfg["phone"] = phone
                 core.save_config(self.cfg)
                 self._code_sent = True
+                self._code_delivery = {}
                 return {"ok": True, "stage": "need_code",
-                        "warning": "验证码已通过 Telegram App 消息发送，请直接查看并输入最新验证码；无需重复点击发送。"}
+                        "delivery": "unknown",
+                        "notice": core.app_code_only_hint()}
             return mapped
+        info = core.sent_code_delivery(sent_code)
+        _login_log.info(
+            "主号发码响应：%s", info)
+        self._code_delivery = info
         self.cfg["phone"] = phone
         core.save_config(self.cfg)
         self._code_sent = True
-        return {"ok": True}
+        notice = core.sent_code_hint(info)
+        if core.app_code_only(info):
+            notice = core.app_code_only_hint()
+            _login_log.info("主号发码：仅 App 投递且无备用渠道")
+        return {"ok": True, "stage": "need_code",
+                "delivery": info["delivery"], "delivery_info": info,
+                "notice": notice}
 
     def _map_verify_exc(self, e):
         """verify_code/verify_password 共用的异常→返回形状映射（D1 加固）。
@@ -978,6 +1057,98 @@ class Api:
                     "error": "验证码会话已失效，请重新点击「发送验证码」获取新验证码后输入"}
         return {"ok": False, "recoverable": True,
                 "error": f"登录异常，请稍后重试（{ename}: {e}）"}
+
+    def _finalize_qr_login(self, client, message):
+        """二维码登录成功后复用现有会话/账号池收口，并丢弃临时 client。"""
+        self._qr_login.cancel()
+        if self._qr_client is client:
+            self._qr_client = None
+        self._qr_pending_password = False
+        self.client = client
+        self.guest = False
+        self._code_sent = False
+        self._code_delivery = {}
+        self._adopt_and_cache_me()
+        return {"ok": True, "stage": "ready", "message": message}
+
+    def qr_login_start(self):
+        if self.client is not None and not self._code_sent:
+            return {"ok": False, "error": "已经登录 Telegram"}
+        if self.client is not None and self._code_sent:
+            self._discard_client(self.client)
+            self.client = None
+            self._code_sent = False
+            self._code_delivery = {}
+            self._connect_recent = (0.0, None)
+        if not hasattr(self, "_qr_login"):
+            self._qr_login = telegram_login.QRLoginManager(logger=_login_log)
+        core.ensure_dirs_and_migrate()
+        self.cfg = core.ensure_builtin_credentials()
+        self._code_sent = False
+        self._code_delivery = {}
+        self._qr_pending_password = False
+
+        def lease_client(client):
+            self._qr_client = client
+
+        def client_factory():
+            # v2.6：二维码登录必须写主 session（SESSION_PATH）。若写独立
+            # `-qr` 文件，扫码得到的授权只存在该临时文件里，主流程重启后
+            # 仍读不到登录态，用户会被要求反复扫码。
+            return TelegramClient(
+                core.SESSION_PATH,
+                self.cfg["api_id"], self.cfg["api_hash"],
+                flood_sleep_threshold=120,
+            )
+
+        return self._qr_login.start(
+            lease_client=lease_client,
+            client_factory=client_factory,
+            engine=self.engine,
+            password_error=SessionPasswordNeededError,
+        )
+
+    def qr_login_status(self):
+        if self.client is not None:
+            return {"ok": True, "stage": "ready"}
+        state = self._qr_login.state()
+        if self._qr_pending_password:
+            return {"ok": True, "stage": "need_password"}
+        if not state.get("active"):
+            return {"ok": False, "error": "二维码会话不存在或已过期"}
+        return {"ok": True, "stage": "qr_waiting",
+                "expires_in": state.get("expires_in", 0)}
+
+    def qr_login_cancel(self):
+        manager = getattr(self, "_qr_login", None)
+        client = getattr(self, "_qr_client", None)
+        if manager is not None:
+            manager.cancel()
+        self._qr_client = None
+        self._qr_pending_password = False
+        if client is not None:
+            self._discard_client(client)
+        return {"ok": True}
+
+    def qr_login_password(self, password):
+        client = self._qr_client
+        if client is None or not self._qr_pending_password:
+            return {"ok": False, "error": "当前没有等待两步验证的二维码登录"}
+
+        async def _do():
+            try:
+                await client.sign_in(password=password)
+                return "ready"
+            except PasswordHashInvalidError as exc:
+                return f"__err__{type(exc).__name__}: {exc}"
+
+        try:
+            result = self.engine.submit(_do())
+        except Exception as exc:
+            return self._map_verify_exc(exc)
+        if isinstance(result, str) and result.startswith("__err__"):
+            return {"ok": False, "error": "两步验证密码错误"}
+        return self._finalize_qr_login(client, "扫码登录完成")
 
     def verify_code(self, code):
         async def _do():
@@ -1000,12 +1171,32 @@ class Api:
         if r in ("ready", "need_password"):
             # T58 2.5：代码已核验（need_password 时代码也已通过）→ 清标志
             self._code_sent = False
+            self._code_delivery = {}
         if r == "ready" and self.guest:
             print("[GUI] guest=False（verify_code 就绪）")
             self.guest = False
         if r == "ready":
             self._adopt_and_cache_me()       # T51：主号就绪交池托管
         return {"ok": True, "stage": r}
+
+    def qr_login_poll(self):
+        if self.client is not None:
+            return {"ok": True, "stage": "ready"}
+        session = self._qr_login._session
+        if session is None:
+            if self._qr_pending_password:
+                return {"ok": True, "stage": "need_password"}
+            return {"ok": False, "error": "二维码会话不存在或已过期"}
+        result = session.result
+        if result is None:
+            return {"ok": True, "stage": "qr_waiting",
+                    "expires_in": max(0, int(session.expires - time.time()))}
+        if not result.get("ok"):
+            return {"ok": False, "error": result.get("error", "二维码登录失败")}
+        if result.get("stage") == "need_password":
+            self._qr_pending_password = True
+            return {"ok": True, "stage": "need_password"}
+        return self._finalize_qr_login(session.client, "扫码登录完成")
 
     def verify_password(self, password):
         async def _do():
@@ -1099,7 +1290,17 @@ class Api:
         try:
             stage = self.engine.submit(
                 self._pool.add_start(account_id, phone))
+            if isinstance(stage, dict) and stage.get("stage") == "need_code":
+                info = stage.get("delivery_info") or {}
+                _login_log.info(
+                    "小号发码响应：%s", info)
+                self._code_delivery = info
+                return {"ok": True, "stage": "need_code",
+                        "delivery": info.get("delivery", "unknown"),
+                        "delivery_info": info,
+                        "notice": core.sent_code_hint(info)}
         except Exception as e:
+            _login_log.info("小号发码失败：%s", type(e).__name__)
             # 池域逻辑错误（已存在/正在添加中）优先按原语义返回，不走
             # 网络异常映射（避免把池错误误判为可恢复）
             if "已存在" in str(e):
@@ -1109,8 +1310,11 @@ class Api:
             # T58 2.7：与 send_code 同一辅助映射（软成功/网络族/未知…）
             mapped = self._map_send_code_exc(e)
             if mapped.get("__soft__"):
+                _login_log.info("小号发码软成功：%s", type(e).__name__)
+                self._code_delivery = {}
                 return {"ok": True, "stage": "need_code",
-                        "warning": "验证码已通过 Telegram App 消息发送，请直接查看并输入最新验证码；无需重复点击发送。"}
+                        "delivery": "unknown",
+                        "notice": core.app_code_only_hint()}
             return mapped
         return {"ok": True, "stage": stage}
 
@@ -1141,6 +1345,139 @@ class Api:
             # 与 verify_password 同形：PasswordHashInvalid 等原样透传
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
         return {"ok": True, "stage": stage}
+
+    def account_add_qr_start(self, account_id):
+        """小号扫码登录：独立二维码会话，写小号 session 文件。"""
+        gate = self._acct_gate()
+        if gate is not None:
+            return gate
+        if account_id != core.ACCT_ALT:
+            return {"ok": False, "error": "仅支持添加小号（alt1）"}
+        if self._pool.clients.get(core.ACCT_ALT) is not None:
+            return {"ok": False, "error": "小号已存在"}
+        if self._pool.alt_adding():
+            self.engine.submit(self._pool._cleanup_add())
+        core.ensure_dirs_and_migrate()
+        self.cfg = core.ensure_builtin_credentials()
+        if not hasattr(self, "_qr_login_alt"):
+            self._qr_login_alt = telegram_login.QRLoginManager(logger=_login_log)
+
+        def lease_client(client):
+            self._pool._adding[core.ACCT_ALT] = {"client": client, "phone": ""}
+            self._pool.state[core.ACCT_ALT] = "adding"
+
+        def client_factory():
+            return TelegramClient(
+                core.session_path_for(core.ACCT_ALT),
+                self.cfg["api_id"], self.cfg["api_hash"],
+                flood_sleep_threshold=120,
+            )
+
+        result = self._qr_login_alt.start(
+            lease_client=lease_client,
+            client_factory=client_factory,
+            engine=self.engine,
+            password_error=SessionPasswordNeededError,
+        )
+        if result.get("ok"):
+            result["stage"] = "qr"
+        return result
+
+    def account_add_qr_poll(self, account_id):
+        gate = self._acct_gate()
+        if gate is not None:
+            return gate
+        if account_id != core.ACCT_ALT:
+            return {"ok": False, "error": "仅支持添加小号（alt1）"}
+        if self._pool.clients.get(core.ACCT_ALT) is not None:
+            return {"ok": True, "stage": "ready"}
+        manager = getattr(self, "_qr_login_alt", None)
+        if manager is None:
+            return {"ok": False, "error": "二维码会话不存在或已过期"}
+        session = manager._session
+        if session is None:
+            if self._pool.state.get(core.ACCT_ALT) == "need_password":
+                return {"ok": True, "stage": "need_password"}
+            return {"ok": False, "error": "二维码会话不存在或已过期"}
+        result = session.result
+        if result is None:
+            return {"ok": True, "stage": "qr_waiting",
+                    "expires_in": max(0, int(session.expires - time.time()))}
+        if not result.get("ok"):
+            self.engine.submit(self._pool._cleanup_add())
+            return {"ok": False, "error": result.get("error", "二维码登录失败")}
+        if result.get("stage") == "need_password":
+            self._pool.state[core.ACCT_ALT] = "need_password"
+            return {"ok": True, "stage": "need_password"}
+        return self._finalize_alt_qr_login(session.client)
+
+    def account_add_qr_password(self, account_id, password):
+        gate = self._acct_gate()
+        if gate is not None:
+            return gate
+        if account_id != core.ACCT_ALT:
+            return {"ok": False, "error": "仅支持添加小号（alt1）"}
+        manager = getattr(self, "_qr_login_alt", None)
+        session = manager._session if manager is not None else None
+        client = session.client if session is not None else None
+        if client is None or self._pool.state.get(core.ACCT_ALT) != "need_password":
+            return {"ok": False, "error": "当前没有等待两步验证的二维码登录"}
+
+        async def _do():
+            try:
+                await client.sign_in(password=password)
+                return "ready"
+            except PasswordHashInvalidError as exc:
+                return f"__err__{type(exc).__name__}: {exc}"
+
+        try:
+            result = self.engine.submit(_do())
+        except Exception as exc:
+            return self._map_verify_exc(exc)
+        if isinstance(result, str) and result.startswith("__err__"):
+            return {"ok": False, "error": "两步验证密码错误"}
+        return self._finalize_alt_qr_login(client)
+
+    def account_add_qr_cancel(self, account_id):
+        """取消小号扫码：断开半成品并按池失败路径清理。"""
+        gate = self._acct_gate()
+        if gate is not None:
+            return gate
+        if account_id != core.ACCT_ALT:
+            return {"ok": False, "error": "仅支持添加小号（alt1）"}
+        manager = getattr(self, "_qr_login_alt", None)
+        if manager is not None:
+            manager.cancel()
+        if self._pool.alt_adding():
+            self.engine.submit(self._pool._cleanup_add())
+        return {"ok": True}
+
+    def _finalize_alt_qr_login(self, client):
+        """小号扫码成功收口：走池 _finish_add 同款落盘/状态流转。"""
+        manager = getattr(self, "_qr_login_alt", None)
+        if manager is not None:
+            manager.cancel()
+        ent = self._pool._adding.pop(core.ACCT_ALT, None)
+        self._pool.clients[core.ACCT_ALT] = client
+        self._pool.me_cache[core.ACCT_ALT] = None
+
+        async def _do():
+            me = None
+            try:
+                me = await client.get_me()
+                self._pool.me_cache[core.ACCT_ALT] = {
+                    "name": me.first_name or "", "username": me.username or "",
+                    "phone": me.phone or ""}
+            except Exception:
+                self._pool.me_cache[core.ACCT_ALT] = None
+            if me is not None and getattr(me, "phone", None):
+                self._pool._alt_phone = me.phone
+            self._pool.state[core.ACCT_ALT] = "ready"
+            self._pool._alt_cfg = True
+            core.save_accounts_add_alt()
+
+        self.engine.submit(_do())
+        return {"ok": True, "stage": "ready"}
 
     def account_remove(self, account_id):
         if account_id == core.ACCT_MAIN:

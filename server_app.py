@@ -42,6 +42,8 @@ log = logging.getLogger("server_app")
 
 RPC_METHODS = frozenset({
     "abort_task", "account_add_start", "account_list",
+    "account_add_qr_start", "account_add_qr_poll",
+    "account_add_qr_password", "account_add_qr_cancel",
     "account_remove", "account_verify_code", "account_verify_password",
     "active_states", "browse_folders", "choose_folder", "connect", "delete_task",
     "disk_space",
@@ -54,6 +56,8 @@ RPC_METHODS = frozenset({
     "resume_task", "scan_append", "send_code", "set_appearance",
     "set_api_credentials", "set_download_root", "set_guest", "set_item",
     "start_download",
+    "qr_login_start", "qr_login_status", "qr_login_poll",
+    "qr_login_cancel", "qr_login_password",
     "verify_code", "verify_password",
     # Bing photo-of-the-day wallpaper (cached under data_dir/cache)
     "wallpaper_status", "wallpaper_refresh", "wallpaper_history",

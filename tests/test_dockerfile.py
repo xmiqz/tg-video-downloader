@@ -16,7 +16,7 @@ DOCKERFILE = ROOT / "Dockerfile"
 # Modules the app imports that are NOT part of the standard library and are
 # not installed from requirements-server.txt.
 LOCAL_MODULES = ["server_app", "server_auth", "server_config", "gui", "host",
-                 "tg_video_dl", "wallpaper", "taskport"]
+                 "tg_video_dl", "wallpaper", "taskport", "telegram_login"]
 
 
 def test_dockerfile_copies_every_local_module():
