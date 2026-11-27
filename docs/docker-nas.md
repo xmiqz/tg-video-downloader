@@ -1,6 +1,6 @@
 # Docker / NAS 部署手册
 
-适用版本：v2.7.1 及后续兼容版本。服务名与容器名为 `tg-video-downloader`，Web 端口 `8787`，探活端点 `/healthz`。本文覆盖群晖 DSM、飞牛 fnOS 与通用 Docker 主机；只使用示例路径，不包含真实内网地址或凭据。
+适用版本：v2.7.2 及后续兼容版本。服务名与容器名为 `tg-video-downloader`，Web 端口 `8787`，探活端点 `/healthz`。本文覆盖群晖 DSM、飞牛 fnOS 与通用 Docker 主机；只使用示例路径，不包含真实内网地址或凭据。
 
 ## 1. 通用要求
 
@@ -16,7 +16,7 @@
 在线 YAML（优先 jsDelivr，部分网络无法访问 `raw.githubusercontent.com`）：
 
 ```bash
-docker compose -p tg-video-downloader -f https://cdn.jsdelivr.net/gh/xmiqz/tg-video-downloader@v2.7.1/compose.yaml up -d
+docker compose -p tg-video-downloader -f https://cdn.jsdelivr.net/gh/xmiqz/tg-video-downloader@v2.7.2/compose.yaml up -d
 ```
 
 仓库内 YAML：`./compose.yaml`。下面给出等价展开，便于检查环境变量：
@@ -24,7 +24,7 @@ docker compose -p tg-video-downloader -f https://cdn.jsdelivr.net/gh/xmiqz/tg-vi
 ```yaml
 services:
   tg-video-downloader:
-    image: ${TGVD_IMAGE:-ghcr.io/xmiqz/tg-video-downloader:v2.7.1}
+    image: ${TGVD_IMAGE:-ghcr.io/xmiqz/tg-video-downloader:v2.7.2}
     container_name: tg-video-downloader
     restart: unless-stopped
     user: "10001:10001"
@@ -52,7 +52,7 @@ services:
 
 | 变量 | 默认值 | 说明 |
 | :-- | :-- | :-- |
-| `TGVD_IMAGE` | `ghcr.io/xmiqz/tg-video-downloader:v2.7.1` | 镜像与标签；固定版本推荐 `v2.7.1`，自动更新用 `stable` |
+| `TGVD_IMAGE` | `ghcr.io/xmiqz/tg-video-downloader:v2.7.2` | 镜像与标签；固定版本推荐 `v2.7.2`，自动更新用 `stable` |
 | `TGVD_DATA_DIR` | 命名卷 `tgvd-data` | 宿主机绝对路径，映射到容器 `/data`；命名卷无需 chown，bind mount 必须 chown |
 | `TGDL_PORT` | `8787` | 宿主机映射端口；容器内固定 `8787` |
 | `TGDL_COOKIE_SECURE` | `0` | HTTPS 反向代理后设为 `1`；HTTP 直连保持 `0` |
@@ -96,7 +96,7 @@ GUI 改镜像标签：编辑项目 `.env` 的 `TGVD_IMAGE`，重新构建/启动
 mkdir -p /volume1/docker/tg-video-downloader/data
 sudo chown -R 10001:10001 /volume1/docker/tg-video-downloader/data
 cd /volume1/docker/tg-video-downloader
-curl -fsSLo compose.yaml https://cdn.jsdelivr.net/gh/xmiqz/tg-video-downloader@v2.7.1/compose.yaml
+curl -fsSLo compose.yaml https://cdn.jsdelivr.net/gh/xmiqz/tg-video-downloader@v2.7.2/compose.yaml
 printf 'TGVD_DATA_DIR=%s\n' /volume1/docker/tg-video-downloader/data > .env
 docker compose up -d
 docker compose ps
@@ -141,7 +141,7 @@ docker compose up -d
 mkdir -p /vol1/1000/docker/tg-video-downloader/data
 sudo chown -R 10001:10001 /vol1/1000/docker/tg-video-downloader/data
 cd /vol1/1000/docker/tg-video-downloader
-curl -fsSLo compose.yaml https://cdn.jsdelivr.net/gh/xmiqz/tg-video-downloader@v2.7.1/compose.yaml
+curl -fsSLo compose.yaml https://cdn.jsdelivr.net/gh/xmiqz/tg-video-downloader@v2.7.2/compose.yaml
 printf 'TGVD_DATA_DIR=%s\n' /vol1/1000/docker/tg-video-downloader/data > .env
 docker compose up -d
 docker compose ps
@@ -150,11 +150,11 @@ docker exec tg-video-downloader cat /data/.setup-token
 
 ### 4.3 升级与回滚
 
-与群晖 SSH Compose 相同；飞牛注意镜像拉取走 arm64 manifest。若 GHCR 出现 TLS / 网络瞬断，先重试 `docker compose pull`，再确认 `docker manifest inspect ghcr.io/xmiqz/tg-video-downloader:v2.7.1` 包含 `linux/arm64`。只有镜像仓库不可达时才考虑从另一台设备转存，不推荐作为常态。
+与群晖 SSH Compose 相同；飞牛注意镜像拉取走 arm64 manifest。若 GHCR 出现 TLS / 网络瞬断，先重试 `docker compose pull`，再确认 `docker manifest inspect ghcr.io/xmiqz/tg-video-downloader:v2.7.2` 包含 `linux/arm64`。只有镜像仓库不可达时才考虑从另一台设备转存，不推荐作为常态。
 
 ## 5. 自动更新
 
-**GHCR 本身不是更新器。** 它只保存镜像；已运行的容器不会自动更换镜像标签。固定 `v2.7.1` 标签永远指向同一版本，不会自动变化。要实现自动更新，必须切换到移动标签 `stable`（或 `latest`）并使用更新器。
+**GHCR 本身不是更新器。** 它只保存镜像；已运行的容器不会自动更换镜像标签。固定 `v2.7.2` 标签永远指向同一版本，不会自动变化。要实现自动更新，必须切换到移动标签 `stable`（或 `latest`）并使用更新器。
 
 ### 5.1 手动更新
 
@@ -219,6 +219,6 @@ Diun 能检测 `stable` / 固定标签的 digest 变化并发送通知，但**�
 | 端口 `8787` 打不开 | 端口被占用、未映射或代理未放行 | `docker compose ps`，检查 `TGDL_PORT` 与 NAS 防火墙 |
 | `manifest unknown` | 镜像 Tag 写错或仓库不可达 | 核对 `TGVD_IMAGE`，重试 `docker compose pull`，`docker manifest inspect` 看 amd64/arm64 |
 | GHCR TLS / 网络瞬断 | 出口网络到 GHCR 不稳定 | 重试拉取；仅仓库不可达时从另一台设备转存镜像 |
-| 升级后仍是旧版本 | 使用固定 `v2.7.1` 且未执行 pull/up，或 `.env` 覆盖了 `TGVD_IMAGE` | 执行 `docker compose pull && docker compose up -d`，检查 `.env` |
-| `latest` 行为不确定 | 生产环境不建议跟随移动标签 | 固定版本用 `v2.7.1`；需要自动更新用 `stable` |
+| 升级后仍是旧版本 | 使用固定 `v2.7.2` 且未执行 pull/up，或 `.env` 覆盖了 `TGVD_IMAGE` | 执行 `docker compose pull && docker compose up -d`，检查 `.env` |
+| `latest` 行为不确定 | 生产环境不建议跟随移动标签 | 固定版本用 `v2.7.2`；需要自动更新用 `stable` |
 | Cookie 丢失 / 反代后需重新登录 | `TGDL_COOKIE_SECURE` 未开或可信代理白名单不对 | 设为 `1` 并按反代手册修正 `TGDL_TRUSTED_PROXIES` |
