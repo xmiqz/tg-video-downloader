@@ -28,6 +28,7 @@ import glob
 import json
 import os
 import pathlib
+import random
 import re
 import shutil
 import struct
@@ -86,6 +87,7 @@ RETRIES = 3                # 单视频重试次数
 STALL_SECS = 90            # 停滞判定秒数
 # ---- T24 断网感知与停滞分片重置（FR-11 / AC-9）----
 SHARD_RESET_MAX = 3        # 单分片停滞重置上限（首取 +3 次重置 = 至多 4 个迭代器）
+SHARD_STALL_BACKOFF = (1.0, 3.0, 6.0)   # 每次停滞重置前的退避基准（±15% jitter）
 NET_POLL_SECS = 2.0        # 断网轮询间隔（生产 2s；测试 monkeypatch 即退）
 SIMPLE_TIMEOUT_SECS = 1800 # simple_download 总超时（断网期间暂停计时）
 SPEED_WIN_SEC = 10.0       # 总速度滑动窗口：统计最近 10 秒下载量，每秒更新
@@ -189,6 +191,15 @@ RETRY_FLOOD_SPARE = 32         # flood 不计次的有界安全阀（§2“任�
 DETERMINISTIC_ERROR_NAMES = frozenset({
     "ChannelPrivateError", "MediaEmptyError", "MessageIdInvalidError",
 })
+TELEGRAM_UNSTABLE_ERROR_NAMES = frozenset({
+    "ServerError", "RpcCallFailError", "RpcMcgetFailError",
+    "InterdcCallErrorError", "InterdcCallRichErrorError", "TimedOutError",
+})
+# v2.7 任务级熔断：120s 内 3 次同类可重试失败触发暂停；最多 3 轮自动重试。
+RETRY_BREAKER_THRESHOLD = 3
+RETRY_BREAKER_DELAYS = (20.0, 45.0, 90.0)
+RETRY_BREAKER_MAX_ROUNDS = 3
+RETRY_BREAKER_WINDOW_SEC = 120.0
 # 控制类名集合（分类器归档 control；download_one 侧维持现状
 # 穿透（AccountDenied/CancelledError 走 BaseException）或经专属
 # except 原样返回 paused/removed/skipped——分类器不得截留）。
@@ -196,6 +207,104 @@ CONTROL_ERROR_NAMES = frozenset({
     "PauseFile", "RemoveFile", "SkipFile",
     "AccountDenied", "CancelledError",
 })
+
+
+# 分片停滞退避测试缝（生产恒为 asyncio.sleep）。
+_SHARD_SLEEP = asyncio.sleep
+_SHARD_WAIT_FOR = asyncio.wait_for
+# 任务级熔断等待测试缝（生产恒为 asyncio.sleep；测试用即退/假时钟）。
+_BREAKER_SLEEP = asyncio.sleep
+
+
+def _technical_text(exc) -> str:
+    """技术信息只保留类型名与异常文本，截到 240 字符。"""
+    text = str(exc) if exc is not None else ""
+    return f"{type(exc).__name__}: {text}"[:240]
+
+
+def shard_stall_delay(reset, *, jitter=None) -> float:
+    """分片停滞重置基准退避：reset 从 1 起，1/3/6 秒，越界取 6 秒。"""
+    try:
+        n = int(reset)
+    except (TypeError, ValueError):
+        n = 1
+    base = SHARD_STALL_BACKOFF[n - 1] if 1 <= n <= len(SHARD_STALL_BACKOFF) \
+        else SHARD_STALL_BACKOFF[-1]
+    if jitter is None:
+        jitter = random.uniform(-0.15, 0.15)
+    return max(0.0, base * (1.0 + float(jitter)))
+
+
+def describe_exception(exc, *, scope="item", attempt=0, max_attempts=0,
+                       retry_after=None) -> dict:
+    """统一错误描述（core 公共面；gui 可经 core 调用）。
+
+    返回键固定为 code/message/retryable/retry_after/scope/action/technical；
+    technical 绝不进默认 message。旧客户端把真实 RPC 错误吞成
+    ``Request was unsuccessful N time(s)`` ValueError 的识别保留。
+    """
+    text = str(exc) if exc is not None else ""
+    name = type(exc).__name__
+    if scope in ("item", "download"):
+        keep_progress = "；已下载进度保留"
+    elif scope in ("scan", "search", "fetch"):
+        keep_progress = "；已保留已有结果"
+    else:
+        keep_progress = "；请稍后重试"
+    unstable_match = re.search(
+        r"Request was unsuccessful (\d+) time\(s\)", text)
+    if ((unstable_match and
+         (isinstance(exc, ValueError) or name == "ValueError"))
+            or name in TELEGRAM_UNSTABLE_ERROR_NAMES):
+        times = int(unstable_match.group(1)) if unstable_match else 6
+        effective = int(max_attempts) if max_attempts else times
+        code, message = (
+            "telegram_unstable",
+            f"Telegram 服务端暂时不稳定，已自动重试 {effective} 次"
+            + keep_progress,
+        )
+    elif isinstance(exc, ShardResetExhausted) or name == "ShardResetExhausted":
+        code, message = (
+            "network_stalled", "网络停滞，已自动重置 3 次；已下载进度保留")
+    elif name == "FloodWaitError" or isinstance(exc, FloodWaitError):
+        code, message = (
+            "flood_wait", "Telegram 请求过于频繁，请稍候" + keep_progress)
+    elif (isinstance(exc, DeterministicDownloadError)
+          or name in DETERMINISTIC_ERROR_NAMES):
+        code, message = "message_unavailable", "消息已删除或无权访问"
+    elif (isinstance(exc, (ConnectionError, TimeoutError, asyncio.TimeoutError))
+          or name in ("ConnectionError", "TimeoutError")):
+        code, message = (
+            "network_timeout", "网络连接超时或已断开，请检查网络"
+            + keep_progress)
+    elif isinstance(exc, EOFError):
+        code, message = "input_required", "没有收到输入，操作已取消"
+    else:
+        if scope in ("item", "download"):
+            code, message = (
+                "download_failed", "下载暂时中断，已保留已下载进度")
+        elif scope in ("scan", "search", "fetch"):
+            code, message = (
+                "scan_failed", "扫描暂时中断，请稍后重试；已保留已有结果")
+        else:
+            code, message = "operation_failed", "操作暂时中断，请稍后重试"
+    info = {
+        "code": code,
+        "message": message,
+        "retryable": code not in ("message_unavailable", "input_required"),
+        "retry_after": retry_after,
+        "scope": scope,
+        "action": ("none" if code in ("message_unavailable", "input_required")
+                   else "wait" if code in ("flood_wait", "network_timeout")
+                   else "retry"),
+        "technical": _technical_text(exc),
+    }
+    if code == "flood_wait":
+        seconds = retry_after
+        if seconds is None:
+            seconds = getattr(exc, "seconds", None)
+        info["retry_after"] = seconds
+    return info
 
 
 # ---------------- 配置与登录 ----------------
@@ -2240,6 +2349,9 @@ class Monitor:
                 "done": 0, "status": "等待中", "speed": 0.0,
                 "samples": [], "started": None, "ended": None,
                 "error": "", "final": "",
+                "error_code": "", "error_retryable": False,
+                "error_action": "", "error_technical": "",
+                "retry_at": None, "retry_count": 0, "retry_max": 0,
                 # T51：条目下载账号（main 默认；快照/行标记消费，
                 # 绝不进任务 JSON 以外的持久面）
                 "acct": ACCT_MAIN,
@@ -2460,6 +2572,13 @@ class Monitor:
                     "pct": round(e["done"] * 100 / (e["total"] or 1), 1),
                     "speed": round(e["speed"], 1),
                     "status": e["status"], "error": e["error"],
+                    "error_code": e.get("error_code", ""),
+                    "error_retryable": bool(e.get("error_retryable", False)),
+                    "error_action": e.get("error_action", ""),
+                    "error_technical": e.get("error_technical", ""),
+                    "retry_at": e.get("retry_at"),
+                    "retry_count": int(e.get("retry_count", 0) or 0),
+                    "retry_max": int(e.get("retry_max", 0) or 0),
                     # T51 纯增 1 键：本条下载账号（默认 main）
                     "acct": e.get("acct", ACCT_MAIN),
                     # text（消息原文）不随每秒轮询返回，前端展开时按需取
@@ -2537,6 +2656,13 @@ class Monitor:
             e["started"] = e["ended"] = None
             e["samples"] = []
             e["error"] = ""
+            e["error_code"] = ""
+            e["error_retryable"] = False
+            e["error_action"] = ""
+            e["error_technical"] = ""
+            e["retry_at"] = None
+            e["retry_count"] = 0
+            e["retry_max"] = 0
             if not keep_done:
                 e["done"] = 0
 
@@ -2550,10 +2676,18 @@ class Monitor:
             if e["started"] is not None and e["ended"] is None:
                 self.active_count = max(0, self.active_count - 1)
 
-    async def error(self, key, msg):
+    async def error(self, key, msg, *, code="", retryable=False, action="",
+                    retry_after=None, attempt=0, max_attempts=0, technical=""):
         async with self.lock:
             e = self.order[key]
             e["error"] = msg
+            e["error_code"] = code or ""
+            e["error_retryable"] = bool(retryable)
+            e["error_action"] = action or ""
+            e["error_technical"] = technical or ""
+            e["retry_at"] = retry_after
+            e["retry_count"] = int(attempt or 0)
+            e["retry_max"] = int(max_attempts or 0)
 
     def _snapshot(self):
         now = time.monotonic()
@@ -2647,6 +2781,9 @@ class Monitor:
             )
             if e["error"]:
                 lines += wrap_text(e["error"], w, "     备注：")
+            if e.get("error_technical"):
+                lines += wrap_text(
+                    "技术信息：" + e["error_technical"], w, "     ")
             # Telegram 对应消息原文
             if e["text"].strip():
                 lines.append("     消息内容：")
@@ -2870,7 +3007,7 @@ async def parallel_download(client, item, target, ctl, state=None):
                         if tripped:
                             raise tripped
                         try:
-                            chunk = await asyncio.wait_for(
+                            chunk = await _SHARD_WAIT_FOR(
                                 it.__anext__(), timeout=STALL_SECS
                             )
                         except StopAsyncIteration:
@@ -2901,15 +3038,28 @@ async def parallel_download(client, item, target, ctl, state=None):
                                     f"id={msg.id} part={idx} giveup=1 "
                                     f"reset={SHARD_RESET_MAX} reason=stall")
                                 raise ShardResetExhausted(msg.id, idx)
+                            wait = shard_stall_delay(reset)
+                            # 退避前后各查一次控制/中止：暂停、跳过、
+                            # 取消与任务级 abort 都不得被等待吞掉。
+                            tripped = _ctl_or_abort(ctl, state)
+                            if tripped:
+                                raise tripped
                             _shard_log(
                                 f"id={msg.id} part={idx} "
                                 f"reset={reset}/{SHARD_RESET_MAX} "
-                                f"reason=stall")
+                                f"reason=stall wait={wait:.3f}")
+                            await _SHARD_SLEEP(wait)
+                            tripped = _ctl_or_abort(ctl, state)
+                            if tripped:
+                                raise tripped
                             break
                         take = min(len(chunk), ln - got)
                         if take > 0:
                             f.write(chunk[:take])
                             got += take
+                            # 本分片收到任何新字节：此前停滞累计清零，
+                            # 避免“下到一半又被累计成超限”。
+                            reset = 0
                             if mon:
                                 await mon.add(key, take)
                         if got >= ln:
@@ -3263,6 +3413,23 @@ async def download_one(client, item, target, ctl, state=None):
     def _task_for_retries():
         return getattr(sess, "task", None) if sess is not None else None
 
+    async def _fail(info):
+        """统一失败出口：默认界面只见友好文案，technical 仅存字段。"""
+        info = dict(info)
+        if (info.get("retryable")
+                and "已自动重试" not in info["message"]
+                and "已自动重置" not in info["message"]):
+            info["message"] += (
+                "；已自动重试 " + str(exec_cap) + " 次；已下载进度保留")
+        if mon:
+            await mon.error(
+                key, info["message"], code=info["code"],
+                retryable=info["retryable"], action=info["action"],
+                retry_after=info["retry_after"],
+                attempt=transient_attempt, max_attempts=exec_cap,
+                technical=info["technical"])
+        return "fail", info["message"], info
+
     # T22：两类独立计数（flood/成功刷新不占任何预算）；有界 for——
     # 界 = 执行上限 + 刷新上限 + flood 安全阀（§2：任何路径不得无限重试）。
     transient_attempt = 0
@@ -3322,11 +3489,9 @@ async def download_one(client, item, target, ctl, state=None):
             # （占一次瞬时预算并退避）口径（消息文本透传）。
             if ref_refresh >= FILE_REFRESH_MAX:
                 _retry_log(f"giveup id={mid} reason=refresh_cap")
-                reason = (f"#{mid} 文件引用刷新已达上限"
-                          f"（{FILE_REFRESH_MAX} 次）——刷新上限")
-                if mon:
-                    await mon.error(key, reason)
-                return "fail", reason
+                return await _fail(describe_exception(
+                    RuntimeError("文件引用刷新已达上限"),
+                    attempt=transient_attempt, max_attempts=exec_cap))
             _retry_log(f"kind=reference id={mid} "
                        f"refresh={ref_refresh + 1}/{FILE_REFRESH_MAX}")
             if mon:
@@ -3345,19 +3510,17 @@ async def download_one(client, item, target, ctl, state=None):
                     _retry_log(f"kind=deterministic id={mid} fail_fast=1 "
                                f"exc={type(rexc).__name__}")
                     _retry_log(f"giveup id={mid} reason=deterministic")
-                    reason = f"{type(rexc).__name__}: {str(rexc)[:100]}"
-                    if mon:
-                        await mon.error(key, reason)
-                    return "fail", reason
+                    return await _fail(describe_exception(
+                        rexc, attempt=transient_attempt,
+                        max_attempts=exec_cap))
                 # transient（及同名怪例→旧通用退化口径）：
                 # 第 k=ta+1 个瞬时错误；k==exec_cap 即本尝试为第
                 # exec_cap 次（总尝试上限）的失败——直接 giveup。
                 if transient_attempt + 1 >= exec_cap:
                     _retry_log(f"giveup id={mid} reason=exhausted")
-                    reason = f"{type(rexc).__name__}: {str(rexc)[:100]}"
-                    if mon:
-                        await mon.error(key, reason)
-                    return "fail", reason
+                    return await _fail(describe_exception(
+                        rexc, attempt=transient_attempt + 1,
+                        max_attempts=exec_cap))
                 wait = (RETRY_BACKOFF[transient_attempt]
                         if transient_attempt < len(RETRY_BACKOFF)
                         else RETRY_BACKOFF_CAP)
@@ -3365,10 +3528,21 @@ async def download_one(client, item, target, ctl, state=None):
                 _retry_log(f"kind=transient id={mid} "
                            f"attempt={transient_attempt}/{tries} "
                            f"wait={wait:g} exc={type(rexc).__name__}")
+                info = describe_exception(
+                    rexc, attempt=transient_attempt, max_attempts=tries,
+                    retry_after=wait)
                 if mon:
                     await mon.error(
-                        key, f"{type(rexc).__name__} → {wait:g}s 后重试"
-                             f"（{transient_attempt}/{tries}）")
+                        key, f"{info['message']}；约 {wait:g} 秒后自动重试"
+                             f"（{transient_attempt}/{tries}）",
+                        code=info["code"], retryable=info["retryable"],
+                        action=info["action"], retry_after=wait,
+                        attempt=transient_attempt, max_attempts=tries,
+                        technical=info["technical"])
+                    await mon.set_phase(
+                        "downloading",
+                        f"{info['message']}；约 {wait:g} 秒后自动重试"
+                        f"（{transient_attempt}/{tries}）")
                 await _RETRY_SLEEP(wait)
                 continue
             ref_refresh += 1
@@ -3419,18 +3593,15 @@ async def download_one(client, item, target, ctl, state=None):
                 _retry_log(f"kind=deterministic id={mid} fail_fast=1 "
                            f"exc={type(e).__name__}")
                 _retry_log(f"giveup id={mid} reason=deterministic")
-                reason = f"{type(e).__name__}: {str(e)[:100]}"
-                if mon:
-                    await mon.error(key, reason)
-                return "fail", reason
+                return await _fail(describe_exception(
+                    e, attempt=transient_attempt, max_attempts=exec_cap))
             # transient：第 k=ta+1 个瞬时错误；k==exec_cap 即本尝试为
             # 第 exec_cap 次（总尝试上限）的失败——到达上限即 fail。
             if transient_attempt + 1 >= exec_cap:
                 _retry_log(f"giveup id={mid} reason=exhausted")
-                reason = f"{type(e).__name__}: {str(e)[:100]}"
-                if mon:
-                    await mon.error(key, reason)
-                return "fail", reason
+                return await _fail(describe_exception(
+                    e, attempt=transient_attempt + 1,
+                    max_attempts=exec_cap))
             wait = (RETRY_BACKOFF[transient_attempt]
                     if transient_attempt < len(RETRY_BACKOFF)
                     else RETRY_BACKOFF_CAP)
@@ -3438,12 +3609,25 @@ async def download_one(client, item, target, ctl, state=None):
             _retry_log(f"kind=transient id={mid} "
                        f"attempt={transient_attempt}/{tries} "
                        f"wait={wait:g} exc={type(e).__name__}")
+            info = describe_exception(
+                e, attempt=transient_attempt, max_attempts=tries,
+                retry_after=wait)
             if mon:
                 await mon.error(
-                    key, f"{type(e).__name__} → {wait:g}s 后重试"
-                         f"（{transient_attempt}/{tries}）")
+                    key, f"{info['message']}；约 {wait:g} 秒后自动重试"
+                         f"（{transient_attempt}/{tries}）",
+                    code=info["code"], retryable=info["retryable"],
+                    action=info["action"], retry_after=wait,
+                    attempt=transient_attempt, max_attempts=tries,
+                    technical=info["technical"])
+                await mon.set_phase(
+                    "downloading",
+                    f"{info['message']}；约 {wait:g} 秒后自动重试"
+                    f"（{transient_attempt}/{tries}）")
             await _RETRY_SLEEP(wait)
-    return "fail", "重试次数用完"
+    return await _fail(describe_exception(
+        RuntimeError("重试次数用完"), attempt=exec_cap,
+        max_attempts=exec_cap))
 
 
 # ---------------- 任务清单持久化 ----------------
@@ -4720,6 +4904,12 @@ class DownloadSession:
         self.wake = None          # asyncio.Event（唤醒调度器）
         self.tasks = {}           # key -> asyncio.Task
         self._want = {}           # key -> action（排队中预置命令）
+        # v2.7 任务级熔断（纯内存态；不进任务 JSON）：
+        self.recent_failures = collections.deque()
+        self.breaker_round = 0
+        self.breaker_until = 0.0
+        self.breaker_hold = collections.deque()   # 熔断恢复后回队首的条目
+        self.health = None
 
     # ----- 控制入口（可从其他线程调用） -----
     def request(self, action, keys):
@@ -4815,7 +5005,161 @@ class DownloadSession:
         snap["task_id"] = self.task_id
         snap["task_total"] = c["total"]
         snap["task_finished"] = c["finished"]
+        snap["health"] = self._health_snapshot()
         return snap
+
+    def _health_snapshot(self):
+        """动态计算 retry_in；hold/health 清空后返回 None。"""
+        h = self.health
+        if not h:
+            return None
+        return dict(h, retry_in=max(
+            0, round(self.breaker_until - time.monotonic())))
+
+    def note_item_failure(self, key, rec, info):
+        """记录条目可重试失败；同类达阈值时激活任务级熔断。
+
+        返回 True 表示 worker 不再写 failed；返回 False 走正常落盘。
+        120s 窗内同类失败达到 3 次且未超过 3 轮才激活；超过轮次上限
+        落 exhausted 文案，不再 hold。
+        """
+        if not info.get("retryable") or info.get("scope") != "item":
+            return False
+        now = time.monotonic()
+        code = info.get("code") or "download_failed"
+        self.recent_failures = collections.deque(
+            f for f in self.recent_failures
+            if now - f[0] <= RETRY_BREAKER_WINDOW_SEC)
+        self.recent_failures.append((now, code, key, rec, info))
+        hold_key = self._hold_key(key, rec)
+        hold_rec = rec if isinstance(rec, dict) else key
+        if self.breaker_until > now or self.breaker_hold:
+            if hold_key not in self.breaker_hold:
+                self.breaker_hold.append(hold_rec)
+            asyncio.ensure_future(
+                self.mon.restart(hold_key, keep_done=True))
+            return True
+        if len(self.recent_failures) < RETRY_BREAKER_THRESHOLD:
+            return False
+        if self.breaker_round >= RETRY_BREAKER_MAX_ROUNDS:
+            self.health = {
+                "code": "breaker_exhausted",
+                "message": "连接不稳定，自动重试已达上限，请检查网络后手动重试",
+                "retryable": False,
+                "retry_in": 0,
+                "attempt": self.breaker_round,
+                "max_attempts": RETRY_BREAKER_MAX_ROUNDS,
+                "action": "manual_retry",
+                "scope": "task",
+            }
+            return False
+        delay = RETRY_BREAKER_DELAYS[min(
+            self.breaker_round, len(RETRY_BREAKER_DELAYS) - 1)]
+        self.breaker_round += 1
+        self.breaker_until = now + delay
+        recent = [
+            (ts, failure_code, self._hold_key(failure_key, failure_rec),
+             failure_rec if isinstance(failure_rec, dict) else failure_key,
+             failure_info)
+            for ts, failure_code, failure_key, failure_rec, failure_info
+            in self.recent_failures
+        ]
+        self.recent_failures.clear()
+        held = [f[3] for f in recent]
+        self.breaker_hold = collections.deque(held)
+
+        async def _activate():
+            for fail_rec in list(self.breaker_hold):
+                fail_key = self._hold_key(fail_rec, fail_rec)
+                ti = find_item(self.task, fail_key)
+                if ti is not None and ti.get("status") == "failed":
+                    ti["status"] = "pending"
+                    ti.pop("error", None)
+                try:
+                    await self.mon.restart(fail_key, keep_done=True)
+                except Exception:
+                    _retry_log(
+                        f"kind=breaker_restart_skip key={fail_key[1]}")
+            save_task(self.task, force=True)
+            self.health = {
+                "code": code,
+                "message": f"连接不稳定，已暂停新任务，约 {delay:g} 秒后自动重试",
+                "retryable": True,
+                "retry_in": max(0, round(self.breaker_until - time.monotonic())),
+                "attempt": self.breaker_round,
+                "max_attempts": RETRY_BREAKER_MAX_ROUNDS,
+                "action": "auto_retry",
+                "scope": "task",
+            }
+            await self.mon.set_phase(
+                "downloading", self.health["message"])
+            if self.wake is not None:
+                self.wake.set()
+
+        asyncio.ensure_future(_activate())
+        return True
+
+    def note_item_success(self):
+        """任一条目成功：最近失败与轮次清零。
+
+        熔断 hold 未恢复时保留 health/breaker_until，避免调度器
+        丢掉正在等待的自动重试；hold 已清空才一并清 health。
+        """
+        self.recent_failures.clear()
+        if not self.breaker_hold and self.breaker_until <= time.monotonic():
+            self.breaker_round = 0
+            self.health = None
+
+    @staticmethod
+    def _hold_key(key, rec):
+        """hold 始终保存 _rec_key(rec) 形状，兼容元组/rec 两种入参。"""
+        def _mid(value):
+            if isinstance(value, dict):
+                value = value.get("msg", value.get("mid"))
+            return getattr(value, "id", value)
+
+        if isinstance(key, dict):
+            return (key.get("src", SRC_CHANNEL), _mid(key))
+        if len(key) == 2 and not isinstance(rec, dict):
+            return key
+        if isinstance(rec, dict):
+            return (rec.get("src", SRC_CHANNEL), _mid(rec))
+        return key
+
+    async def await_breaker(self):
+        """调度器安排新任务前的熔断等待；abort 立即退出。
+
+        返回 True 表示已恢复可继续调度，False 表示会话已中止。
+        """
+        while self.breaker_until > time.monotonic():
+            if self.abort.is_set():
+                return False
+            remaining = max(0.0, self.breaker_until - time.monotonic())
+            acq = asyncio.ensure_future(_BREAKER_SLEEP(min(remaining, 1.0)))
+            abt = asyncio.ensure_future(self.abort.wait())
+            try:
+                await asyncio.wait({acq, abt},
+                                   return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                if not acq.done():
+                    acq.cancel()
+                abt.cancel()
+        if self.abort.is_set():
+            return False
+        self.breaker_until = 0.0
+        held = list(self.breaker_hold)
+        self.breaker_hold.clear()
+        if not held:
+            held = [f[3] if isinstance(f[3], dict) else f[2]
+                    for f in self.recent_failures]
+        self.resume_q.extendleft(reversed(held))
+        self.recent_failures.clear()
+        self.health = None
+        save_task(self.task, force=True)
+        await self.mon.set_phase("downloading", "连接恢复，继续下载")
+        if self.wake is not None:
+            self.wake.set()
+        return True
 
 
 # ---------------- T25 慢任务让路（FR-12；默认关——开关关时本段零实例化） ----------------
@@ -5245,6 +5589,7 @@ class AccountPool:
             path, _cfg.get("api_id", BUILTIN_API_ID),
             _cfg.get("api_hash", BUILTIN_API_HASH),
             flood_sleep_threshold=120,
+            raise_last_call_error=True,
         )
 
     # ---------- 主号接入 ----------
@@ -6384,10 +6729,11 @@ async def run_download_session(client, task, sess, *, gui=None,
             except asyncio.CancelledError:
                 raise
             except Exception as ex:
+                info = describe_exception(ex, scope="fetch")
                 sess.fatal_error = (sess.fatal_error or
-                                    f"读取消息信息失败："
-                                    f"{type(ex).__name__}: {ex}")
+                                    f"读取消息信息失败：{info['message']}")
                 print(f"[!] {sess.fatal_error}")
+                _retry_log(f"kind=feeder_fatal exc={type(ex).__name__}")
             finally:
                 feeder_done = True
                 await mon.set_fetch(mon.fetched, mon.fetch_total,
@@ -6552,8 +6898,12 @@ async def run_download_session(client, task, sess, *, gui=None,
                 mon.flood_probe = saved_probe
 
             err = None
+            info = None
             if isinstance(r, tuple):
-                r, err = r
+                if len(r) >= 3:
+                    r, err, info = r[0], r[1], r[2]
+                else:
+                    r, err = r
             if r == "paused":
                 sess.paused[key] = it
                 await mon.finish(key, "已暂停")
@@ -6563,19 +6913,27 @@ async def run_download_session(client, task, sess, *, gui=None,
                 return
             if r in FINAL_LABEL:
                 counters[COUNT_KEY[r]] += 1
+                if r == "ok":
+                    sess.note_item_success()
                 persist(key, PERSIST_STATUS[r])
                 await mon.finish(key, FINAL_LABEL[r])
             else:
+                if info is None:
+                    info = describe_exception(
+                        RuntimeError(err or "下载失败"), scope="item")
+                if sess.note_item_failure(key, it, info):
+                    return
                 counters["fail"] += 1
                 persist(key, "failed", err or "下载失败")
                 await mon.finish(key, "失败")
         except asyncio.CancelledError:
             raise
         except Exception as ex:
-            msg = f"worker 异常：{type(ex).__name__}: {ex}"
+            info = describe_exception(ex, scope="item")
+            msg = f"worker 异常：{info['message']}"
             print(f"[!] {msg}")
             if not sess.fatal_error:
-                sess.fatal_error = msg      # 致命错误槽：首条不覆盖
+                sess.fatal_error = info["message"]   # 致命错误槽：首条不覆盖
         finally:
             sess.ctls.pop(key, None)
             sem.release()
@@ -6596,6 +6954,9 @@ async def run_download_session(client, task, sess, *, gui=None,
                 if pending:
                     await asyncio.gather(*pending, return_exceptions=True)
                 return
+            if sess.breaker_until > time.monotonic() or sess.breaker_hold:
+                if not await sess.await_breaker():
+                    continue
             if sess.resume_q or sess.queue:
                 # T57 根因 B：sem.acquire 改为与任务级 abort 竞争等待。
                 # 槽位被在途条目占满时 abort 能立即抢占（原 await
@@ -7875,6 +8236,7 @@ async def preview_records(client, entity, title, params, auto_all):
     arrived = 0
     printed = set()
     items, meta = [], {}
+    partial = []
     last_tick = 0.0
     last_phase = ""
     last_scanned = -1
@@ -7924,6 +8286,7 @@ async def preview_records(client, entity, title, params, auto_all):
                         continue
                     printed.add(key)
                     arrived += 1
+                    partial.append(it)
                     _clear_inline()
                     m = it["msg"]
                     mark = REF_SOURCE_MARKS.get(it.get("match_in") or "", "")
@@ -7934,6 +8297,21 @@ async def preview_records(client, entity, title, params, auto_all):
                           + trunc_width(it["name"], 40))
             elif k == "done":
                 items, meta = ev["records"], ev["meta"]
+    except Exception as exc:
+        info = describe_exception(exc, scope="scan")
+        print(paint(f" 扫描中断：{info['message']}", YELLOW))
+        if partial:
+            seen = set()
+            items = []
+            for it in partial:
+                key = (it.get("src", SRC_CHANNEL), it["msg"].id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                items.append(it)
+            print(paint(f" 已保留已找到的 {len(items)} 条", YELLOW))
+        else:
+            items = []
     finally:
         watch.stop_listen()
         _clear_inline()
@@ -8033,12 +8411,19 @@ async def new_task_flow(client, args=None, pool=None):
     channel_name = parse_channel(channel_in)
     try:
         entity = await client.get_entity(channel_name)
-    except ValueError:
-        print(paint(f" 找不到频道「{channel_name}」：用户名拼错或不是公开频道", RED))
+    except ValueError as e:
+        info = describe_exception(e, scope="scan")
+        if info["code"] == "telegram_unstable":
+            print(paint(f" 暂时无法解析频道：{info['message']}", YELLOW))
+        else:
+            print(paint(
+                f" 找不到频道「{channel_name}」：用户名拼错或不是公开频道",
+                RED))
         pause()
         return
     except Exception as e:
-        print(paint(f" 解析频道失败：{type(e).__name__}: {str(e)[:120]}", RED))
+        info = describe_exception(e, scope="scan")
+        print(paint(f" 解析频道失败：{info['message']}", RED))
         pause()
         return
     title = getattr(entity, "title", None) or channel_name
@@ -8134,7 +8519,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n已取消，已下载内容保留，重启后可在菜单中选择该任务继续")
     except Exception as e:
-        print(f"\n出错：{type(e).__name__}: {e}")
+        print(f"\n出错：{describe_exception(e, scope='task')['message']}")
         try:
             input("按回车键退出 …")
         except EOFError:
