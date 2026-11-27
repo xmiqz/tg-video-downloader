@@ -195,7 +195,8 @@
   white-space: nowrap;
 }
 .ac-stage-speed,
-.ac-stage-eta {
+.ac-stage-eta,
+.ac-stage-size {
   flex: none;
   padding-left: var(--space-2);
   border-left: 1px solid var(--color-border);
@@ -203,6 +204,7 @@
   white-space: nowrap;
 }
 .ac-stage-eta { color: var(--color-text-muted); }
+.ac-stage-size[hidden] { display: none; }
 .ac-stage-countdown {
   display: none;
   flex: none;
@@ -247,14 +249,15 @@
 .ac-overview[data-folded="on"] .ac-stage-phase { display: block; order: -1; }
 .ac-overview[data-folded="on"] .ac-stage-countdown { display: block; order: 0; }
 .ac-overview[data-folded="on"] .ac-stage-counts { flex: none; order: 2; }
-.ac-overview[data-folded="on"] .ac-stage-speed { order: 3; }
-.ac-overview[data-folded="on"] .ac-stage-eta { order: 4; }
-.ac-overview[data-folded="on"] .ac-stage-fold { order: 5; }   /* 展开入口恒在最右 */
+.ac-overview[data-folded="on"] .ac-stage-size { order: 3; }
+.ac-overview[data-folded="on"] .ac-stage-speed { order: 4; }
+.ac-overview[data-folded="on"] .ac-stage-eta { order: 5; }
+.ac-overview[data-folded="on"] .ac-stage-fold { order: 6; }   /* 展开入口恒在最右 */
 
 /* ---------- 3b. 折叠态任务读数（底栏第二行） ---------- */
 .ac-band-tasks {
   flex: 1 1 100%;
-  order: 6;
+  order: 7;
   position: relative;               /* 盖住「展开舞台」按钮下延的命中区，避免误触 */
   z-index: 1;
   display: flex;
@@ -936,6 +939,7 @@
   }
   .ac-stage-prog { flex: 0 0 96px; width: 96px; }
   .ac-stage-counts { display: none; } /* 计数让位给「进度 + 速度 + 剩余」；详情在舞台里 */
+  .ac-stage-size { display: none; }   /* 窄屏让位给「进度 + 速度 + 剩余」；舞台画布仍显示大小 */
   /* 「收起舞台」：视觉 28，命中区 44 */
   .ac-stage-fold {
     position: relative;

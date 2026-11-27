@@ -143,10 +143,11 @@ function accountNameOf(a) {
 }
 
 // 舞台上的账号池节点需要具体账号，不再只显示「账号池」三个字。
-function stageAccountsOf(list, usedIds) {
+function stageAccountsOf(list, usedIds, busyById) {
   const arr = Array.isArray(list) ? list : [];
   const out = [];
   const seen = new Set();
+  const busy = busyById && typeof busyById === "object" ? busyById : {};
   for (let i = 0; i < arr.length; i++) {
     const a = arr[i];
     if (!a || !a.id) continue;
@@ -154,7 +155,12 @@ function stageAccountsOf(list, usedIds) {
     const id = String(a.id);
     if (seen.has(id)) continue;
     seen.add(id);
-    out.push({ id: id, name: accountNameOf(a), state: String(a.state || "") });
+    out.push({
+      id: id,
+      name: accountNameOf(a),
+      state: String(a.state || ""),
+      busy: Number(busy[id] || 0),
+    });
   }
   // account_list can lag behind the task snapshot (or omit an alt session
   // that is still referenced by queued items). Keep the stage honest: show a
@@ -168,6 +174,7 @@ function stageAccountsOf(list, usedIds) {
       id: id,
       name: id === "main" ? "主号" : "小号",
       state: "referenced",
+      busy: Number(busy[id] || 0),
     });
   });
   // Main first, then small accounts; keeps the node label stable.
@@ -177,6 +184,23 @@ function stageAccountsOf(list, usedIds) {
     return a.id.localeCompare(b.id);
   });
   return out;
+}
+
+export function collectAccountBusy(states) {
+  const busy = {};
+  const arr = Array.isArray(states) ? states : [];
+  for (let i = 0; i < arr.length; i++) {
+    const s = arr[i] || {};
+    const items = Array.isArray(s.items) ? s.items : [];
+    for (let j = 0; j < items.length; j++) {
+      const item = items[j] || {};
+      if (item.status !== "下载中") continue;
+      let id = String(item.acct || "");
+      if (!id || id === "auto") id = "main";
+      busy[id] = (Number(busy[id]) || 0) + 1;
+    }
+  }
+  return busy;
 }
 
 function collectUsedAccounts(states) {
@@ -276,14 +300,20 @@ export function buildStageScene(states, focusId, hint, acctList) {
     focusId: focus ? focus.task_id : "",
     operation: "download",
     countdown: countdown,
-    accounts: stageAccountsOf(acctList, collectUsedAccounts(arr)),
+    totalBytes: oc.totBytes,
+    totalSize: oc.totSize,
+    accounts: stageAccountsOf(acctList, collectUsedAccounts(arr), collectAccountBusy(arr)),
   };
 }
 
 // S3 组头计数（app.js:1328-1329 逐字）
 export function groupStatText(s) {
   const x = s || {};
-  return (x.task_finished || 0) + "/" + (x.task_total || 0) + " 完成";
+  let text = (x.task_finished || 0) + "/" + (x.task_total || 0) + " 完成";
+  if (Number(x.total_tot) > 0) {
+    text += " · " + human(x.total_bytes) + " / " + human(x.total_tot);
+  }
+  return text;
 }
 
 // S3 批量计数（app.js:1162-1163 逐字）
@@ -485,7 +515,8 @@ function human(n) {
   const u = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-  return n.toFixed(n >= 100 || i === 0 ? 0 : 1) + " " + u[i];
+  const rounded = n >= 100 || i === 0 || Number.isInteger(n) ? 0 : 1;
+  return n.toFixed(rounded) + " " + u[i];
 }
 const humanSpeed = (n) => human(n) + "/s";
 // T64 完成闪烁总时长（与 tokens.css --dur-flash 同值；reduced-motion 由
@@ -886,6 +917,7 @@ function buildDom() {
   const bandPhase = el("span", { class: "ac-stage-phase", text: "暂无进行中任务" });
   const bandCountdown = el("span", { class: "ac-stage-countdown", text: "" });
   const bandCounts = el("span", { class: "ac-stage-counts", text: "" });
+  const bandSize = el("span", { class: "ac-stage-size", text: "", hidden: true });
   const bandSpeed = el("span", { class: "ac-stage-speed", text: "—" });
   const bandEta = el("span", { class: "ac-stage-eta", text: "--" });
   // 折叠舞台后多任务只剩一条聚合读数，看不出是哪几个任务：
@@ -906,6 +938,7 @@ function buildDom() {
       bandPhase,
       bandCountdown,
       bandCounts,
+      bandSize,
       bandSpeed,
       bandEta,
       stageFoldBtn,
@@ -1047,7 +1080,7 @@ function buildDom() {
     offlineBar: offlineBar, hintBar: hintBar, hintTextEl: hintTextEl,
     overview: overview, prog: prog, stagePanel: stagePanel, stageHost: stageHost,
     bandPhase: bandPhase, bandCountdown: bandCountdown, bandCounts: bandCounts,
-    bandSpeed: bandSpeed, bandEta: bandEta, bandTasks: bandTasks,
+    bandSize: bandSize, bandSpeed: bandSpeed, bandEta: bandEta, bandTasks: bandTasks,
     fetchBar: fetchBar, fetchText: fetchText,
     ptrBar: ptrBar, ptrText: ptrText,
     bulkBar: bulkBar, bulkCount: bulkCount, bulkBtns: bulkBtnEls,
@@ -1163,6 +1196,14 @@ function syncStageBand(scene) {
       " · 失败 " + Math.max(0, Number(c.fail) || 0) +
       " · 进行 " + Math.max(0, Number(c.active) || 0) +
       " · 暂停 " + Math.max(0, Number(c.paused) || 0);
+  }
+  if (refs.bandSize) {
+    const totalSize = Math.max(0, Number(s.totalSize) || 0);
+    const text = totalSize > 0
+      ? human(Math.max(0, Number(s.totalBytes) || 0)) + " / " + human(totalSize)
+      : "";
+    setTextSafely(refs.bandSize, text);
+    refs.bandSize.hidden = totalSize <= 0;
   }
   if (refs.bandPhase) {
     refs.bandPhase.textContent = s.tasks && s.tasks.length

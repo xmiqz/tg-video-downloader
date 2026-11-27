@@ -11,7 +11,7 @@ import {
   bankAngle, anticipationOffset, trailLength, receiverFeedback,
   stageItemState, queueRank, queueOrder, parseFloodWaitSeconds,
   formatStageSpeed, stagePhaseCopy, stageSlotModel,
-  formatDiskFree,
+  formatDiskFree, formatStageSize,
   createStage,
 } from "../../web/js/motion/stage.js";
 import { flapFrequency } from "../../web/js/motion/xian.js";
@@ -319,6 +319,21 @@ test("速度文案三档与异常输入", () => {
   assert.equal(formatStageSpeed(5 * 1048576), "5.0 MB/s");
   assert.equal(formatStageSpeed(-1), "—");
   assert.equal(formatStageSpeed("x"), "—");
+});
+
+test("舞台下载体积文案：0/B/KB/GB 边界", () => {
+  assert.equal(formatStageSize(1536, 0), "", "无总大小不显示");
+  assert.equal(formatStageSize(12, 512), "12 B / 512 B", "B 取整");
+  assert.equal(formatStageSize(1536, 4096), "1.5 KB / 4 KB", "KB 整数不显示小数");
+  assert.equal(formatStageSize(153600, 409600), "150 KB / 400 KB", "≥100 取整");
+  assert.equal(formatStageSize(1610612736, 3221225472), "1.5 GB / 3 GB", "GB 一位小数/整数不显示小数");
+  const { host, api } = stageFixture();
+  api.update(scene({ totalBytes: 1536, totalSize: 4096 }));
+  const foot = host.querySelector(".xian-stage-task-foot");
+  assert.match(foot.textContent, / · 1\.5 KB \/ 4 KB$/, "任务舱脚注追加体积");
+  api.update(scene());
+  assert.doesNotMatch(foot.textContent, /KB \/ KB/, "无尺寸不追加体积");
+  api.destroy();
 });
 
 test("条目状态映射与未知兜底", () => {

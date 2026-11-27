@@ -451,6 +451,24 @@ export function formatStageSpeed(value) {
   return (n / 1048576).toFixed(1) + " MB/s";
 }
 
+export function formatStageSize(done, total) {
+  const totalBytes = Number(total) || 0;
+  if (totalBytes <= 0) return "";
+  const doneBytes = Math.max(0, Number(done) || 0);
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const human = function (bytes) {
+    let value = bytes;
+    let index = 0;
+    while (value >= 1024 && index < units.length - 1) {
+      value /= 1024;
+      index++;
+    }
+    const digits = value >= 100 || index === 0 || Number.isInteger(value) ? 0 : 1;
+    return value.toFixed(digits) + " " + units[index];
+  };
+  return human(doneBytes) + " / " + human(totalBytes);
+}
+
 // 保存位置剩余容量：二进制单位，≥10 的取整（「128 GB」不写成 128.4）。
 export function formatDiskFree(bytes) {
   const n = Math.max(0, Number(bytes) || 0);
@@ -1011,7 +1029,9 @@ export function createStage(host, opts) {
           finishedCount + "/" + totalCount + " · 并发 " +
           activeCount + "/" + Math.max(0, Number(s.parallel) || 0) +
           (failedCount ? " · 失败 " + failedCount : "") +
-          (pausedCount ? " · 暂停 " + pausedCount : "");
+          (pausedCount ? " · 暂停 " + pausedCount : "") +
+          (Number(s.totalSize) > 0
+            ? " · " + formatStageSize(s.totalBytes, s.totalSize) : "");
       }
       const aggregated = aggregateItems(s.items);
       renderCards(s.items, s.speed, s.operation);

@@ -128,7 +128,7 @@ def _uniform_8px(d: str, step: float = 8.0) -> list[tuple[float, float]]:
 
 
 def test_path_presampling_tolerance_below_half_pixel():
-    wires = re.findall(r'"M[^"]*"', stage_source())
+    wires = re.findall(r'"M-?\d[^"]*"', stage_source())
     assert len(wires) >= 9, "舞台至少 9 条数据线（桌面/紧凑/移动）"
     for raw in wires:
         d = raw[1:-1]

@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as A from "../../web/js/views/active.js";
+import { formatStageAcctSub } from "../../web/js/motion/stage.js";
 
 let N = 0;
 function ok(v, label) { N++; assert.ok(v, label); }
@@ -103,6 +104,8 @@ test("TR5-D 文案函数逐字", () => {
   eq(A.groupStatText({ task_finished: 2, task_total: 5 }), "2/5 完成", "groupStatText");
   eq(A.groupStatText({}), "0/0 完成", "groupStatText 缺字段");
   eq(A.groupStatText(null), "0/0 完成", "groupStatText null");
+  eq(A.groupStatText({ task_finished: 1, task_total: 2, total_bytes: 1536, total_tot: 4096 }),
+    "1/2 完成 · 1.5 KB / 4 KB", "groupStatText 带尺寸");
   eq(A.selCountText(7), "已选 7", "selCountText");
   eq(A.removeConfirmText(2), "从任务中移除选中的 2 个条目？本地文件不会删除。", "removeConfirmText");
   eq(A.abortConfirmText(), "中止该任务的全部下载？\n未完成视频状态保留，可随时继续。", "abortConfirmText 含换行");
@@ -299,9 +302,16 @@ test("TR5-M stage account pool keeps the small account and hides raw missing-pro
   const scene = A.buildStageScene([
     { task_id: "t1", phase: "downloading", items: [{ status: "下载中", acct: "alt1" }] },
   ], "t1", "", [{ id: "main", state: "ready", me: null }]);
+  eq(scene.totalBytes, 0, "buildStageScene totalBytes 来自 overviewAggregate");
+  eq(scene.totalSize, 0, "buildStageScene totalSize 来自 overviewAggregate");
+  const sized = A.buildStageScene([
+    { task_id: "t2", total_bytes: 1536, total_tot: 4096 },
+  ], "t2", "");
+  eq(sized.totalBytes, 1536, "buildStageScene totalBytes 累加快照字节");
+  eq(sized.totalSize, 4096, "buildStageScene totalSize 累加快照总字节");
   deep(scene.accounts, [
-    { id: "main", name: "主号", state: "ready" },
-    { id: "alt1", name: "小号", state: "referenced" },
+    { id: "main", name: "主号", state: "ready", busy: 0 },
+    { id: "alt1", name: "小号", state: "referenced", busy: 1 },
   ], "账号列表缺小号时，任务引用仍补出小号占位");
   ok(scene.accounts.every((a) => !a.name.includes("未获取资料")),
     "舞台不能显示「未获取资料」这种内部状态");
@@ -314,9 +324,52 @@ test("TR5-M stage account pool keeps the small account and hides raw missing-pro
     { id: "alt1", state: "ready", me: { first_name: "备份号" } },
   ]);
   deep(named.accounts, [
-    { id: "main", name: "@boss", state: "ready" },
-    { id: "alt1", name: "备份号", state: "ready" },
+    { id: "main", name: "@boss", state: "ready", busy: 0 },
+    { id: "alt1", name: "备份号", state: "ready", busy: 0 },
   ], "有资料时仍显示真实账号名，主号排在小号前");
+});
+
+test("TR5-M regression stage account busy comes from downloading items", () => {
+  const scene = A.buildStageScene([
+    {
+      task_id: "t1",
+      phase: "downloading",
+      items: [
+        { status: "下载中", acct: "alt1" },
+        { status: "下载中", acct: "alt1" },
+        { status: "下载中", acct: "main" },
+      ],
+    },
+  ], "t1", "", [
+    { id: "main", state: "ready", me: null, busy: 99 },
+    { id: "alt1", state: "ready", me: null, busy: 99 },
+  ]);
+  deep(A.collectAccountBusy([
+    { items: [{ status: "下载中", acct: "" }, { status: "下载中", acct: "auto" }] },
+  ]), { main: 2 }, "缺省/空/auto 账号归入 main");
+  deep(scene.accounts, [
+    { id: "main", name: "主号", state: "ready", busy: 1 },
+    { id: "alt1", name: "小号", state: "ready", busy: 2 },
+  ], "busy 从任务快照按账号统计，不读取 account_list 的过期值");
+  eq(formatStageAcctSub(scene.accounts), "账号池 · 下载中 3 路",
+    "舞台账号池文案反映真实下载路数");
+
+  const waiting = A.buildStageScene([
+    {
+      task_id: "t2",
+      phase: "downloading",
+      items: [
+        { status: "等待中", acct: "main" },
+        { status: "等待中", acct: "alt1" },
+      ],
+    },
+  ], "t2", "", [
+    { id: "main", state: "ready", me: null },
+    { id: "alt1", state: "ready", me: null },
+  ]);
+  deep(waiting.accounts.map((a) => a.busy), [0, 0], "等待中不计入 busy");
+  eq(formatStageAcctSub(waiting.accounts), "账号池 · 共 2 个 · 空闲",
+    "全部等待中时账号池显示空闲");
 });
 
 test("TR5-L 模块形状与零副作用", () => {
