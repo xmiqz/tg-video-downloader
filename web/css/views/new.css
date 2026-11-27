@@ -384,6 +384,32 @@
   border-color: var(--color-primary);           /* style.css:578 选态描边 */
   background: var(--color-primary-soft);        /* style.css:579 选态底 */
 }
+.nw-row.is-in-task {
+  border-style: dashed;
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-sunk);
+}
+.nw-row.is-in-task:not(.is-sel) .nw-name,
+.nw-row.is-in-task:not(.is-sel) .nw-sub,
+.nw-row.is-in-task:not(.is-sel) .nw-size {
+  color: var(--color-text-muted);
+}
+.nw-row.is-in-task:not(.is-sel) .nw-cbox {
+  border-color: var(--color-text-muted);
+}
+.nw-intask {
+  display: inline-block;
+  margin-right: var(--space-2);
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  border: var(--line-1) solid var(--color-border-strong);
+  background: var(--color-surface-raise);
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  vertical-align: middle;
+}
 .nw-cbox {
   width: 19px;                  /* 旧壳勾选框 19px（style.css:581） */
   height: 19px;

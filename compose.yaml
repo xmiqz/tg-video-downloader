@@ -1,6 +1,6 @@
 services:
   tg-video-downloader:
-    image: ${TGVD_IMAGE:-ghcr.io/xmiqz/tg-video-downloader:v2.6.2}
+    image: ${TGVD_IMAGE:-ghcr.io/xmiqz/tg-video-downloader:v2.7.0}
     container_name: tg-video-downloader
     restart: unless-stopped
     # Fixed unprivileged uid/gid, matching the image's /data owner. The named

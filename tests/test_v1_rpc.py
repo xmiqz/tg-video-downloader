@@ -38,7 +38,8 @@ def test_tr1_rpc_method_set_is_locked(tmp_path, monkeypatch):
         "job_state", "jobs_state", "list_tasks",
         "login_state", "logout", "me", "open_editor", "open_folder",
         "open_item_file", "preview", "preview_cancel", "remove_items",
-        "resume_task", "scan_append", "send_code", "set_appearance",
+        "resume_task", "scan_append", "scan_prefill", "scan_release",
+        "send_code", "set_appearance",
         "set_api_credentials", "set_download_root", "set_guest", "set_item",
         "start_download",
         "qr_login_start", "qr_login_status", "qr_login_poll",
@@ -51,7 +52,7 @@ def test_tr1_rpc_method_set_is_locked(tmp_path, monkeypatch):
         "tasks_exportable", "export_tasks", "import_tasks",
     })
     assert isinstance(server_app.RPC_METHODS, frozenset)
-    assert len(server_app.RPC_METHODS) == 66
+    assert len(server_app.RPC_METHODS) == 68
     assert server_app.RPC_METHODS == expected
 
 

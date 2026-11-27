@@ -905,6 +905,28 @@ function edSave() {
   });
 }
 
+async function edAppendScan(btn) {
+  const oldText = btn ? btn.textContent : "";
+  const unlock = () => { if (btn) btn.textContent = oldText; };
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api().scan_append(TASK_ID, { incremental: true });
+    if (r && r.need_login) {
+      unlock();
+      return alert("该操作需要 Telegram 登录，请在主窗口登录后重试");
+    }
+    if (!r || !r.ok) {
+      unlock();
+      return alert("追加扫描失败：" + ((r && r.error) || ""));
+    }
+    unlock();
+    alert("已开始后台追加扫描");
+  } catch (e) {
+    unlock();
+    alert("追加扫描失败：" + (e && e.message || e));
+  }
+}
+
 // ---------- 过滤 ----------
 let _edFilterThumbRaf = 0;
 let _edFilterThumbTries = 0;
@@ -1042,9 +1064,8 @@ function edSetLum(value) {
     document.documentElement.removeAttribute("data-lum");
     return false;
   }
-  if (n >= 160) document.documentElement.setAttribute("data-lum", "bright");
-  else if (n <= 120) document.documentElement.setAttribute("data-lum", "dark");
-  else document.documentElement.removeAttribute("data-lum");
+  if (n >= 140) document.documentElement.setAttribute("data-lum", "bright");
+  else document.documentElement.setAttribute("data-lum", "dark");
   return true;
 }
 

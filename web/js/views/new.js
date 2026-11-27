@@ -14,14 +14,18 @@
 //
 // 组件消费：T10 桶唯唯一入口 ../ui/index.js（createCard/createSegmented/
 //   createProgress/createToaster/el/append），签名见 t10_contract.md。
-// RPC 白名单消费恰五个：preview / preview_cancel / start_download /
-//   account_list / edit_task（45 集合内；后两者 T19a 任务选号承接）。
+// RPC 白名单消费：preview / preview_cancel / start_download /
+//   account_list / edit_task（45 集合内；后两者 T19a 任务选号承接）
+//   + v2.7 扫新：scan_prefill 由 tasks.js 消费，本页消费 scan_release。
 // 导航：window.__t8router.navigate（降级 location.hash）。
 //
 // 5A seam 出口（任务书 §3 授权，与 T11 同款）：collectParams/
 //   classifyPreviewAck/mergeItems/reconcileFinal/emptyReason/selectionPatch/
 //   selectAllPatch/classifySearchJob/filterRows 九个纯函数额外命名导出，
 //   仅供测试消费；本模块顶层零 DOM/window 访问（node import 即证）。
+//
+// v2.7 扫新纯函数：mergeScanParams（预填字段并入 preview params）、
+//   defaultSelection（in_task 默认不选）、countInTask（跳过计数）。
 //
 // T19a 承接 TgAccounts.applyNewTaskAcct（任务选号策略，app.js:3625-3631）：
 //   新建页选号随 edit_task({acct_pref}) fire-and-forget 下发（见 doStart 尾）。
@@ -181,6 +185,39 @@ export function selectAllPatch(items, q, v) {
   return filterRows(items, q).map(function (it) { return keyOf(it.src, it.mid); });
 }
 
+// v2.7 扫新：仅扫新流程把水位/令牌并入 preview 参数；普通新建零字段。
+export function mergeScanParams(params, scanFlow) {
+  const p = Object.assign({}, params || {});
+  const s = scanFlow || {};
+  if (!s.token) return p;
+  p.scan_token = s.token;
+  p.scan_task_id = s.taskId;
+  p.scan_base_title = s.baseTitle;
+  p.scan_date = s.scanDate;
+  if (s.minId != null && s.minId !== "") p.min_id = s.minId;
+  return p;
+}
+
+export function defaultSelection(items) {
+  const keys = [];
+  const list = Array.isArray(items) ? items : [];
+  for (let i = 0; i < list.length; i++) {
+    const it = list[i] || {};
+    if (it.in_task) continue;
+    keys.push(keyOf(it.src, it.mid));
+  }
+  return keys;
+}
+
+export function countInTask(items, meta) {
+  if (meta && Number.isFinite(Number(meta.in_task_count)))
+    return Math.max(0, Number(meta.in_task_count));
+  const list = Array.isArray(items) ? items : [];
+  let n = 0;
+  for (let i = 0; i < list.length; i++) if (list[i] && list[i].in_task) n++;
+  return n;
+}
+
 // ============================================================
 // S6 classifySearchJob — job_update 六分类（app.js:999-1052）
 // 出参：{kind:"running",text} | {kind:"cancelled"} |
@@ -271,6 +308,8 @@ const rowByKey = new Map();  // 全量重绘重建；行内更新专用索引（
 let newTaskAcct = "auto";   // app.js:3120 默认自动
 let acctAlts = [];          // 小号清单（app.js:3575 altAccounts；空=只显 主号|自动）
 let acctSeg = null;
+// v2.7 扫新流程（模块级；onEnter 消费 window 预填后立即清除防重复）
+let scanFlow = null;
 
 // ============================================================
 // mount / onEnter / onLeave（T8 契约 §1）
@@ -295,10 +334,73 @@ export function mount() {
 }
 
 export function onEnter() {
+  consumeScanPrefill();
   if (cached && refs) {
     bindList();
     attachGestures();   // T17 手势增量（幂等）
     loadAcctAlts();     // T52 小号清单补拉（幂等；失败静默=只显 主号|自动）
+  }
+}
+
+function consumeScanPrefill() {
+  const src = typeof window !== "undefined" ? window.__tvdScanPrefill : null;
+  if (typeof window !== "undefined") delete window.__tvdScanPrefill;
+  if (!src || !src.ok || !src.token) return;
+  selected = new Set();
+  arrivedKeys = new Set();
+  previewData = { items: [], channel: "", title: "", meta: {}, job_id: "" };
+  searchJob = null;
+  nameMode = "off";
+  scannedMode = "off";
+  renameEdits = {};
+  renameOff = new Set();
+  expandedKeys = new Set();
+  if (refs) {
+    refs.vsearch.value = "";
+    gotoStep(1);
+  }
+  scanFlow = {
+    token: src.token,
+    taskId: src.params && src.params.scan_task_id,
+    baseTitle: src.params && src.params.scan_base_title,
+    scanDate: src.params && src.params.scan_date,
+    folder: src.folder || "",
+    minId: src.params && src.params.min_id,
+  };
+  if (!refs) return;
+  const p = src.params || {};
+  refs.channel.value = String(p.channel || "");
+  refs.keywords.value = String(p.query || "");
+  refs.limit.value = p.limit == null || p.limit === "" ? "30" : String(p.limit);
+  refs.minMb.value = p.min_mb == null || p.min_mb === "" ? "0" : String(p.min_mb);
+  refs.maxMb.value = p.max_mb == null || p.max_mb === "" ? "0" : String(p.max_mb);
+  refs.dateFrom.value = String(p.date_from || src.date_from || "");
+  refs.dateTo.value = "";
+  if (refs.deepScan) refs.deepScan.checked = ["1", "true", "yes", "y", "on"]
+    .includes(String(p.deep_scan || "").trim().toLowerCase());
+  opts.mode = p.mode || "all";
+  opts.scope = p.scope || "channel";
+  opts.sort = p.sort || "date";
+  refs.modeSeg.set(opts.mode);
+  refs.scopeSeg.set(opts.scope);
+  refs.sortSeg.set(opts.sort);
+  if (refs.advPanel.hidden) toggleAdv();
+  refs.errBox.textContent = "";
+  refs.noteBox.textContent =
+    "本次只扫描水位之后的新消息；已在任务中的条目会自动跳过。";
+}
+
+function releaseScanFlow() {
+  if (!scanFlow || !scanFlow.token) return;
+  const token = scanFlow.token;
+  scanFlow = null;
+  if (typeof window === "undefined" || !window.pywebview || !window.pywebview.api) return;
+  try {
+    Promise.resolve(window.pywebview.api.scan_release(token)).catch(function (e) {
+      console.debug("[v2.7] scan_release 调用失败：", e);
+    });
+  } catch (e) {
+    console.debug("[v2.7] scan_release 调用失败：", e);
   }
 }
 
@@ -312,6 +414,7 @@ function attachGestures() {
 export function onLeave() {
   // ①静默取消在途搜索作业（app.js:1071-1076 尽力调用，防后台空跑）
   cancelSearchJobQuietly();
+  releaseScanFlow();
   // ②移除 window 事件监听（tg:search_items / tg:job_update / pywebviewready）
   unbindList();
   // ②b T17 手势增量对称回收（attach* 均返回 detach）
@@ -685,6 +788,7 @@ async function doPreview() {
     dateFrom: refs.dateFrom.value, dateTo: refs.dateTo.value,
   });
   if (!r0.ok) { refs.errBox.textContent = r0.error; return; } // app.js:747
+  r0.params = mergeScanParams(r0.params, scanFlow);
   // 2.3 FIX5K P1：deep_scan 扩展键——S1 契约 params 恰 10 键冻结面不动
   // （run_seams S1-8），收集后按 T52 扩展键模式并入下发参数
   r0.params.deep_scan = refs.deepScan && refs.deepScan.checked ? 1 : 0;
@@ -727,7 +831,7 @@ async function doPreview() {
     items: [], channel: r0.params.channel, title: r0.params.channel,
     meta: {}, job_id: c.jobId, params: r0.params,
   };
-  selected = new Set();
+  selected = new Set(defaultSelection(previewData.items));
   arrivedKeys = new Set();
   searchJob = { job_id: c.jobId, streaming: true };
   refs.vsearch.value = "";
@@ -755,6 +859,9 @@ function buildRow(it) {
   const eff = rnEffective(k, it);
   const useRn = participates(nameMode, renameOff, k, eff);
   const nameWrap = el("div", { class: "nw-name" });
+  if (it.in_task) nameWrap.append(el("span", {
+    class: "nw-intask", text: "已在任务",
+  }));
   if (it.match_in && it.match_in !== "self") {
     nameWrap.append(el("span", {
       class: "nw-reftag",
@@ -860,7 +967,7 @@ function buildRow(it) {
     }) : null,
   ]) : null;
   const row = el("div", {
-    class: "nw-row" + (on ? " is-sel" : ""),
+    class: "nw-row" + (it.in_task ? " is-in-task" : "") + (on ? " is-sel" : ""),
     dataset: { key: k },
     role: "checkbox",
     "aria-checked": on ? "true" : "false",
@@ -976,7 +1083,12 @@ function toggleVideo(k) {
 
 function selectAll(v) {
   const q = refs.vsearch.value.trim().toLowerCase();
-  selected = new Set(selectAllPatch(previewData.items, q, v)); // 可见集语义 app.js:843-849
+  const patch = selectAllPatch(previewData.items, q, v).filter(function (k) {
+    if (!scanFlow) return true;
+    const it = previewData.items.find(function (x) { return keyOf(x.src, x.mid) === k; });
+    return !(it && it.in_task);
+  });
+  selected = new Set(patch); // 可见集语义 app.js:843-849；扫新 in_task 默认不选
   renderPreview();
 }
 
@@ -1040,6 +1152,9 @@ function resetSearchProgress() {           // app.js:877-889
   refs.prog.setDeterminate(false);
   refs.phaseBox.textContent = "正在搜索…";
   refs.countsBox.textContent = "已扫描 0 条 · 已匹配 0 条";
+  const initialSkipped = countInTask(previewData.items, previewData.meta);
+  if (initialSkipped) refs.countsBox.textContent +=
+    " · 已跳过 " + initialSkipped + " 条已在任务";
   refs.pnoteBox.textContent = "";
   refs.pnoteBox.classList.remove("warn", "error");
   refs.cancelBtn.disabled = false;
@@ -1076,6 +1191,9 @@ function finishSearchProgress(meta) {      // app.js:971-995
   if (meta.capped) bits.push("消息过多，仅扫描了最近 " + meta.scan_cap + " 条");
   refs.phaseBox.textContent = "搜索完成 · 共 " + previewData.items.length + " 条";
   refs.countsBox.textContent = bits.join("，");
+  const skipped = countInTask(previewData.items, meta);
+  if (skipped) refs.countsBox.textContent +=
+    (refs.countsBox.textContent ? "，" : "") + "已跳过 " + skipped + " 条已在任务";
   refs.pnoteBox.classList.remove("error");
   // truncated/capped 黄行（文案同 TUI 口径，按 use_server/命中类型分流）
   if (meta.truncated) {
@@ -1137,6 +1255,8 @@ function onSearchJobUpdate(job) {
     refs.progWrap.dataset.state = "cancelled";
     refs.phaseBox.textContent = "已停止搜索";
     refs.countsBox.textContent = "已到达 " + previewData.items.length + " 条仍可勾选下载";
+    const skipped = countInTask(previewData.items, previewData.meta || {});
+    if (skipped) refs.countsBox.textContent += " · 已跳过 " + skipped + " 条已在任务";
     refs.pnoteBox.textContent = "";
     refs.pnoteBox.classList.remove("warn", "error");
     hideSearchCancelBtn();
@@ -1282,17 +1402,33 @@ async function doStart() {
       keys, parallel, "", previewData.job_id || "",
       // 2.3：搜索关键词/命名上下文档位随任务落盘（编辑窗智能命名按此生成拟名）
       String((previewData.params && previewData.params.query) || ""),
-      String((previewData.params && previewData.params.name_wide) || ""));   // 同步直调（旧壳 app.js:5）
+      String((previewData.params && previewData.params.name_wide) || ""),
+      scanFlow ? {
+        token: scanFlow.token,
+        task_id: scanFlow.taskId,
+        base_title: scanFlow.baseTitle,
+        scan_date: scanFlow.scanDate,
+        folder: scanFlow.folder,
+        params: Object.assign({}, previewData.params || {}),
+      } : undefined);   // 同步直调（旧壳 app.js:5）；第 9 参仅扫新携带
   } catch (e) {
     restoreBtn();
+    releaseScanFlow();
     return;                                    // app.js:866 异常静默
   }
   if (!r || !r.ok) {
     restoreBtn();
     if (r) toast("error", r.error || "开始下载失败"); // app.js:867 alert 承接
+    releaseScanFlow();
     return;
   }
   restoreBtn(); // 成功路径同样恢复（TR12-1 G4 揪出：keep-alive 返回视图后按钮需可再点）
+  if (scanFlow) {
+    const skipped = Number((r && r.skipped_in_task) || 0);
+    toast("success", "已创建新任务" + (skipped
+      ? "，跳过 " + skipped + " 条已在任务" : ""));
+    releaseScanFlow();
+  }
   // T52 任务选号承接（app.js:870 applyNewTaskAcct → 3625-3631）：本页选定的
   // acct_pref 随 edit_task fire-and-forget 下发，失败静默（下载已开始不受影响）
   if (r && r.task_id) {

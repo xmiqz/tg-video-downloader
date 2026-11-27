@@ -388,6 +388,10 @@ class Api:
         # 作业一致：worker finally 清除（含 error/cancelled 全路径）。
         self._scan_tasks = {}
         self._scan_lock = threading.Lock()
+        # v2.7 扫新流程：token -> group key / scan_task_id / creation lock
+        self._scan_group_tokens = {}
+        self._scan_group_locks = {}
+        self._scan_group_lock = threading.Lock()
         # N-03：搜索作业协程的在途 asyncio.Task（job_id -> Task，纯内存）。
         # preview_cancel 经 engine.loop.call_soon_threadsafe(task.cancel)
         # 立即打断 FloodWait/网络等待；worker 收口时清理。
@@ -452,6 +456,106 @@ class Api:
             except Exception as exc:
                 return None, f"目录不可用：{type(exc).__name__}: {exc}"
         return path, ""
+
+    def _ensure_scan_group_state(self):
+        """兼容 Api.__new__ 测试对象：锁字典懒初始化，且不丢引用。"""
+        if not hasattr(self, "_scan_group_lock"):
+            self._scan_group_lock = threading.Lock()
+        if not hasattr(self, "_scan_group_tokens"):
+            self._scan_group_tokens = {}
+        if not hasattr(self, "_scan_group_locks"):
+            self._scan_group_locks = {}
+
+    @staticmethod
+    def _scan_param_whitelist():
+        return ("channel", "query", "mode", "scope", "sort", "limit",
+                "min_mb", "max_mb", "name_wide", "deep_scan", "date_from",
+                "min_id", "scan_date", "scan_base_title", "scan_task_id")
+
+    def _acquire_scan_group(self, task_id, info):
+        """同逻辑库只允许一个扫新流程；返回 (token, error)。"""
+        self._ensure_scan_group_state()
+        key = info["key"]
+        token = str(uuid.uuid4())
+        with self._scan_group_lock:
+            creation_lock = self._scan_group_locks.get(key)
+            if creation_lock is None:
+                creation_lock = threading.Lock()
+                self._scan_group_locks[key] = creation_lock
+            if not creation_lock.acquire(blocking=False):
+                return None, "该频道逻辑库正在扫新，请稍候"
+            self._scan_group_tokens[token] = {
+                "key": key,
+                "task_id": task_id,
+                "lock": creation_lock,
+            }
+        return token, ""
+
+    def _validate_scan_token(self, token, info):
+        """校验 token 仍持有对应逻辑库的创建锁。"""
+        if not token:
+            return ""
+        self._ensure_scan_group_state()
+        with self._scan_group_lock:
+            state = self._scan_group_tokens.get(str(token))
+            if state is None or state["key"] != info["key"]:
+                return "扫新令牌已失效或属于其它逻辑库，请重新扫新"
+        return ""
+
+    def _release_scan_token(self, token):
+        """幂等释放 token；未知 token 返回 False。"""
+        if not token:
+            return False
+        self._ensure_scan_group_state()
+        with self._scan_group_lock:
+            state = self._scan_group_tokens.pop(str(token), None)
+        if state is None:
+            return False
+        state["lock"].release()
+        return True
+
+    def scan_release(self, token):
+        """显式释放扫新流程令牌（未知 token 幂等成功）。"""
+        self._release_scan_token(token)
+        return {"ok": True}
+
+    def scan_prefill(self, task_id):
+        """打开扫新流程：按频道逻辑库占位并返回新建下载的预填参数。"""
+        if self.client is None:
+            print("[GUI] need_login: scan_prefill")
+            return {"ok": False, "need_login": True}
+        task = core.load_task(task_id)
+        if task is None or task.get("id") != task_id:
+            return {"ok": False, "error": "任务不存在"}
+        if task_id in core.ACTIVE_SESSIONS:
+            return {"ok": False, "busy": True,
+                    "error": "任务正在下载中，请先停止或走新流程"}
+        info = core.scan_group_info(task)
+        params = {key: value for key, value in (task.get("params") or {}).items()
+                  if key in self._scan_param_whitelist()}
+        scan_date = time.strftime("%Y-%m-%d")
+        params.update({
+            "channel": info["channel"],
+            "date_from": info["date_from"],
+            "min_id": info["watermark_id"],
+            "scan_task_id": task_id,
+            "scan_base_title": info["base_title"],
+            "scan_date": scan_date,
+        })
+        params.pop("date_to", None)
+        token, error = self._acquire_scan_group(task_id, info)
+        if error:
+            return {"ok": False, "busy": True, "error": error}
+        return {
+            "ok": True,
+            "token": token,
+            "params": params,
+            "folder": info["folder"],
+            "title": info["base_title"] + " · 扫新 " + scan_date,
+            "watermark_id": info["watermark_id"],
+            "date_from": info["date_from"],
+            "group_size": info["group_size"],
+        }
 
     # ---------- 外观模式 ----------
     def get_appearance(self):
@@ -1545,26 +1649,37 @@ class Api:
         precheck_error = self._preview_precheck(params)
         if precheck_error:
             return {"ok": False, "error": precheck_error}
+        p = dict(params)
+        scan_token = p.get("scan_token") or ""
+        if scan_token:
+            source_task = core.load_task(p.get("scan_task_id"))
+            if source_task is None or source_task.get("id") != p.get("scan_task_id"):
+                return {"ok": False, "error": "扫新来源任务不存在"}
+            info = core.scan_group_info(source_task)
+            token_error = self._validate_scan_token(scan_token, info)
+            if token_error:
+                return {"ok": False, "busy": True, "error": token_error}
+            p["scan_group_info"] = info
         try:
-            channel_in = params.get("channel", "")
+            channel_in = p.get("channel", "")
             channel_name, ref_mid = core.parse_channel_ref(channel_in)
         except Exception as e:
             return {"ok": False, "error": str(e)}
         job_id, cancel_event = self.jobs.create("search")
         threading.Thread(
             target=self._search_worker,
-            args=(job_id, cancel_event, channel_name, ref_mid, dict(params)),
+            args=(job_id, cancel_event, channel_name, ref_mid, p),
             daemon=True, name="search-" + job_id,
         ).start()
         return {"ok": True, "job_id": job_id}
 
     @staticmethod
-    def _search_item_of(r, query="", name_wide=False):
+    def _search_item_of(r, query="", name_wide=False, in_task=None):
         """record → 前端 item 序列化：T47 6 键纯增 match_in/ref_text 2 键
         （.get 取值，缺省 "self"/None 与 record 一致），无其它形变；
         2.3 智能重命名再纯增 rename 1 键（关键词命中句拟名，可为空串；
         前端行内可编辑，创建任务后下载完成即按所登记名命名）。"""
-        return {
+        out = {
             "mid": r["msg"].id,
             "src": r.get("src", core.SRC_CHANNEL),
             "name": r["name"],
@@ -1577,6 +1692,9 @@ class Api:
                 r.get("text", "") or "", query, r["name"],
                 r.get("ref_text"), wide=name_wide),
         }
+        if in_task is not None:
+            out["in_task"] = bool(in_task)
+        return out
 
     def _search_push(self, job_id, data):
         """经既有线程安全 hub 扇出一帧 search_items（包络钉死：
@@ -1647,6 +1765,16 @@ class Api:
         _search_previews（cancelled 后已到达部分仍可建任务）。"""
         p = dict(params)
         p.pop("channel", None)
+        scan_info = p.pop("scan_group_info", None)
+        scan_item_keys = set(scan_info["item_keys"]) if scan_info else set()
+        scan_content_keys = set(scan_info["content_keys"]) if scan_info else set()
+
+        def _in_task(record):
+            if not scan_info:
+                return None
+            key = (record.get("src", core.SRC_CHANNEL), record["msg"].id)
+            return (key in scan_item_keys
+                    or (record["name"], record["size"]) in scan_content_keys)
         # N-03：登记在途 Task，preview_cancel 可立即 cancel 打断网络等待。
         task = asyncio.current_task()
         if task is not None:
@@ -1679,7 +1807,7 @@ class Api:
                     fresh.append(r)
             for r in fresh:
                 items_seq.append(self._search_item_of(
-                    r, p.get("query", ""), name_wide))
+                    r, p.get("query", ""), name_wide, _in_task(r)))
             return len(fresh)
 
         def _maybe_push():
@@ -1704,9 +1832,13 @@ class Api:
 
         self.jobs.update(job_id, state="running", phase="server_search",
                          phase_detail="搜索作业启动", total=0)
-        entity = await self.client.get_entity(channel_name)
-        async for ev in core.search_videos_stream(self.client, entity, p,
-                                                  cancel=cancel_event):
+        entity = None
+        stream = self._scan_search_stream(job_id, p, cancel_event)
+        if stream is None:
+            entity = await self.client.get_entity(channel_name)
+            stream = core.search_videos_stream(self.client, entity, p,
+                                               cancel=cancel_event)
+        async for ev in stream:
             kind = ev["kind"]
             if kind == "progress":
                 detail = (f"已扫描 {ev['scanned']} 条"
@@ -1733,13 +1865,14 @@ class Api:
                     self.jobs.update(job_id, state="cancelled")
                     return
                 records, meta = ev["records"], ev["meta"]
-                title = getattr(entity, "title", None) or channel_name
+                title = (getattr(entity, "title", None) if entity is not None
+                         else None) or channel_name
                 # gui 层附加键（与 permalink 同性质，内核 meta 不产）：
                 # 旧 preview 响应承载的 title 改经终帧 meta 下发
                 meta["title"] = title
                 # permalink（T47 原样保留）：链接里带具体消息 id 时精准
                 # 补抓并插入首行，不受扫描上限与体积/日期筛选限制
-                if ref_mid is not None:
+                if ref_mid is not None and entity is not None:
                     have = {(r.get("src", core.SRC_CHANNEL), r["msg"].id)
                             for r in records}
                     if (core.SRC_CHANNEL, ref_mid) not in have:
@@ -1757,8 +1890,11 @@ class Api:
                     (r.get("src", core.SRC_CHANNEL), r["msg"].id): r
                     for r in records}
                 final_items = [self._search_item_of(r, p.get("query", ""),
-                                                    name_wide)
+                                                    name_wide, _in_task(r))
                                for r in records]
+                if scan_info:
+                    meta["in_task_count"] = sum(
+                        1 for item in final_items if item.get("in_task"))
                 with self._preview_lock:
                     self._search_previews[job_id] = final_store
                     self._preview = dict(final_store)
@@ -1775,6 +1911,10 @@ class Api:
         # 收口真终态 cancelled，否则卡片永挂取消中
         if cancel_event.is_set():
             self.jobs.update(job_id, state="cancelled")
+
+    def _scan_search_stream(self, job_id, params, cancel_event):
+        """测试挂点：返回异步事件流则替代真实网络搜索；生产恒 None。"""
+        return None
 
     def preview_cancel(self, job_id):
         """取消搜索作业（T48 新 RPC）。返回体与 job_cancel 同构：
@@ -1906,13 +2046,30 @@ class Api:
 
     # ---------- 建任务并下载 ----------
     def start_download(self, channel, title, keys, parallel, folder="",
-                       job_id="", query="", name_wide=""):
+                       job_id="", query="", name_wide="", scan=None):
         """T48：job_id 非空 → 从 _search_previews[job_id] 取记录（作业已
         cancelled 也允许用其已到达部分建任务）；job_id 空/缺失 → 走遗留
         全局 _preview（兼容窗口，至少保留一个版本）。其余逻辑逐行不变。"""
         if self.client is None:
             print("[GUI] need_login: start_download")
             return {"ok": False, "need_login": True}
+        scan = dict(scan) if isinstance(scan, dict) else None
+        if scan:
+            scan["scan_token"] = scan.get("scan_token") or scan.get("token") or ""
+            scan["scan_task_id"] = (scan.get("scan_task_id")
+                                    or scan.get("task_id") or "")
+            scan["_token_verified"] = False
+        scan_token = str(scan.get("scan_token") or "") if scan else ""
+        try:
+            return self._start_download_impl(
+                channel, title, keys, parallel, folder=folder,
+                job_id=job_id, query=query, name_wide=name_wide, scan=scan)
+        finally:
+            if scan_token and scan.get("_token_verified"):
+                self._release_scan_token(scan_token)
+
+    def _start_download_impl(self, channel, title, keys, parallel, folder="",
+                             job_id="", query="", name_wide="", scan=None):
         pool_map = {}
         if job_id:
             with self._preview_lock:
@@ -1929,6 +2086,37 @@ class Api:
                 todo.append(rec)
         if not todo:
             return {"ok": False, "error": "没有选择视频"}
+        skipped_in_task = 0
+        if scan:
+            source_task = core.load_task(scan.get("scan_task_id"))
+            if source_task is None or source_task.get("id") != scan.get("scan_task_id"):
+                return {"ok": False, "error": "扫新来源任务不存在",
+                        "skipped_in_task": 0}
+            info = core.scan_group_info(source_task)
+            token_error = self._validate_scan_token(
+                scan.get("scan_token"), info)
+            if token_error:
+                return {"ok": False, "busy": True, "error": token_error,
+                        "skipped_in_task": 0}
+            if scan.get("scan_token"):
+                scan["_token_verified"] = True
+            before = len(todo)
+            todo = [rec for rec in todo
+                    if (rec.get("src", core.SRC_CHANNEL), rec["msg"].id)
+                    not in info["item_keys"]]
+            skipped_in_task = before - len(todo)
+            if not todo:
+                return {
+                    "ok": False,
+                    "error": "所选视频均已在任务中，无需重复创建",
+                    "skipped_in_task": skipped_in_task,
+                }
+            params_in = dict(scan.get("params") or {})
+            scan_date = str(params_in.get("scan_date")
+                            or time.strftime("%Y-%m-%d"))
+            channel = info["channel"]
+            title = info["base_title"] + " · 扫新 " + scan_date
+            folder = info["folder"]
         if not folder:
             raw_root = self.cfg.get("download_root") or str(
                 core.DEFAULT_DOWNLOAD_ROOT
@@ -1940,8 +2128,12 @@ class Api:
         )
         if folder_error:
             return {"ok": False, "error": folder_error}
-        safe = "".join(c for c in (title or channel) if c not in '\\/:*?"<>|').strip()
-        folder_dest = root / (safe or "channel")
+        if scan:
+            folder_dest = root
+        else:
+            safe = "".join(
+                c for c in (title or channel) if c not in '\\/:*?"<>|').strip()
+            folder_dest = root / (safe or "channel")
         # N-01：父目录可进入但子目录不可写时 mkdir 会抛 PermissionError，
         # 这里与 _resolve_runtime_folder 同语义收敛为业务错误（不再冒到
         # /rpc 变 HTTP 500）。
@@ -1952,15 +2144,29 @@ class Api:
                     "error": f"目录不可用：{type(e).__name__}: {e}"}
 
         task_items = [core.make_task_item(r) for r in todo]
+        task_params = {
+            "parallel": max(1, min(int(parallel), 8)),
+            "query": str(query or ""),
+            "name_wide": str(name_wide or ""),
+        }
+        if scan:
+            params_in.pop("scan_token", None)
+            for key in self._scan_param_whitelist():
+                if key in params_in:
+                    task_params[key] = params_in[key]
+            task_params["parallel"] = max(1, min(int(parallel), 8))
         tasks = core.build_task_dicts(
-            channel, title,
-            # 2.3：query/name_wide 随任务落盘（params 子字典自由扩展）——
-            # 编辑窗/续传的智能重命名按搜索上下文与档位生成拟名的依据
-            {"parallel": max(1, min(int(parallel), 8)),
-             "query": str(query or ""),
-             "name_wide": str(name_wide or "")},
-            str(folder_dest), task_items,
+            channel, title, task_params, str(folder_dest), task_items,
         )
+        if scan:
+            max_mid = max(
+                [int(rec["msg"].id) for rec in todo
+                 if rec.get("src", core.SRC_CHANNEL) == core.SRC_CHANNEL],
+                default=0,
+            )
+            for task in tasks:
+                if max_mid > 0:
+                    task["last_msg_id"] = max_mid
         for t in tasks:
             core.save_task(t)
         n_split = len(tasks)
@@ -2018,8 +2224,11 @@ class Api:
             daemon=True, name="dl-" + job_id,
         ).start()
         self._start_dl_cancel_watcher(job_id, cancel_event, first["id"])
-        return {"ok": True, "task_id": first["id"], "split": n_split,
-                "job_id": job_id}
+        result = {"ok": True, "task_id": first["id"], "split": n_split,
+                  "job_id": job_id}
+        if scan:
+            result["skipped_in_task"] = skipped_in_task
+        return result
 
     # ---------- 实时状态 ----------
     def active_states(self):
@@ -2169,6 +2378,8 @@ class Api:
                 "finished": c["finished"], "total": c["total"],
                 "pending": c["pending"], "failed": c["failed"],
                 "skipped": c["skipped"],
+                "total_bytes": c["total_bytes"],
+                "done_bytes": c["done_bytes"],
                 # T53b（T52 回显）：账号偏好——落盘 params.acct_pref
                 # 为 main/altN；auto = 键不存在（edit_task 写入语义）。
                 # 只读装配，任务 JSON 零写盘；前端 noteTaskAcct 消费
@@ -2635,18 +2846,54 @@ class Api:
         t = core.load_task(task_id)
         if t is None or t.get("id") != task_id:
             return {"ok": False, "error": "任务不存在"}
+        # 下载中的 live 会话持有旧 items 快照并会周期性 force 保存；
+        # 此时追加条目/写 last_msg_id 会被旧快照覆盖。先要求停止下载。
+        if task_id in core.ACTIVE_SESSIONS:
+            return {"ok": False, "busy": True,
+                    "error": "任务正在下载中，请先停止后再追加扫描"}
+        scan_params = dict(params or {})
+        if scan_params.get("incremental"):
+            merged = dict(t.get("params") or {})
+            merged.pop("min_id", None)
+            merged.pop("date_to", None)
+            if scan_params.get("min_id") is None:
+                mids = [int(t.get("last_msg_id") or 0)]
+                for ti in t.get("items") or []:
+                    if ti.get("src", core.SRC_CHANNEL) == core.SRC_CHANNEL:
+                        mids.append(int(ti.get("msg") or 0))
+                watermark = max(mids)
+                if watermark > 0:
+                    merged["min_id"] = watermark
+            else:
+                try:
+                    explicit_min_id = int(scan_params["min_id"])
+                except (TypeError, ValueError):
+                    return {"ok": False,
+                            "error": "min_id 必须是非负整数"}
+                if explicit_min_id < 0:
+                    return {"ok": False,
+                            "error": "min_id 必须是非负整数"}
+                merged["min_id"] = explicit_min_id
+            scan_params = merged
         with self._scan_lock:
             if task_id in self._scan_tasks:
                 return {"ok": False,
                         "error": "该任务正在追加扫描中，请勿重复提交"}
-        job_id, cancel_event = self.jobs.create("scan_append")
-        with self._scan_lock:
+            job_id, cancel_event = self.jobs.create("scan_append")
             self._scan_tasks[task_id] = job_id
-        threading.Thread(
-            target=self._scan_worker,
-            args=(job_id, cancel_event, task_id, dict(params)),
-            daemon=True, name="scan-" + job_id,
-        ).start()
+        try:
+            threading.Thread(
+                target=self._scan_worker,
+                args=(job_id, cancel_event, task_id, scan_params),
+                daemon=True, name="scan-" + job_id,
+            ).start()
+        except Exception as e:
+            with self._scan_lock:
+                self._scan_tasks.pop(task_id, None)
+            self.jobs.update(job_id, force=True, state="error",
+                             phase="error", phase_detail="追加扫描失败",
+                             error=f"追加扫描启动失败：{type(e).__name__}: {e}")
+            return {"ok": False, "error": "追加扫描启动失败"}
         return {"ok": True, "job_id": job_id}
 
     def _scan_worker(self, job_id, cancel_event, task_id, params):
@@ -2760,10 +3007,10 @@ class Api:
                     exist_keys.add(k)
                     exist_content.add((r["name"], r["size"]))
                 if fresh_recs:
+                    before_n = len(t["items"])
                     added = core.append_records(t, fresh_recs)
                     added_total += added
-                    for r in fresh_recs[:added]:
-                        ti = core.make_task_item(r)
+                    for ti in t["items"][before_n:]:
                         items_seq.append(ti)
                     _maybe_push()
             elif kind == "done":
@@ -2772,6 +3019,16 @@ class Api:
                     self.jobs.update(job_id, state="cancelled")
                     return
                 records, meta = ev["records"], ev["meta"]
+                max_mid = max(
+                    [int(r["msg"].id) for r in records
+                     if r.get("src", core.SRC_CHANNEL) == core.SRC_CHANNEL],
+                    default=0,
+                )
+                if max_mid > 0:
+                    t_cur = core.load_task(task_id)
+                    if t_cur is not None and max_mid > int(t_cur.get("last_msg_id") or 0):
+                        t_cur["last_msg_id"] = max_mid
+                        core.save_task(t_cur)
                 meta["added"] = added_total
                 meta["skipped_dup"] = skipped_dup
                 meta["n_matched"] = len(records)
