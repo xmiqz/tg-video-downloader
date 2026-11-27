@@ -7,6 +7,7 @@
 ### 把 Telegram 频道视频，整理成你自己的本地媒体库。
 
 批量搜索、筛选、下载、续传和命名，一套界面完成。<br>
+v2.7：扫新逻辑库跨分片去重 · 每日壁纸透明玻璃舞台 · TUI 登录修复。<br>
 Windows 原生桌面、浏览器 / NAS 与命令行，使用同一套任务数据。
 
 [![Release](https://img.shields.io/github/v/release/xmiqz/tg-video-downloader?label=release&color=111111)](https://github.com/xmiqz/tg-video-downloader/releases/latest)
@@ -18,13 +19,18 @@ Windows 原生桌面、浏览器 / NAS 与命令行，使用同一套任务数�
 ![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
 
-**[下载](https://github.com/xmiqz/tg-video-downloader/releases/latest)** · **[快速开始](#快速开始)** · **[Docker 部署](#docker--nas)** · **[常见问题](#常见问题)**
+**[下载](https://github.com/xmiqz/tg-video-downloader/releases/latest)** · **[快速开始](#快速开始)** · **[Docker 部署](#docker--nas)** · **[NAS 部署](./docs/docker-nas.md)** · **[常见问题](#常见问题)**
 
 <br>
 
-<img src="docs/images/hero-dashboard.png" width="920" alt="TG 视频下载器：下载中的任务舱与链路舞台">
+<img src="docs/images/v2.7/wallpaper/desktop/active-dark.png" width="920" alt="TG 视频下载器 v2.7.0：每日壁纸下的下载中舞台">
 
 </div>
+
+> **v2.7.0 重点**
+> - 扫新按频道逻辑库跨分片去重，预填独立新任务，旧任务保持不变。
+> - 每日壁纸舞台改为透明玻璃，亮度统一判定，无滤镜时回退实底。
+> - TUI 登录修复：已有授权会话直接复用，不再误触发发送验证码。
 
 <br>
 
@@ -51,27 +57,32 @@ Telegram 频道的视频通常散落在消息、相册和转发内容里。临�
 | **断点续传** | 关机、关窗口或网络中断后继续未完成任务，已完成分片不重下。 |
 | **失败可恢复** | 按错误类型自动重试，FloodWait 倒计时，单条失败可重试或移除。 |
 | **智能重命名** | 从搜索命中句生成可读文件名，下载完成即命名；编辑页可预览、批量应用或还原原名。 |
-| **任务整理** | 暂停 / 继续、任务折叠、编辑保存目录、追加视频、导入导出任务元数据。 |
+| **扫新（跨分片去重）** | 按频道逻辑库跨分片去重；整组水位预填新任务，旧任务不变。 |
+| **追加扫描 / 追加视频** | 编辑页“追加扫描”按水位并入本任务；TUI“追加视频”去重并推进水位。 |
+| **任务整理** | 暂停 / 继续、任务折叠、编辑保存目录、导入导出任务元数据。 |
+| **壁纸玻璃舞台** | 每日壁纸下舞台透明玻璃，亮度统一判定，无滤镜回退实底。 |
 | **每日壁纸** | Bing 每日一图缓存到本地；可保存历史、选择旧图或上传自己的背景。 |
 | **多账号** | 主号与小号统一管理，任务可选择主号、小号或自动调度。 |
 | **桌面与 Web** | Windows 原生 WebView2 界面；Linux / NAS 通过浏览器访问同一套 UI。 |
 
 ## 界面
 
-### 桌面端
+### 桌面端（v2.7.0 每日壁纸矩阵）
+
+桌面 1440×900，暗 / 亮壁纸各一档；任务库、下载中、设置三页保持同一套玻璃语言。
 
 <table>
 <tr>
-<td width="50%"><img src="docs/images/task-library.png" alt="任务库"></td>
-<td width="50%"><img src="docs/images/settings.png" alt="设置"></td>
+<td width="50%"><img src="docs/images/v2.7/wallpaper/desktop/tasks-dark.png" alt="任务库 · 暗色壁纸"></td>
+<td width="50%"><img src="docs/images/v2.7/wallpaper/desktop/tasks-bright.png" alt="任务库 · 亮色壁纸"></td>
 </tr>
 <tr>
-<td width="50%"><img src="docs/images/new-download.png" alt="新建下载"></td>
-<td width="50%"><img src="docs/images/new-download-results.png" alt="筛选并选择视频"></td>
+<td width="50%"><img src="docs/images/v2.7/wallpaper/desktop/active-dark.png" alt="下载中 · 暗色壁纸"></td>
+<td width="50%"><img src="docs/images/v2.7/wallpaper/desktop/active-bright.png" alt="下载中 · 亮色壁纸"></td>
 </tr>
 <tr>
-<td width="50%"><img src="docs/images/task-edit.png" alt="任务编辑"></td>
-<td width="50%"><img src="docs/images/task-edit-folder.png" alt="编辑任务 · 目录选择"></td>
+<td width="50%"><img src="docs/images/v2.7/wallpaper/desktop/settings-dark.png" alt="设置 · 暗色壁纸"></td>
+<td width="50%"><img src="docs/images/v2.7/wallpaper/desktop/settings-bright.png" alt="设置 · 亮色壁纸"></td>
 </tr>
 </table>
 
@@ -81,8 +92,8 @@ Telegram 频道的视频通常散落在消息、相册和转发内容里。临�
 
 ### 四种外观
 
-以下均为 Windows 桌面版打包程序的实机截图（v2.5.1 运行时画面），保留原始截图内容，未做拼接或重绘。
-静态暗、静态亮、每日壁纸取自同一页面、同一任务状态；液态玻璃取「新建下载 · 选择视频」页，
+以下为外观对照：静态暗、静态亮与液态玻璃沿用既有参考图；每日壁纸使用 v2.7.0 实机截图。
+液态玻璃取「新建下载 · 选择视频」页，
 以便看清实时采样窗口后方画面形成的磨砂玻璃效果。每日壁纸跟随 Bing 每日一图，也可保存历史壁纸或上传自己的背景。
 
 <table>
@@ -91,7 +102,7 @@ Telegram 频道的视频通常散落在消息、相册和转发内容里。临�
 <td width="50%"><img src="docs/images/theme-light.png" alt="静态亮"></td>
 </tr>
 <tr>
-<td width="50%"><img src="docs/images/theme-bing.png" alt="每日壁纸"></td>
+<td width="50%"><img src="docs/images/v2.7/wallpaper/desktop/active-dark.png" alt="每日壁纸 · v2.7 透明玻璃舞台"></td>
 <td width="50%"><img src="docs/images/theme-liquid.png" alt="液态玻璃（新建下载 · 选择视频页）"></td>
 </tr>
 </table>
@@ -114,6 +125,8 @@ Telegram 频道的视频通常散落在消息、相册和转发内容里。临�
 <td width="25%"><img src="docs/images/mobile/task-edit-folder.png" alt="移动端编辑任务 · 目录选择"></td>
 </tr>
 </table>
+
+> 移动端原有布局截图保留；v2.7.0 每日壁纸暗 / 亮矩阵（390×844）见 [使用说明 · 截图规格](./docs/使用说明.md#10-截图规格与来源)。
 
 ## 快速开始
 
@@ -162,37 +175,57 @@ TG视频下载器数据/
 
 ## Docker / NAS
 
-镜像地址：
+镜像地址为 `ghcr.io/xmiqz/tg-video-downloader`，支持 `linux/amd64` 与 `linux/arm64`。
+镜像内已写入版本号与 7 位构建 SHA，`/healthz` 可直接核对；Compose 不再用空环境变量覆盖它们。
 
-```text
-ghcr.io/xmiqz/tg-video-downloader:v2.5.2
-```
+| 标签 | 用途 |
+| :-- | :-- |
+| `v2.7.0` | 固定版本，生产推荐 |
+| `stable` | 稳定通道移动标签，后续发布更新 |
+| `latest` | 最新正式版别名 |
 
-支持 `linux/amd64` 与 `linux/arm64`。镜像内已写入版本号与 7 位构建 SHA，`/healthz` 可直接核对；Compose 不再用空环境变量覆盖它们。
+> `stable` / `latest` 由正式发布工作流维护，始终指向最近一个非 prerelease 版本。
 
-在 Docker 主机或 NAS 上可直接拉取仓库中的 [compose.yaml](./compose.yaml) 在线部署：
+### 在线 Compose
+
+优先使用 jsDelivr（部分网络无法访问 `raw.githubusercontent.com`）：
 
 ```bash
 mkdir -p /volume1/docker/tg-video-downloader/data
 sudo chown -R 10001:10001 /volume1/docker/tg-video-downloader/data
 TGVD_DATA_DIR=/volume1/docker/tg-video-downloader/data \
-  docker compose -f https://raw.githubusercontent.com/xmiqz/tg-video-downloader/main/compose.yaml up -d
-docker compose -f https://raw.githubusercontent.com/xmiqz/tg-video-downloader/main/compose.yaml ps
+  docker compose -p tg-video-downloader -f https://cdn.jsdelivr.net/gh/xmiqz/tg-video-downloader@v2.7.0/compose.yaml up -d
+docker compose -p tg-video-downloader -f https://cdn.jsdelivr.net/gh/xmiqz/tg-video-downloader@v2.7.0/compose.yaml ps
 ```
 
-首次启动读取一次性初始化令牌：
+群晖 / 飞牛的目录、GUI 项目、SSH compose、权限修正、反代与常见错误见 [Docker / NAS 部署手册](./docs/docker-nas.md)。
+
+### 首次启动与健康检查
 
 ```bash
 docker exec tg-video-downloader cat /data/.setup-token
+curl -fsS http://127.0.0.1:8787/healthz
 ```
 
-浏览器打开 `http://主机地址:8787`，输入令牌并设置管理员密码。该密码只保护 Web 管理界面，不是 Telegram 两步验证密码；设置成功后令牌文件会自动删除。
+浏览器打开 `http://主机地址:8787`，输入令牌并设置管理员密码。令牌设置成功后自动删除；内置 HTTP 不提供 TLS。
 
-容器固定以 `10001:10001` 运行，并启用只读根文件系统、`cap_drop: ALL` 与 `no-new-privileges`。未设置 `TGVD_DATA_DIR` 时使用命名卷 `tg-video-downloader-data`（继承镜像 `/data` 属主，无需手工 chown）；NAS 推荐把应用数据放在容器名目录下，用 `TGVD_DATA_DIR` 指向该绝对路径，并先 `chown -R 10001:10001 <目录>`。部署文件本身不必长期保留，升级时重新拉取同一份 YAML 即可。
+### 备份、升级与回滚
+
+```bash
+# 手动升级：固定 tag 不会自行变化
+docker compose pull && docker compose up -d
+curl -fsS http://127.0.0.1:8787/healthz
+
+# 回滚到上一版（数据目录不变）
+TGVD_IMAGE=ghcr.io/xmiqz/tg-video-downloader:v2.6.2 docker compose up -d
+```
+
+正式升级前先备份 `/data`：命名卷或 bind mount 的具体命令见 [备份 / 升级 / 回滚手册](./docs/nas-backup-restore.md)。
+
+> **GHCR 本身不是更新器。** GHCR 只保存镜像；容器不会自动切换到新版本。自动更新要么手动执行 `docker compose pull && docker compose up -d`，要么使用 Watchtower 等更新器；固定 `v2.7.0` 标签不会自动变化，需改用 `stable` 或手动修改 Tag。
 
 > 内置 HTTP 不提供 TLS。仅在本机或可信局域网直接使用 HTTP；跨网络访问时请置于 HTTPS 反向代理之后，并设置 `TGDL_COOKIE_SECURE=1`。
 
-备份、升级与回滚：[docs/nas-backup-restore.md](./docs/nas-backup-restore.md)
 反向代理示例：[docs/nas-reverse-proxy.md](./docs/nas-reverse-proxy.md)
 
 ### 常用环境变量

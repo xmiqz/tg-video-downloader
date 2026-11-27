@@ -91,12 +91,55 @@ def test_container_dispatch_defaults_to_validate_only():
 
 def test_container_verify_uses_publish_output_not_ref_name():
     text = _read(CONTAINER)
-    assert text.count("TAG: ${{ needs.publish.outputs.tag }}") == 2, (
-        "verify 的两步都必须使用 publish 输出的真实 tag")
+    assert text.count("TAG: ${{ needs.publish.outputs.tag }}") == 3, (
+        "verify 的三步都必须使用 publish 输出的真实 tag")
     assert "GITHUB_REF_NAME" not in text.split("verify:", 1)[1], (
         "verify 不得再用 github.ref_name 拼镜像标签")
     assert "${TAG:?publish 未输出 tag" in text, (
         "tag 为空时必须直接失败，而不是校验不存在的镜像")
+
+
+def test_container_publishes_stable_and_latest_aliases_for_stable_releases():
+    text = _read(CONTAINER)
+    alias_step = re.search(
+        r"      - name: Alias stable and latest\n"
+        r"(?:.*\n)*?"
+        r"          docker buildx imagetools create \\\n"
+        r"            -t \"\$\{IMAGE\}:stable\" \\\n"
+        r"            -t \"\$\{IMAGE\}:latest\" \\\n"
+        r"            \"\$\{IMAGE\}:\$\{TAG\}\"\n",
+        text)
+    assert alias_step, "publish 阶段缺少 stable/latest 多架构 alias 步骤"
+    block = alias_step.group(0)
+    assert (
+        "if: ${{ !contains(needs.preflight.outputs.tag, '-') }}" in block
+    ), "stable/latest 只能在非 prerelease Tag 时创建"
+    assert "TAG: ${{ needs.preflight.outputs.tag }}" in block, (
+        "alias 必须指向 preflight 解析出的正式版本 Tag")
+    assert "type=sha" not in text, "正式发布不得重新引入 type=sha"
+
+
+def test_container_verify_checks_stable_and_latest_aliases():
+    text = _read(CONTAINER)
+    verify = text.split("\n  verify:\n", 1)[1]
+    assert (
+        "Verify stable and latest aliases have amd64 and arm64" in verify
+    ), "verify 阶段缺少 stable/latest 别名校验"
+    assert 'docker manifest inspect "${IMAGE}:${alias}"' in verify, (
+        "必须对 stable/latest 分别执行 docker manifest inspect")
+    assert 'for alias in stable latest; do' in verify, (
+        "stable/latest 必须逐一校验")
+    alias_block = re.search(
+        r"for alias in stable latest; do\n(?:.*\n)*?          done\n", verify)
+    assert alias_block, "stable/latest 架构校验必须是完整的循环"
+    assert "grep -qw amd64" in alias_block.group(0), (
+        "别名循环必须校验 amd64 架构")
+    assert "grep -qw arm64" in alias_block.group(0), (
+        "别名循环必须校验 arm64 架构")
+    assert verify.count("grep -qw amd64") >= 2, (
+        "verify 必须同时校验版本 Tag 与稳定别名的 amd64 架构")
+    assert verify.count("grep -qw arm64") >= 2, (
+        "verify 必须同时校验版本 Tag 与稳定别名的 arm64 架构")
 
 
 def test_container_does_not_tag_dev_sha_on_release_tags():
