@@ -97,18 +97,18 @@ test("v2.5.2 mobile naming bar stays compact above the result list", async () =>
     "移动命名说明文字必须降级为紧凑辅助行");
 });
 
-test("v2.5.2 wallpaper stage and content panels own a reading base", async () => {
+test("v2.5.2 wallpaper stage reads as glass and content panels keep a readable base", async () => {
   const css = await read("web/css/glass-system.css");
   const tokens = await read("web/css/tokens.css");
   assert.match(css,
-    /html\[data-theme="wallpaper"\] body \.xian-stage-bay[\s\S]*var\(--color-surface\) 96%/,
-    "壁纸舞台需要 token 匹配阅读底");
+    /html\[data-theme="wallpaper"\] body \.xian-stage-bay[\s\S]*blur\(18px\) saturate\(160%\)/,
+    "壁纸舞台需要透明玻璃底");
   assert.match(css,
     /html\[data-theme="wallpaper"\] body :is\([\s\S]*\.xian-stage-card-name/,
     "任务名需要稳定文字层级");
   assert.match(css,
-    /html\[data-theme="wallpaper"\]\[data-lum="bright"\] body :is\([\s\S]*rgba\(255, 255, 255, \.78\)/,
-    "亮壁纸内容面板需要白阅读底");
+    /html\[data-theme="wallpaper"\]\[data-lum="bright"\] body \.xian-stage-bay[\s\S]*rgba\(255, 255, 255, \.56\)/,
+    "亮壁纸舞台需要白玻璃阅读底");
   assert.match(tokens,
     /:root\[data-theme="wallpaper"\]\[data-lum="dark"\],[\s\S]*--raw-ink:\s*#f5f7fe/,
     "暗壁纸必须把整组 raw ink 切回浅墨，不能沿用静态亮的深墨");

@@ -1461,6 +1461,7 @@ async def search_videos_stream(client, entity, p, cancel=None):
         dto = dto + _dt.timedelta(days=1)   # 含当天
     scope = p.get("scope", "channel")
     sort = p.get("sort", "date")
+    min_id = max(0, int(p.get("min_id") or 0))
     # 深度扫描（可选开关，缺省关）：无起始日期也放开到 HARD_SCAN_CAP，
     # 让外部文本（引用/相册/转发）候选覆盖突破 MAX_LOCAL_SCAN 翻页窗口。
     deep_scan = str(p.get("deep_scan", "")).strip().lower() in (
@@ -1613,12 +1614,14 @@ async def search_videos_stream(client, entity, p, cancel=None):
         nonlocal capped
         eid = getattr(ent, "id", None)
         pool = pools.setdefault(eid, {})
+        iter_kw = ({"min_id": min_id}
+                   if (min_id > 0 and src == SRC_CHANNEL) else {})
         if use_server:
             # server_search 阶段：服务端 search= 只入池（其顺序不保证
             # id 降序，判定统一由本地脊线/sweep 承接，候选集与 T47 相等）
             yield _progress("server_search")   # 阶段首帧（即使零命中也可见）
             for q in server_terms:
-                agen = client.iter_messages(ent, search=q)
+                agen = client.iter_messages(ent, search=q, **iter_kw)
                 async for m in agen:
                     if _cancelled():
                         return
@@ -1627,7 +1630,7 @@ async def search_videos_stream(client, entity, p, cancel=None):
         judged_ids = set()
         local_n = 0        # 本地翻页条目计数（scan_cap 配额只计本地翻页，
                            # 服务端入池不挤占本地扫描配额）
-        agen = client.iter_messages(ent)
+        agen = client.iter_messages(ent, **iter_kw)
         async for m in agen:
             if _cancelled():
                 return
@@ -3177,18 +3180,32 @@ async def refresh_record(client, sess, item):
     task = sess.task
     src = item.get("src", SRC_CHANNEL)
     key = (src, item["msg"].id)
-    ent = sess.entities.get(src)
-    if ent is None:
+    raw_client = getattr(client, "_client", client)
+    ent_key = (id(raw_client), src)
+
+    async def _resolve_entity():
         chan = await client.get_entity(task["channel"])
         if src == SRC_CHANNEL:
-            ent = chan
-        else:
-            ent = await get_discuss_entity(client, chan)
-            if ent is None:
-                # T22：评论组不可用=永久无效（重试无意义）
-                raise DeterministicDownloadError("评论组不可用，无法刷新引用")
-        sess.entities[src] = ent
-    m = await client.get_messages(ent, ids=item["msg"].id)
+            return chan
+        disc = await get_discuss_entity(client, chan)
+        if disc is None:
+            # T22：评论组不可用=永久无效（重试无意义）
+            raise DeterministicDownloadError("评论组不可用，无法刷新引用")
+        return disc
+
+    ent = sess.entities.get(ent_key)
+    if ent is None:
+        ent = await _resolve_entity()
+        sess.entities[ent_key] = ent
+    try:
+        m = await client.get_messages(ent, ids=item["msg"].id)
+    except Exception as exc:
+        if type(exc).__name__ != "ChannelInvalidError":
+            raise
+        sess.entities.pop(ent_key, None)
+        ent = await _resolve_entity()
+        sess.entities[ent_key] = ent
+        m = await client.get_messages(ent, ids=item["msg"].id)
     if isinstance(m, list):
         m = m[0] if m else None
     if m is None or not getattr(m, "document", None):
@@ -3730,6 +3747,91 @@ def load_tasks():
     return out
 
 
+SCAN_SUFFIX_RE = re.compile(r"\s*[（(]\s*\d+\s*/\s*\d+\s*[）)]\s*$")
+
+
+def scan_base_title(title):
+    """去掉任务标题末尾的自动分片标记（n/N）作为逻辑库标题基名。"""
+    text = str(title or "").strip()
+    text = SCAN_SUFFIX_RE.sub("", text).strip()
+    text = re.sub(r"\s*·\s*扫新\s*\d{4}-\d{2}-\d{2}\s*$", "", text)
+    return text.strip()
+
+
+def scan_group_key(channel, base_title, folder):
+    """频道逻辑库键：频道 + 标题基名 + 文件夹。"""
+    return (str(channel or "").strip(),
+            str(base_title or "").strip(),
+            str(folder or "").strip())
+
+
+def scan_group_info(task, tasks=None):
+    """读取任务所属逻辑库并汇总水位、日期、已存在键。
+
+    params.scan_base_title 优先，保证“· 扫新 YYYY-MM-DD”任务仍归属
+    原逻辑库；否则从 channel_title 去掉（n/N）后缀。
+    """
+    tasks = list(tasks) if tasks is not None else load_tasks()
+    params = task.get("params") or {}
+    base_title = (str(params.get("scan_base_title") or "").strip()
+                  or scan_base_title(task.get("channel_title")))
+    channel = str(task.get("channel") or "").strip()
+    folder = str(task.get("folder") or "").strip()
+    params = dict(params or {})
+    key = scan_group_key(channel, base_title, folder)
+
+    group = []
+    for candidate in tasks:
+        cand_params = candidate.get("params") or {}
+        cand_base = (str(cand_params.get("scan_base_title") or "").strip()
+                     or scan_base_title(candidate.get("channel_title")))
+        if scan_group_key(candidate.get("channel"), cand_base,
+                          candidate.get("folder")) == key:
+            group.append(candidate)
+
+    watermark_id = 0
+    for item_task in group:
+        watermark_id = max(
+            watermark_id, int(item_task.get("last_msg_id") or 0))
+        for ti in item_task.get("items") or []:
+            if ti.get("src", SRC_CHANNEL) == SRC_CHANNEL:
+                watermark_id = max(watermark_id, int(ti.get("msg") or 0))
+
+    dated = {}
+    channel_dates = []
+    for item_task in group:
+        for ti in item_task.get("items") or []:
+            if ti.get("src", SRC_CHANNEL) != SRC_CHANNEL:
+                continue
+            date_text = str(ti.get("date") or "").strip()
+            dated[int(ti.get("msg") or 0)] = date_text
+            if date_text:
+                channel_dates.append(date_text)
+    date_from = dated.get(watermark_id, "")
+    if not date_from and channel_dates:
+        date_from = max(channel_dates)
+
+    item_keys = set()
+    content_keys = set()
+    for item_task in group:
+        for ti in item_task.get("items") or []:
+            item_keys.add((ti.get("src", SRC_CHANNEL), ti["msg"]))
+            content_keys.add((ti.get("name"), ti.get("size")))
+
+    return {
+        "channel": channel,
+        "base_title": base_title,
+        "folder": folder,
+        "key": key,
+        "group": group,
+        "group_size": len(group),
+        "watermark_id": watermark_id,
+        "date_from": date_from,
+        "item_keys": item_keys,
+        "content_keys": content_keys,
+    }
+
+
 def load_task(task_id):
     """按 id 直读单个任务清单（T49 热路径）：语义等同
     load_tasks() 后按 id 取那一条，但避开"每点一次继续就全目录解析
@@ -3916,10 +4018,16 @@ def reconcile_task(task):
 
 def task_counts(task):
     c = {"total": len(task["items"]), "done": 0, "exists": 0,
-         "pending": 0, "failed": 0, "skipped": 0}
+         "pending": 0, "failed": 0, "skipped": 0,
+         "total_bytes": 0, "done_bytes": 0}
     for ti in task["items"]:
         st = ti["status"]
         c[st] = c.get(st, 0) + 1
+        sz = int(ti.get("size") or 0)
+        if sz > 0:
+            c["total_bytes"] += sz
+            if st in ("done", "exists"):
+                c["done_bytes"] += sz
     c["finished"] = c["done"] + c["exists"]
     c["unfinished"] = c["pending"] + c["failed"]
     return c
@@ -4566,12 +4674,16 @@ def append_records(task, records, status="pending"):
     """把扫描记录追加进任务。两层去重：
     1) 来源+消息ID 相同（重复扫描）
     2) 文件名+大小 与清单中某条相同（同视频两条消息）
-    返回新增数。"""
+    返回新增数。src==频道 的最大消息 ID 同时推进 last_msg_id；即使本批
+    全部重复但水位前进，也以 force=True 持久化水位。"""
     exist = {item_key(ti) for ti in task["items"]}
     content = {(ti["name"], ti["size"]) for ti in task["items"]}
     added = 0
+    max_mid = 0
     for r in records:
         key = (r.get("src", SRC_CHANNEL), r["msg"].id)
+        if r.get("src", SRC_CHANNEL) == SRC_CHANNEL:
+            max_mid = max(max_mid, int(r["msg"].id))
         if key in exist or (r["name"], r["size"]) in content:
             continue
         ti = make_task_item(r)
@@ -4580,7 +4692,11 @@ def append_records(task, records, status="pending"):
         exist.add(key)
         content.add((r["name"], r["size"]))
         added += 1
-    if added:
+    old_watermark = int(task.get("last_msg_id") or 0)
+    watermark_advanced = max_mid > old_watermark
+    if watermark_advanced:
+        task["last_msg_id"] = max_mid
+    if added or watermark_advanced:
         save_task(task, force=True)
     return added
 
@@ -5140,8 +5256,9 @@ class AccountPool:
 
     async def login_main_tui(self, cfg):
         """TUI 主号登录：封装原 run() 内联流程（TelegramClient 构造、
-        发码并记录投递渠道、client.start(phone)、内置凭证失效换用户凭证
-        重试一次、get_me）；成功后托管进池并返回 client。"""
+        connect、已有 session 授权直通、未授权发码并记录投递渠道、
+        client.start(phone)、内置凭证失效换用户凭证重试一次、get_me）；
+        成功后托管进池并返回 client。"""
         client = self._raw_client(ACCT_MAIN, cfg)
         print("\n正在登录 Telegram …（首次需输入 Telegram 返回的登录验证码）")
 
@@ -5153,6 +5270,16 @@ class AccountPool:
                 await target_client.send_code_request(cfg["phone"]))
             print(paint(f" {sent_code_hint(info)}", YELLOW))
 
+        await client.connect()
+        if await client.is_user_authorized():
+            me = await client.get_me()
+            print(f"已登录：{me.first_name or ''} @{me.username or ''}")
+            self.clients[ACCT_MAIN] = client
+            self.state[ACCT_MAIN] = "ready"
+            self.me_cache[ACCT_MAIN] = {
+                "name": me.first_name or "", "username": me.username or "",
+                "phone": me.phone or ""}
+            return client
         try:
             await send_code(client)
             await client.start(phone=lambda: cfg["phone"],
@@ -5936,6 +6063,10 @@ class AccountPool:
         phone 时）/ health:"unhealthy"（巡检标 unhealthy 时），仅异常
         时出现、缺省省略（旧前端零感知）。"""
         now = time.monotonic()
+        def _flood_rem(acct):
+            rem = self.flood_until.get(acct, 0.0) - now
+            return max(0, int(rem + 0.999)) if rem > 0 else 0
+
         with self._lock:
             main_row = {
                 "id": ACCT_MAIN, "label": "",
@@ -5943,6 +6074,7 @@ class AccountPool:
                 "phone": "", "me": self.me_cache.get(ACCT_MAIN),
                 "busy": self.busy.get(ACCT_MAIN, 0),
                 "flag": self._flag_of(ACCT_MAIN, now),
+                "flood_remain": _flood_rem(ACCT_MAIN),
             }
             out = [self._t59_marks(ACCT_MAIN, main_row)]
             alt_on = (self._alt_lazy_ok()
@@ -5955,6 +6087,7 @@ class AccountPool:
                     "me": self.me_cache.get(ACCT_ALT),
                     "busy": self.busy.get(ACCT_ALT, 0),
                     "flag": self._flag_of(ACCT_ALT, now),
+                    "flood_remain": _flood_rem(ACCT_ALT),
                 }
                 out.append(self._t59_marks(ACCT_ALT, alt_row))
             return out

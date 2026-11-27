@@ -53,8 +53,13 @@ test("glass system: download stage is a panel, not a matte inset", () => {
     /html\[data-theme="wallpaper"\] body :is\([\s\S]*?\.xian-stage-bay/,
     "壁纸主题必须显式覆盖舞台 panel");
   assert.match(CSS,
-    /html\[data-theme="wallpaper"\]\[data-lum="dark"\] body \.xian-stage-bay[\s\S]*rgba\(8, 10, 18, \.42\)/,
-    "暗壁纸下舞台需要独立阅读底，不能只靠透明 panel");
+    /html\[data-theme="wallpaper"\] body \.xian-stage-bay[\s\S]*blur\(18px\) saturate\(160%\)/,
+    "壁纸舞台必须是透明玻璃，不能退回无模糊的实心底");
+  const stageStart = CSS.indexOf('html[data-theme="wallpaper"] body .xian-stage-bay {');
+  const stageRule = CSS.slice(stageStart, CSS.indexOf("}", stageStart) + 1);
+  assert.doesNotMatch(stageRule,
+    /color-mix\(in srgb, var\(--color-surface\) 96%/,
+    "舞台不能保留 v2.5.2 的 96% 不透明底");
 });
 
 test("glass system: account footer does not add a second nav glass sheet", () => {
@@ -106,6 +111,6 @@ test("glass system: standalone task editor uses the shared control language", ()
     "任务编辑批量条未进入 overlay");
 });
 
-test("glass system: release version is 2.6.2", () => {
-  assert.equal(PACKAGE.version, "2.6.2");
+test("glass system: release version is 2.7.0", () => {
+  assert.equal(PACKAGE.version, "2.7.0");
 });

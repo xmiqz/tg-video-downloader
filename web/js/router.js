@@ -606,8 +606,8 @@ export async function boot() {
   // T19d 亮底可见度自适应：液态玻璃背景是窗口后方实时捕获帧（gui.py
   // :2504 data:image/jpeg），亮捕获上 2.1 的浅墨文字几乎不可见。这里
   // 采样背景帧亮度挂 html[data-lum]，tokens.css §7 亮底换浅色墨+亮玻璃面。
-  // 节流 1.5s（捕获 5fps 推帧，逐帧采样纯浪费）；滞后双阈值防抖
-  // （≥160 判亮 / ≤120 判暗，中间带维持现状）；非 liquid 或采样失败清标记。
+  // 节流 1.5s（捕获 5fps 推帧，逐帧采样纯浪费）；统一阈值 140/255
+  // （归一化 0.55）；中间亮度按 bright/dark 就近归类，避免中间带回落到实底。
   const lumCv = doc.createElement("canvas");
   lumCv.width = 12;
   lumCv.height = 8;
@@ -626,8 +626,8 @@ export async function boot() {
           }
           const lum = sum / (d.length / 4);
           const de = doc.documentElement;
-          if (lum >= 160) de.setAttribute("data-lum", "bright");
-          else if (lum <= 120) de.setAttribute("data-lum", "dark");
+          if (lum >= 140) de.setAttribute("data-lum", "bright");
+          else de.setAttribute("data-lum", "dark");
         } catch (e) { /* canvas 读取失败维持现状 */ }
       };
       img.src = url;
@@ -647,9 +647,8 @@ export async function boot() {
     const lum = Number(value);
     if (!Number.isFinite(lum)) return false;
     const de = doc.documentElement;
-    if (lum >= 160) de.setAttribute("data-lum", "bright");
-    else if (lum <= 120) de.setAttribute("data-lum", "dark");
-    else de.removeAttribute("data-lum");
+    if (lum >= 140) de.setAttribute("data-lum", "bright");
+    else de.setAttribute("data-lum", "dark");
     return true;
   }
   // 壁纸换图后卡片材质会留下「第一帧」的合成接缝：backdrop-filter 的模糊面

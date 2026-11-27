@@ -228,6 +228,13 @@ function human(n) {
   return n.toFixed(n >= 100 || i === 0 ? 0 : 1) + " " + u[i];
 }
 
+export function formatTaskSize(doneBytes, totalBytes) {
+  const total = Number(totalBytes) || 0;
+  if (total <= 0) return "";
+  const done = Math.max(0, Number(doneBytes) || 0);
+  return human(done) + " / " + human(total);
+}
+
 // 条目键（app.js:29 keyOf 同义；SRC_CHANNEL="频道" tg_video_dl.py:623）
 function keyOf(src, mid) {
   return (src || "频道") + "|" + mid;
@@ -613,6 +620,10 @@ function buildCard(t) {
     }));
   }
   actions.push(el("button", {
+    class: "u-btn u-btn--ghost tk-act", type: "button", text: "扫新",
+    onclick: function (ev) { ev.stopPropagation(); scanNewTask(t.id, ev.currentTarget); },
+  }));
+  actions.push(el("button", {
     class: "u-btn u-btn--danger tk-act", type: "button", text: "删除",
     onclick: function (ev) { ev.stopPropagation(); quickDelete(t.id, ev.currentTarget); },
   }));
@@ -637,7 +648,12 @@ function buildCard(t) {
       el("div", { class: "tk-fill" + (t.finished === t.total ? " tk-fill--full" : ""), style: { width: pct + "%" } }),
     ]),
     el("div", { class: "tk-stat" }, [
-      el("span", { text: (t.finished || 0) + "/" + (t.total || 0) + " 完成" }),
+      el("span", {
+        text: (t.finished || 0) + "/" + (t.total || 0) + " 完成" +
+          (formatTaskSize(t.done_bytes, t.total_bytes)
+            ? " · " + formatTaskSize(t.done_bytes, t.total_bytes)
+            : ""),
+      }),
       el("span", { text: String(t.created || "") }),
     ]),
     // T52 任务选号行（app.js:1713-1717：label + 选号段 + note，事件不透传卡片）
@@ -731,7 +747,31 @@ async function quickResume(id, failed, btn) {
   restore();
   const c = classifyResumeAck(r);
   if (c.kind === "ok" || c.kind === "already") navigate("/active"); // app.js:1795
-  else toast("error", c.error);                    // app.js:1796 alert 承接
+  else toast("error", c.error);
+}
+
+async function scanNewTask(id, btn) {
+  const restore = busyOn(btn, "准备扫新…");
+  let r = null;
+  try {
+    const ready = await ensureApi();
+    if (!ready) throw new Error("bridge not ready");
+    r = await window.pywebview.api.scan_prefill(id);
+  } catch (e) {
+    restore();
+    toast("error", "扫新准备失败");
+    return;
+  }
+  if (!r || !r.ok) {
+    restore();
+    if (r && r.need_login) toast("error", "请先登录 Telegram 账号");
+    else if (r && r.busy) toast("error", (r && r.error) || "该频道已有扫新流程正在进行");
+    else toast("error", (r && r.error) || "扫新准备失败");
+    return;
+  }
+  window.__tvdScanPrefill = r;
+  restore();
+  navigate("/new");
 }
 
 // app.js:1800-1811 quickDelete（confirm 逐字 → T10 确认弹层承接）
@@ -917,6 +957,12 @@ function resetSheetBody() {
           openSheetEditor(sheet.taskId);
         },
       }),
+      el("button", {
+        class: "u-btn u-btn--ghost", type: "button", text: "扫新",
+        onclick: function (ev) {
+          if (sheet.taskId) scanNewTask(sheet.taskId, ev.currentTarget);
+        },
+      }),
       // T19f 补齐 2.1 底栏选项（index.html:474-481 逐序：编辑/目录/继续/
       // 恢复跳过/删除；「完成编辑」钮随 v2.2 路由编辑页形态取消）
       el("button", { class: "u-btn u-btn--ghost", type: "button", text: "目录",
@@ -1080,6 +1126,10 @@ function renderSheet() {
       ]));
     }
     cntBox.append(el("span", {}, ["共 ", el("b", { text: String(c.total == null ? 0 : c.total) })]));
+    const sizeText = formatTaskSize(c.done_bytes, c.total_bytes);
+    if (sizeText) {
+      cntBox.append(el("span", { class: "tk-scounters-size" }, [el("b", { text: sizeText })]));
+    }
   }
   // 状态分段计数（app.js:1915-1923：label + N，active 随 filter）
   if (detailSeg) {

@@ -154,8 +154,10 @@ export function uiState(a, warmDone) {
 // ============================================================
 export function stateText(a, hint, warmDone) {
   if (!a) return "";
+  if ((Number(a.flood_remain) || 0) > 0) return "限流冷却 " + Math.ceil(a.flood_remain) + "s";
   if (hint && hint.account_id === a.id && hint.reason) return "限速中";
   const st = uiState(a, warmDone);
+  if (st === "ready" && (Number(a.busy) || 0) > 0) return "在线 · 下载中 " + a.busy + " 路";
   return ACCT_STATE_TEXT[st] || a.state || "";
 }
 

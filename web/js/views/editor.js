@@ -274,6 +274,10 @@ function buildDom() {
     class: "u-btn u-btn--primary", type: "button", text: "保存设置",
     onclick: function () { save(btnSave); },
   });
+  const btnAppendScan = el("button", {
+    class: "u-btn u-btn--ghost", type: "button", text: "追加扫描",
+    onclick: function () { appendScan(btnAppendScan); },
+  });
 
   const head = el("div", { class: "ev-head u-card" }, [
     el("div", { class: "ev-head-main" }, [
@@ -297,7 +301,7 @@ function buildDom() {
         moveCheck,
         el("span", { text: "同时移动已下载文件" }),
       ]),
-      btnSave,
+      btnAppendScan, btnSave,
     ]),
   ]);
 
@@ -769,6 +773,29 @@ async function chooseFolder(btn) {
 }
 
 // ---- 保存（editor.js:431-471；点击即锁、need_login 逐字、job_id 走搬运） ----
+async function appendScan(btn) {
+  const restore = busyOn(btn, "追加扫描中…");
+  try {
+    const ready = await ensureApi();
+    if (!ready) throw new Error("bridge not ready");
+    const r = await window.pywebview.api.scan_append(
+      state.taskId, { incremental: true });
+    if (r && r.need_login) {
+      restore();
+      return toast("warn", "该功能需要登录，请在主窗口登录后重试");
+    }
+    if (!r || !r.ok) {
+      restore();
+      return toast("error", "追加扫描失败：" + ((r && r.error) || ""));
+    }
+    restore();
+    toast("ok", "已开始后台追加扫描");
+  } catch (e) {
+    restore();
+    toast("error", "追加扫描失败：" + ((e && e.message) || e));
+  }
+}
+
 async function save(btn) {
   const restore = busyOn(btn, "保存中…");
   const fields = saveFields(

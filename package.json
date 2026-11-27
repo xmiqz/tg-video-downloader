@@ -1,8 +1,8 @@
 {
   "name": "tg-video-downloader-web",
-  "version": "2.6.2",
+  "version": "2.7.0",
   "private": true,
-  "description": "v2.6 frontend regression suite (zero-build ES modules, node:test only)",
+  "description": "v2.7 frontend regression suite (zero-build ES modules, node:test only)",
   "type": "module",
   "engines": {
     "node": ">=20"

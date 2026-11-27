@@ -81,6 +81,22 @@ const FLIGHT_PLAN = Object.freeze({
   }),
 });
 
+export function formatStageAcctSub(acctList) {
+  const list = Array.isArray(acctList) ? acctList : [];
+  if (!list.length) return "账号池 · 未登录";
+  let busyTotal = 0;
+  let maxFlood = 0;
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i] || {};
+    busyTotal += Number(a.busy) || 0;
+    const f = Number(a.flood_remain) || 0;
+    if (f > maxFlood) maxFlood = f;
+  }
+  if (maxFlood > 0) return "账号池 · 限流冷却 " + Math.ceil(maxFlood) + "s";
+  if (busyTotal > 0) return "账号池 · 下载中 " + busyTotal + " 路";
+  return "账号池 · 共 " + list.length + " 个 · 空闲";
+}
+
 export function stageLayout(opts) {
   const o = opts || {};
   const concurrency = Math.max(1, Math.min(8, Number(o.concurrency) || 1));
@@ -1512,8 +1528,7 @@ function queueMax() {
       // like only the main account existed. Keep one compact suffix.
       acctLabel += " + " + String(acctList[1].name || "小号");
     }
-    const acctSub = acctList.length
-      ? "账号池 · 共 " + acctList.length + " 个" : "账号池 · 未登录";
+    const acctSub = formatStageAcctSub(acctList);
     const labels = {
       src: "Telegram", acct: acctLabel, disk: "本地磁盘", nas: "NAS / WebDAV",
     };
