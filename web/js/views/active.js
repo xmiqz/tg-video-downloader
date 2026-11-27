@@ -452,6 +452,29 @@ export function busyLabelFor(action) {
   return M[action] || "处理中…";
 }
 
+// S12 任务健康提示：health.message 主文案 + 可选重试秒数/轮次；manual_retry
+// 用 danger 语气提示用户介入，其余（含 auto_retry）用 warn。
+export function healthText(health) {
+  if (!health || typeof health !== "object") return { tone: "warn", text: "" };
+  const message = String(health.message || "");
+  if (!message) return { tone: "warn", text: "" };
+  const parts = [message];
+  const retryIn = Number(health.retry_in);
+  if (Number.isFinite(retryIn) && retryIn > 0) {
+    parts.push("约 " + Math.ceil(retryIn) + " 秒后自动重试");
+  }
+  const attempt = Number(health.attempt);
+  const maxAttempts = Number(health.max_attempts);
+  if (Number.isFinite(attempt) && attempt > 0
+      && Number.isFinite(maxAttempts) && maxAttempts > 0) {
+    parts.push("第 " + Math.trunc(attempt) + "/" + Math.trunc(maxAttempts) + " 轮");
+  }
+  return {
+    tone: health.action === "manual_retry" ? "danger" : "warn",
+    text: parts.join(" · "),
+  };
+}
+
 // ============================================================
 // 二、内部工具（非导出；语义与旧壳等价）
 // ============================================================
@@ -1315,6 +1338,18 @@ function syncGroups(states) {
       "任务 " + (Array.isArray(s.items) ? s.items.length : 0));
     // 轮询侧阶段位（无 index；事件侧 index 不被轮询覆盖）
     updateGroupPhaseEl(g, s.phase || "", s.phase_detail || "", null, null);
+    // 任务级健康提示条：无 health 隐藏，同文不重写（纯 DOM 文本写入）
+    const health = healthText(s.health);
+    const healthBar = g.querySelector(".ac-health");
+    if (healthBar) {
+      healthBar.hidden = !health.text;
+      if (health.text) {
+        if (healthBar.getAttribute("data-tone") !== health.tone) {
+          healthBar.setAttribute("data-tone", health.tone);
+        }
+        setTextSafely(healthBar, health.text);
+      }
+    }
     // 恢复跳过按钮三态（app.js:1402-1428）
     updateGroupResumeSkip(g, s);
     // 组级暂停/继续文案（全暂停 → 继续；有进行中 → 暂停）
@@ -1389,6 +1424,9 @@ function buildGroup(gid) {
       gPause,
       gAbort,
     ]),
+    el("div", {
+      class: "ac-health", role: "status", hidden: true, "data-tone": "warn",
+    }),
     gBody,
   ]);
   return g;
@@ -1549,6 +1587,10 @@ function buildCard(tid, it, ck) {
       el("span", { class: "ac-foot-main", text: "" }),
       el("span", { class: "ac-cerr", role: "alert", hidden: true, text: "" }),
     ]),
+    el("details", { class: "ac-cerr-tech", hidden: true }, [
+      el("summary", { text: "技术信息" }),
+      el("pre", { class: "ac-cerr-tech-text", text: "" }),
+    ]),
     el("div", { class: "ac-cdetail" }, [el("p", { class: "ac-cdetail-text", text: "" })]),
   ]);
   card._acTid = tid;
@@ -1602,6 +1644,18 @@ function updateCard(card, tid, it, ck) {
     } else {
       errEl.textContent = "";
       errEl.hidden = true;
+    }
+  }
+  // 技术细节折叠展示：有 error_technical 才出现，默认收起（无 open 属性）。
+  const techEl = card.querySelector(".ac-cerr-tech");
+  if (techEl) {
+    const tech = String(it.error_technical || "");
+    if (tech) {
+      techEl.hidden = false;
+      setTextSafely(techEl.querySelector(".ac-cerr-tech-text"), tech);
+    } else {
+      techEl.hidden = true;
+      if (techEl.hasAttribute("open")) techEl.removeAttribute("open");
     }
   }
   // 账号标记（app.js:1456-1462：acct==="alt1" 显示「小号」）

@@ -23,6 +23,12 @@ Windows 原生桌面、浏览器 / NAS 与命令行，使用同一套任务数�
 
 <br>
 
+> **v2.7.1 稳定性更新**
+> - 分片停滞采用 1 / 3 / 6 秒退避与抖动，收到字节后计数清零。
+> - 120 秒内 3 次可重试失败触发任务级自动恢复，最多 3 轮。
+> - 错误提示统一为友好文案，下载页可查看任务健康条与技术细节。
+> - 扫新 / 搜索部分失败时保留已找到的结果。
+
 <img src="docs/images/v2.7/wallpaper/desktop/active-dark.png" width="920" alt="TG 视频下载器 v2.7.0：每日壁纸下的下载中舞台">
 
 </div>
@@ -55,7 +61,7 @@ Telegram 频道的视频通常散落在消息、相册和转发内容里。临�
 | **高级筛选** | 精确短语、全部词、任一词、模糊匹配、正则；体积上下限、日期范围、频道 / 评论区范围、排序与结果上限。 |
 | **多路并发** | 1–8 路任务并发；单视频内部按 8 MB 分片并行下载。 |
 | **断点续传** | 关机、关窗口或网络中断后继续未完成任务，已完成分片不重下。 |
-| **失败可恢复** | 按错误类型自动重试，FloodWait 倒计时，单条失败可重试或移除。 |
+| **失败可恢复** | 按错误类型自动重试，FloodWait 倒计时，单条失败可重试或移除；任务级熔断可自动恢复。 |
 | **智能重命名** | 从搜索命中句生成可读文件名，下载完成即命名；编辑页可预览、批量应用或还原原名。 |
 | **扫新（跨分片去重）** | 按频道逻辑库跨分片去重；整组水位预填新任务，旧任务不变。 |
 | **追加扫描 / 追加视频** | 编辑页“追加扫描”按水位并入本任务；TUI“追加视频”去重并推进水位。 |
@@ -189,7 +195,7 @@ TG视频下载器数据/
 
 | 标签 | 用途 |
 | :-- | :-- |
-| `v2.7.0` | 固定版本，生产推荐 |
+| `v2.7.1` | 固定版本，生产推荐 |
 | `stable` | 稳定通道移动标签，后续发布更新 |
 | `latest` | 最新正式版别名 |
 
@@ -203,8 +209,8 @@ TG视频下载器数据/
 mkdir -p /volume1/docker/tg-video-downloader/data
 sudo chown -R 10001:10001 /volume1/docker/tg-video-downloader/data
 TGVD_DATA_DIR=/volume1/docker/tg-video-downloader/data \
-  docker compose -p tg-video-downloader -f https://cdn.jsdelivr.net/gh/xmiqz/tg-video-downloader@v2.7.0/compose.yaml up -d
-docker compose -p tg-video-downloader -f https://cdn.jsdelivr.net/gh/xmiqz/tg-video-downloader@v2.7.0/compose.yaml ps
+  docker compose -p tg-video-downloader -f https://cdn.jsdelivr.net/gh/xmiqz/tg-video-downloader@v2.7.1/compose.yaml up -d
+docker compose -p tg-video-downloader -f https://cdn.jsdelivr.net/gh/xmiqz/tg-video-downloader@v2.7.1/compose.yaml ps
 ```
 
 群晖 / 飞牛的目录、GUI 项目、SSH compose、权限修正、反代与常见错误见 [Docker / NAS 部署手册](./docs/docker-nas.md)。
@@ -231,7 +237,7 @@ TGVD_IMAGE=ghcr.io/xmiqz/tg-video-downloader:v2.6.2 docker compose up -d
 
 正式升级前先备份 `/data`：命名卷或 bind mount 的具体命令见 [备份 / 升级 / 回滚手册](./docs/nas-backup-restore.md)。
 
-> **GHCR 本身不是更新器。** GHCR 只保存镜像；容器不会自动切换到新版本。自动更新要么手动执行 `docker compose pull && docker compose up -d`，要么使用 Watchtower 等更新器；固定 `v2.7.0` 标签不会自动变化，需改用 `stable` 或手动修改 Tag。
+> **GHCR 本身不是更新器。** GHCR 只保存镜像；容器不会自动切换到新版本。自动更新要么手动执行 `docker compose pull && docker compose up -d`，要么使用 Watchtower 等更新器；固定 `v2.7.1` 标签不会自动变化，需改用 `stable` 或手动修改 Tag。
 
 > 内置 HTTP 不提供 TLS。仅在本机或可信局域网直接使用 HTTP；跨网络访问时请置于 HTTPS 反向代理之后，并设置 `TGDL_COOKIE_SECURE=1`。
 

@@ -237,6 +237,18 @@ def _json_error(message, status_code, retry_after=0):
     )
 
 
+def _rpc_error_text(exc):
+    """Known transport failures get the same user copy as the desktop UI."""
+    try:
+        info = core.describe_exception(exc, scope="rpc")
+        if info["code"] in ("telegram_unstable", "network_stalled",
+                            "network_timeout", "flood_wait"):
+            return info["message"]
+    except Exception:
+        pass
+    return f"{type(exc).__name__}: {exc}"
+
+
 def _request_bearer(request):
     value = request.headers.get("authorization", "")
     prefix = "Bearer "
@@ -522,12 +534,12 @@ def create_app(config, *, engine, api, token="", auth=None):
             # “业务错误”语义返回 HTTP 200 + ok:false，不再统一变 500。
             log.warning("RPC environment error: %s (%s)", method,
                         type(exc).__name__)
-            return _json_error(f"{type(exc).__name__}: {exc}", 200)
+            return _json_error(_rpc_error_text(exc), 200)
         except Exception as exc:
             # Do not log exception text: Telegram/config exceptions can contain
             # user-entered identifiers. The authenticated caller still gets it.
             log.error("RPC failed: %s (%s)", method, type(exc).__name__)
-            return _json_error(f"{type(exc).__name__}: {exc}", 500)
+            return _json_error(_rpc_error_text(exc), 500)
 
     @app.websocket("/events")
     async def events(ws: WebSocket):

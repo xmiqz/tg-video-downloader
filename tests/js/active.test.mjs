@@ -4,6 +4,8 @@
 // ============================================================
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import * as A from "../../web/js/views/active.js";
 
 let N = 0;
@@ -322,6 +324,37 @@ test("TR5-L 模块形状与零副作用", () => {
   eq(A.title, "下载中 - TG 视频下载器", "title 导出");
   for (const n of ["mount", "onEnter", "onLeave"]) ok(typeof A[n] === "function", n + " 为函数");
   eq(typeof globalThis.window, "undefined", "import 后未创建全局 window（顶层零副作用）");
+});
+
+test("TR5-N healthText 三类健康提示文案", () => {
+  deep(A.healthText(null), { tone: "warn", text: "" }, "无 health 降级为空文案");
+  deep(A.healthText({}), { tone: "warn", text: "" }, "health 缺 message 保持空文案");
+  deep(
+    A.healthText({
+      message: "网络不稳定", action: "auto_retry", retry_in: 12.4,
+      attempt: 2, max_attempts: 3,
+    }),
+    { tone: "warn", text: "网络不稳定 · 约 13 秒后自动重试 · 第 2/3 轮" },
+    "auto_retry 带秒数与轮次（秒数向上取整）",
+  );
+  deep(
+    A.healthText({
+      message: "需要手动处理", action: "manual_retry", retry_in: 0,
+      attempt: 3, max_attempts: 3,
+    }),
+    { tone: "danger", text: "需要手动处理 · 第 3/3 轮" },
+    "manual_retry 走 danger 且无自动重试秒数",
+  );
+});
+
+test("TR5-O active.js 错误体验 DOM 契约", () => {
+  const here = fileURLToPath(import.meta.url);
+  const source = readFileSync(here.replace(/tests[\\/]js[\\/][^\\/]+$/, "web/js/views/active.js"), "utf8");
+  ok(source.includes(".ac-health"), "存在任务健康提示条类名");
+  ok(source.includes("error_technical"), "消费条目技术信息字段");
+  ok(source.includes("details") && source.includes("summary"), "技术信息用 details/summary 折叠");
+  ok(source.includes("textContent") || source.includes("setTextSafely"), "动态文本走安全文本写入");
+  ok(!/\.innerHTML\s*=/.test(source), "active.js 不写入 innerHTML");
 });
 
 after(() => {

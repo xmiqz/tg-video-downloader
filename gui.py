@@ -47,6 +47,62 @@ _PREVIEW_ENTITY_RE = re.compile(r"[A-Za-z0-9_]{4,}|-?\d+")
 _PREVIEW_PRIVATE_RE = re.compile(r"(?:https?://)?t\.me/c/\d+")
 
 
+def _friendly_error(exc, scope="item"):
+    """把异常映射为可展示的友好错误字典；绝不回传原始类名串给 UI。"""
+    describe = getattr(core, "describe_exception", None)
+    if callable(describe):
+        try:
+            info = describe(
+                exc, scope=scope, attempt=0, max_attempts=0, retry_after=None)
+            if isinstance(info, dict):
+                message = str(info.get("message") or "").strip()
+                technical = str(info.get("technical") or "").strip()
+                if message and not re.search(
+                        r"\b[A-Za-z_]\w*(?:Error|Exception):\s", message):
+                    return {
+                        "code": str(info.get("code") or "unknown"),
+                        "message": message,
+                        "retryable": bool(info.get("retryable")),
+                        "retry_after": info.get("retry_after"),
+                        "scope": str(info.get("scope") or scope),
+                        "action": str(info.get("action") or "manual_retry"),
+                        "technical": technical,
+                    }
+        except Exception:  # noqa: BLE001 - 并行期 core 实现未落地时安全降级
+            pass
+    text = str(exc)
+    ename = type(exc).__name__
+    if "Request was unsuccessful" in text:
+        return {
+            "code": "request_unsuccessful",
+            "message": "请求未成功，请稍后重试",
+            "retryable": True,
+            "retry_after": None,
+            "scope": scope,
+            "action": "auto_retry",
+            "technical": "",
+        }
+    if ename == "ShardResetExhausted" or "分片" in text and "重置" in text:
+        return {
+            "code": "shard_reset_exhausted",
+            "message": "分片传输多次中断，请稍后重试",
+            "retryable": True,
+            "retry_after": None,
+            "scope": scope,
+            "action": "manual_retry",
+            "technical": "",
+        }
+    return {
+        "code": "unknown",
+        "message": "操作未能完成，请稍后重试",
+        "retryable": False,
+        "retry_after": None,
+        "scope": scope,
+        "action": "manual_retry",
+        "technical": "",
+    }
+
+
 def resource_dir():
     """web 资源目录：打包后从解包目录取，开发时取脚本所在 web/"""
     if getattr(sys, "frozen", False):
@@ -595,7 +651,7 @@ class Api:
         self.cfg = core.ensure_builtin_credentials()
         return TelegramClient(
             core.SESSION_PATH, self.cfg["api_id"], self.cfg["api_hash"],
-            flood_sleep_threshold=120,
+            flood_sleep_threshold=120, raise_last_call_error=True,
         )
 
     def _discard_client(self, client):
@@ -1214,7 +1270,7 @@ class Api:
             return TelegramClient(
                 core.SESSION_PATH,
                 self.cfg["api_id"], self.cfg["api_hash"],
-                flood_sleep_threshold=120,
+                flood_sleep_threshold=120, raise_last_call_error=True,
             )
 
         return self._qr_login.start(
@@ -1486,7 +1542,7 @@ class Api:
             return TelegramClient(
                 core.session_path_for(core.ACCT_ALT),
                 self.cfg["api_id"], self.cfg["api_hash"],
-                flood_sleep_threshold=120,
+                flood_sleep_threshold=120, raise_last_call_error=True,
             )
 
         result = self._qr_login_alt.start(
@@ -1735,8 +1791,11 @@ class Api:
         except Exception as e:  # noqa: BLE001 - worker 线程兜底
             _job_log.warning("search worker 异常 job=%s", job_id,
                               exc_info=True)
+            info = _friendly_error(e, scope="search")
             self.jobs.update(job_id, state="error",
-                             error=f"{type(e).__name__}: {e}")
+                             phase="error",
+                             phase_detail=info["message"],
+                             error=info["message"])
         finally:
             self._search_tasks.pop(job_id, None)
 
@@ -2002,8 +2061,9 @@ class Api:
         except Exception as e:  # noqa: BLE001 - worker 线程兜底
             _job_log.warning("download worker 异常 job=%s", job_id,
                              exc_info=True)
+            info = _friendly_error(e, scope="download")
             result = {"status": "error",
-                      "error": f"{type(e).__name__}: {e}"}
+                      "error": info["message"]}
         result = result or {}
         status = result.get("status", "error")
         if status == "done":
@@ -2204,10 +2264,11 @@ class Api:
                 self.engine.loop)
             sess = fut.result()
         except Exception as e:
+            info = _friendly_error(e, scope="download")
             self.jobs.update(job_id, state="error", phase="error",
                              phase_detail=core.phase_text("error"),
-                             error=f"{type(e).__name__}: {e}")
-            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                             error=info["message"])
+            return {"ok": False, "error": info["message"]}
         if sess is None:
             self.jobs.update(job_id, state="error", phase="error",
                              phase_detail=core.phase_text("error"),
@@ -2482,10 +2543,11 @@ class Api:
                 self.engine.loop)
             sess = fut.result()
         except Exception as e:
+            info = _friendly_error(e, scope="download")
             self.jobs.update(job_id, state="error", phase="error",
                              phase_detail=core.phase_text("error"),
-                             error=f"{type(e).__name__}: {e}")
-            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                             error=info["message"])
+            return {"ok": False, "error": info["message"]}
         if sess is None:
             # open 重复守卫命中（同步检查与 open 之间的竞态窗口）
             self.jobs.update(job_id, state="error", phase="error",
@@ -2890,9 +2952,10 @@ class Api:
         except Exception as e:
             with self._scan_lock:
                 self._scan_tasks.pop(task_id, None)
+            info = _friendly_error(e, scope="scan")
             self.jobs.update(job_id, force=True, state="error",
                              phase="error", phase_detail="追加扫描失败",
-                             error=f"追加扫描启动失败：{type(e).__name__}: {e}")
+                             error=f"追加扫描启动失败：{info['message']}")
             return {"ok": False, "error": "追加扫描启动失败"}
         return {"ok": True, "job_id": job_id}
 
@@ -2910,7 +2973,8 @@ class Api:
             _job_log.warning("scan worker 异常 job=%s", job_id, exc_info=True)
             snap = self.jobs.snapshot(job_id) or {}
             added = snap.get("done", 0)
-            err_msg = f"已追加 {added} 条后失败：{type(e).__name__}: {e}"
+            info = _friendly_error(e, scope="scan")
+            err_msg = f"已追加 {added} 条后暂停：{info['message']}"
             self.jobs.update(job_id, force=True, state="error",
                              phase="error", phase_detail="追加扫描失败",
                              error=err_msg)
@@ -2922,9 +2986,11 @@ class Api:
                     and snap.get("state") not in ("done", "error",
                                                   "cancelled")):
                 added = snap.get("done", 0)
+                info = _friendly_error(
+                    RuntimeError("扫描未正常收口"), scope="scan")
                 self.jobs.update(job_id, force=True, state="error",
                                  phase="error", phase_detail="追加扫描失败",
-                                 error=f"已追加 {added} 条后未正常收口")
+                                 error=f"已追加 {added} 条后暂停：{info['message']}")
 
     async def _scan_coro(self, job_id, cancel_event, task_id, params):
         """scan_append 作业协程（跑在 engine.loop）：消费 stream、

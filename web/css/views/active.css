@@ -119,6 +119,33 @@
   cursor: pointer;
 }
 
+/* ---------- 2b. 任务级健康提示条（s.health 友好文案） ---------- */
+.ac-health {
+  min-width: 0;
+  margin: 0 0 2px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-md);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.ac-health[hidden] { display: none; }
+.ac-health[data-tone="warn"] {
+  border-color: var(--color-warning);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+}
+.ac-health[data-tone="danger"] {
+  border-color: var(--color-danger);
+  background: var(--color-danger-soft);
+  color: var(--color-danger-text);
+}
+
 /* ---------- 3. 舞台 + 状态带（T66：原三张统计卡取消，读数并作一行） ---------- */
 .ac-overview {
   display: flex;
@@ -715,6 +742,39 @@
   overflow-wrap: anywhere;
 }
 .ac-cerr[hidden] { display: none; }
+
+/* 技术信息折叠：默认收起、不占任务卡主视觉；长堆栈窄屏换行不溢出 */
+.ac-cerr-tech {
+  min-width: 0;
+  margin-top: 6px;
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.ac-cerr-tech[hidden] { display: none; }
+.ac-cerr-tech summary {
+  width: fit-content;
+  min-height: 24px;
+  padding: 2px 0;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.ac-cerr-tech summary:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+.ac-cerr-tech pre {
+  max-height: 160px;
+  margin: 6px 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunk);
+  color: var(--color-text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-y: auto;
+}
 
 /* 消息原文区（.dl-detail-text style.css:428-433：折叠零占位/展开可滚） */
 .ac-cdetail {
