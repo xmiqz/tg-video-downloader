@@ -234,6 +234,20 @@ jobs:
           provenance: true
           sbom: true
 
+      # 稳定版同时维护两个可移动标签，供 Watchtower / 在线更新使用；
+      # 版本 Tag 仍然不可变，所有标签指向同一份多架构 manifest。
+      - name: Alias stable and latest
+        if: ${{ !contains(needs.preflight.outputs.tag, '-') }}
+        shell: bash
+        env:
+          TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            -t "${IMAGE}:stable" \
+            -t "${IMAGE}:latest" \
+            "${IMAGE}:${TAG}"
+
   verify:
     needs: publish
     if: needs.publish.outputs.tag != ''
@@ -262,6 +276,25 @@ jobs:
           echo "architectures: ${archs}"
           echo "$archs" | grep -qw amd64
           echo "$archs" | grep -qw arm64
+
+      - name: Verify stable and latest aliases have amd64 and arm64
+        shell: bash
+        env:
+          TAG: ${{ needs.publish.outputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${TAG:?publish 未输出 tag，拒绝校验不存在的镜像}"
+          if [[ "$tag" == *-* ]]; then
+            echo "prerelease ${tag} 不检查 stable/latest 别名"
+            exit 0
+          fi
+          for alias in stable latest; do
+            docker manifest inspect "${IMAGE}:${alias}" > "/tmp/manifest-${alias}.json"
+            archs=$(jq -r '.manifests[].platform.architecture' "/tmp/manifest-${alias}.json" | sort -u | tr '\n' ' ')
+            echo "${alias} architectures: ${archs}"
+            echo "$archs" | grep -qw amd64
+            echo "$archs" | grep -qw arm64
+          done
 
       - name: Verify published image reports the tag version and short SHA
         shell: bash
